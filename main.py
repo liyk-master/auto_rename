@@ -1,0 +1,51 @@
+import logging
+import signal
+import sys
+from pathlib import Path
+
+from src.video_organizer.core.filesystem_monitor import FileSystemMonitor
+from src.video_organizer.utils.config_loader import load_config
+from src.video_organizer.utils.logging_setup import setup_logging
+
+logger = logging.getLogger(__name__)
+
+
+def main():
+    """Main function to start the video organizer."""
+    try:
+        # Load configuration
+        config = load_config("src/video_organizer/data/config.ini")
+        
+        # Setup logging
+        setup_logging(config)
+        
+        logger.info("Starting Video Organizer")
+        
+        # Create monitor instance
+        monitor = FileSystemMonitor(
+            watch_path=config["monitoring"]["watch_path"],
+            processed_path=config["monitoring"]["processed_path"],
+            tmdb_api_key=config["api"]["tmdb_api_key"],
+            ai_service_url=config["api"].get("ai_service_url"),
+            supported_extensions=config["processing"]["supported_extensions"].split(",")
+        )
+        
+        # Set up signal handlers for graceful shutdown
+        def signal_handler(sig, frame):
+            logger.info("Received shutdown signal, stopping monitor...")
+            monitor.stop()
+            sys.exit(0)
+            
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        # Start monitoring
+        monitor.start()
+        
+    except Exception as e:
+        logger.error(f"Failed to start Video Organizer: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
