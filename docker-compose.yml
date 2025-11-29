@@ -1,0 +1,46 @@
+version: '3.8'
+
+# 视频文件自动重命名和组织工具 - Docker Compose配置
+
+services:
+  video-organizer:
+    # 从本地构建镜像
+    build: .
+    
+    # 容器名称
+    container_name: video-organizer
+    
+    # 重启策略
+    restart: unless-stopped
+    
+    # 卷挂载
+    volumes:
+      # 挂载配置目录
+      - ./config:/app/config
+      
+      # 挂载日志目录
+      - ./logs:/app/logs
+      
+      # 挂载监控目录（用户需要修改为实际路径）
+      - /path/to/watch:/watch
+      
+      # 挂载输出目录（用户需要修改为实际路径）
+      - /path/to/output:/output
+    
+    # 环境变量
+    environment:
+      # 时区设置
+      - TZ=Asia/Shanghai
+      
+    # 健康检查（可选）
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+# 注意：使用前请修改以下内容：
+# 1. /path/to/watch 改为您希望监控的实际目录
+# 2. /path/to/output 改为您希望文件输出的实际目录
+# 3. 首次使用前，将config_template.ini复制到config目录并重命名为config.ini

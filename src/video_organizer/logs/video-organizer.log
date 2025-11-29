@@ -262,3 +262,12 @@
 2025-08-29 16:17:33,932 - src.video_organizer.core.filesystem_monitor - INFO - Successfully processed and moved \mnt\media\test\×ÓÒ¹¹é (2025) {tmdbid-242762}\Season 1\×ÓÒ¹¹é.2025.S01E25.2160p.WEB-DL.DoVi.H.265.DDP.5.1.strm to ×ÓÒ¹¹é 2025\Season 01\×ÓÒ¹¹é 2025 - SSeason 01E25
 2025-08-30 16:45:58,581 - __main__ - INFO - Received shutdown signal, stopping monitor...
 2025-08-30 16:45:58,590 - src.video_organizer.core.filesystem_monitor - INFO - Stopped monitoring
+2025-08-30 17:23:19,731 - __main__ - INFO - Starting Video Organizer
+2025-08-30 17:23:19,732 - src.video_organizer.core.filesystem_monitor - ERROR - Watch path does not exist: \mnt\media\test
+2025-08-30 17:25:00,559 - __main__ - INFO - Starting Video Organizer
+2025-08-30 17:25:00,561 - src.video_organizer.core.filesystem_monitor - INFO - Started monitoring \mnt\media\test
+2025-08-30 17:25:06,802 - __main__ - INFO - Received shutdown signal, stopping monitor...
+2025-08-30 17:25:06,816 - src.video_organizer.core.filesystem_monitor - INFO - Stopped monitoring
+2025-11-29 17:56:10,554 - __main__ - INFO - Starting Video Organizer
+2025-11-29 17:56:10,554 - src.video_organizer.core.filesystem_monitor - INFO - Scanning existing files in \mnt\media\test
+2025-11-29 17:56:10,556 - src.video_organizer.core.filesystem_monitor - INFO - Started monitoring \mnt\media\test (Mode: Event-based)

@@ -3,8 +3,10 @@ TMDB API client for fetching TV show information.
 """
 
 import logging
+from types import resolve_bases
 from typing import List, Dict, Optional
 import requests
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +16,10 @@ class TMDBClient:
     
     BASE_URL = "https://api.themoviedb.org/3"
     
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, retry_count=3, timeout=30):
         self.api_key = api_key
+        self.retry_count = retry_count
+        self.timeout = timeout
         self.session = requests.Session()
         # Check if it's a JWT token (Bearer token) or regular API key
         if api_key.startswith('eyJ'):
@@ -33,6 +37,7 @@ class TMDBClient:
         """
         搜索视频信息
         """
+        url = f"{self.BASE_URL}/search/multi"
         params = {
             "query": query,
             "include_adult": include_adult,
@@ -41,49 +46,31 @@ class TMDBClient:
         if year:
             params["first_air_date_year"] = year
             
-        try:
-            response = self.session.get(f"{self.BASE_URL}/search/multi", params=params)
-            response.raise_for_status()
-            data = response.json()
-            return data.get("results", [])
-        except requests.RequestException as e:
-            logger.error(f"Error searching for TV show '{query}': {e}")
-            return []
+        data = self._request_with_retry(url, params)
+        return data.get("results", []) if data else []
     
     def get_media_show_details(self, show_id: int, media_type: str) -> Optional[Dict]:
         """
         获取视频详细信息
         """
-        try:
-            response = self.session.get(f"{self.BASE_URL}/{media_type}/{show_id}?append_to_response=videos,images")
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            logger.error(f"Error getting details for show ID {show_id}: {e}")
-            return None
+        url = f"{self.BASE_URL}/{media_type}/{show_id}"
+        params = {"append_to_response": "videos,images"} if not self.api_key.startswith('eyJ') else None
+        return self._request_with_retry(url, params)
 
     def get_watch_providers(self, show_id: int, season_number: Optional[int] = None) -> Optional[Dict]:
         """
         获取哪个平台发行的
         """
-        try:
-            if season_number is not None:
-                # Get providers for a specific season
-                url = f"{self.BASE_URL}/tv/{show_id}/season/{season_number}/watch/providers"
-            else:
-                # Get providers for the entire show
-                url = f"{self.BASE_URL}/tv/{show_id}/watch/providers"
-                
-            response = self.session.get(url)
-            response.raise_for_status()
-            data = response.json()
+        if season_number is not None:
+            # Get providers for a specific season
+            url = f"{self.BASE_URL}/tv/{show_id}/season/{season_number}/watch/providers"
+        else:
+            # Get providers for the entire show
+            url = f"{self.BASE_URL}/tv/{show_id}/watch/providers"
             
-            # The structure is {'id': , 'results': {'US': { 'flatrate': [...], 'buy': [...] }, 'DE': {...}}}
-            return data.get("results", {})
-            
-        except requests.RequestException as e:
-            logger.error(f"Error getting watch providers for show ID {show_id}: {e}")
-            return None
+        data = self._request_with_retry(url)
+        # The structure is {'id': , 'results': {'US': { 'flatrate': [...], 'buy': [...] }, 'DE': {...}}}
+        return data.get("results", {}) if data else {}
     
     def get_season_details(self, show_id: int, season_number: int) -> Optional[Dict]:
         """
@@ -96,14 +83,92 @@ class TMDBClient:
         Returns:
             Season details dictionary or None if error
         """
-        try:
-            response = self.session.get(
-                f"{self.BASE_URL}/tv/{show_id}/season/{season_number}"
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            logger.error(
-                f"Error getting details for show ID {show_id} season {season_number}: {e}"
-            )
-            return None
+        url = f"{self.BASE_URL}/tv/{show_id}/season/{season_number}"
+        return self._request_with_retry(url)
+    
+    def _request_with_retry(self, url: str, params: Optional[Dict] = None) -> Optional[Dict]:
+        """发送API请求并处理响应，包含重试机制"""
+        import time
+        
+        retry_count = self.retry_count
+        while retry_count >= 0:
+            try:
+                response = self.session.get(url, params=params, timeout=self.timeout)
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.RequestException as e:
+                retry_count -= 1
+                if retry_count < 0:
+                    logger.error(f"TMDB API request failed after multiple attempts: {e}")
+                    return None
+                wait_time = 2 ** (self.retry_count - retry_count)  # 指数退避
+                logger.warning(f"Request failed, retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+    
+    def get_tv_details(self, tv_id: int, append_to_response: str = "videos,images,credits,content_ratings") -> Optional[Dict]:
+        """获取电视剧的详细信息"""
+        url = f"{self.BASE_URL}/tv/{tv_id}"
+        params = {"append_to_response": append_to_response} if not self.api_key.startswith('eyJ') else None
+        return self._request_with_retry(url, params)
+    
+    def get_movie_details(self, movie_id: int, append_to_response: str = "videos,images,credits,content_ratings,reviews") -> Optional[Dict]:
+        """获取电影的详细信息"""
+        url = f"{self.BASE_URL}/movie/{movie_id}"
+        params = {"append_to_response": append_to_response} if not self.api_key.startswith('eyJ') else None
+        return self._request_with_retry(url, params)
+    
+    def get_tv_episode_details(self, tv_id: int, season_number: int, episode_number: int) -> Optional[Dict]:
+        """获取电视剧集的详细信息"""
+        url = f"{self.BASE_URL}/tv/{tv_id}/season/{season_number}/episode/{episode_number}"
+        return self._request_with_retry(url)
+    
+    def get_tv_reviews(self, tv_id: int, page: int = 1) -> Optional[Dict]:
+        """获取电视剧的评论"""
+        url = f"{self.BASE_URL}/tv/{tv_id}/reviews"
+        params = {"page": page} if not self.api_key.startswith('eyJ') else None
+        return self._request_with_retry(url, params)
+    
+    def get_movie_reviews(self, movie_id: int, page: int = 1) -> Optional[Dict]:
+        """获取电影的评论"""
+        url = f"{self.BASE_URL}/movie/{movie_id}/reviews"
+        params = {"page": page} if not self.api_key.startswith('eyJ') else None
+        return self._request_with_retry(url, params)
+    
+    def get_external_ids(self, media_id: int, media_type: str) -> Optional[Dict]:
+        """获取外部ID信息（IMDB、TVDB等）"""
+        url = f"{self.BASE_URL}/{media_type}/{media_id}/external_ids"
+        return self._request_with_retry(url)
+    
+    def get_images(self, media_id: int, media_type: str) -> Optional[Dict]:
+        """获取海报和背景图片"""
+        url = f"{self.BASE_URL}/{media_type}/{media_id}/images"
+        return self._request_with_retry(url)
+    
+    def search_tv(self, query: str, year: Optional[int] = None, page: int = 1) -> Optional[Dict]:
+        """专门搜索电视剧"""
+        url = f"{self.BASE_URL}/search/tv"
+        params = {"query": query, "page": page} if not self.api_key.startswith('eyJ') else {"query": query, "page": page}
+        if year:
+            params["first_air_date_year"] = year
+        return self._request_with_retry(url, params)
+    
+    def search_movie(self, query: str, year: Optional[int] = None, page: int = 1) -> Optional[Dict]:
+        """专门搜索电影"""
+        url = f"{self.BASE_URL}/search/movie"
+        params = {"query": query, "page": page} if not self.api_key.startswith('eyJ') else {"query": query, "page": page}
+        if year:
+            params["year"] = year
+        return self._request_with_retry(url, params)
+                
+    def get_tv_credits(self, show_id: int) -> Optional[Dict]:
+        """
+        Get cast and crew information for a TV show.
+        
+        Args:
+            show_id: TMDB ID of the show
+            
+        Returns:
+            Credits dictionary containing cast and crew or None if error
+        """
+        url = f"{self.BASE_URL}/tv/{show_id}/credits"
+        return self._request_with_retry(url)

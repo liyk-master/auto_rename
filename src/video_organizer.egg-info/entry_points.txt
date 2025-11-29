@@ -1,0 +1,2 @@
+[console_scripts]
+video-organizer = video_organizer.main:main

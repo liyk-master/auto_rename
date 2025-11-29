@@ -4,7 +4,7 @@
 """
 
 from pathlib import Path
-from video_organizer.core.renamer import VideoRenamer
+from src.video_organizer.core.renamer import VideoRenamer
 
 def test_path_extraction():
     # 模拟watch_path和文件路径
@@ -20,6 +20,9 @@ def test_path_extraction():
     
     # 计算相对路径
     try:
+        metadata = renamer._extract_with_regex("权力的游戏 - S01E01.mp4")
+        print(metadata)
+        exit()
         relative_path = file_path.relative_to(watch_path)
         print(f"文件路径: {file_path}")
         print(f"监控路径: {watch_path}")

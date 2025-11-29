@@ -27,8 +27,13 @@ def main():
             processed_path=config["monitoring"]["processed_path"],
             tmdb_api_key=config["api"]["tmdb_api_key"],
             ai_service_url=config["api"].get("ai_service_url"),
-            supported_extensions=config["processing"]["supported_extensions"].split(",")
+            supported_extensions=config["processing"]["supported_extensions"].split(","),
+            use_polling=config["monitoring"].get("use_polling", "false").lower() == "true",
+            polling_interval=int(config["monitoring"].get("polling_interval", "5")),
+            naming_rules=config.get("naming_rules")
         )
+        # 设置事件处理程序的父监控器引用
+        monitor.event_handler._parent_monitor = monitor
         
         # Set up signal handlers for graceful shutdown
         def signal_handler(sig, frame):

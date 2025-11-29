@@ -56,6 +56,17 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict:
         config_dict[section] = {}
         for key, value in config.items(section):
             config_dict[section][key] = value
+    
+    # Parse naming rules configuration
+    if 'naming' in config_dict:
+        naming_rules = {
+            'tv_show': config_dict['naming'].get('tv_show_format', '{show_name}/Season {season:02d}/{show_name} - S{season:02d}E{episode:02d} - {episode_name}'),
+            'movie': config_dict['naming'].get('movie_format', '{movie_name} ({year})'),
+            'anime': config_dict['naming'].get('anime_format', '{anime_name}/{season_name}/{anime_name} - S{season:02d}E{episode:02d}'),
+            'simple': config_dict['naming'].get('simple_format', '{title}')
+        }
+        config_dict['naming_rules'] = naming_rules
+    
     return config_dict
 
 

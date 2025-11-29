@@ -46,25 +46,21 @@ class FileMover:
     
     def _handle_conflicts(self, path: Path) -> Path:
         """
-        Handle filename conflicts by appending a number.
+        Handle filename conflicts by raising an error when file exists.
         
         Args:
             path: Original proposed path
             
         Returns:
-            Path that doesn't conflict with existing files
-        """
-        if not path.exists():
-            return path
+            Original path if no conflict
             
-        # If file exists, find a new name by appending a number
-        stem = path.stem
-        suffix = path.suffix
-        parent = path.parent
-        
-        counter = 1
-        while True:
-            new_path = parent / f"{stem} ({counter}){suffix}"
-            if not new_path.exists():
-                return new_path
-            counter += 1
+        Raises:
+            FileExistsError: When file already exists
+        """
+        if path.exists():
+            logger.warning(f"文件已存在，无法覆盖: {path}")
+            # 不自动生成新名称，而是提醒冲突
+            raise FileExistsError(f"文件已存在，无法覆盖: {path}")
+            
+        # If file doesn't exist, return the original path
+        return path

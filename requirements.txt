@@ -1,3 +1,9 @@
-watchdog>=2.1.0
-requests>=2.28.0
-configparser>=5.3.0
+# 核心依赖
+requests>=2.28.0  # 用于HTTP请求，与TMDB API交互
+watchdog>=3.0.0  # 用于文件系统监控
+configparser>=5.3.0  # 用于配置文件处理
+
+# 开发依赖
+pytest>=7.0.0  # 用于运行测试
+mock>=4.0.0  # 用于测试时模拟对象
+pytest-cov>=4.0.0  # 用于测试覆盖率报告
