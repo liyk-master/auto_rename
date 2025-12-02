@@ -36,12 +36,6 @@ class VideoFileHandler(FileSystemEventHandler):
                 path_str = os.fsdecode(path_str)
             file_path = Path(path_str)
             if file_path.suffix.lower() in self.supported_extensions:
-                # 检查文件是否已处理
-                if hasattr(self, '_parent_monitor'):
-                    if str(file_path) in self._parent_monitor.processed_files:
-                        logger.debug(f"File already processed, skipping: {file_path}")
-                        return
-                
                 logger.info(f"New video file detected: {file_path}")
                 # 使用延迟处理，确保文件完全写入
                 import threading
@@ -85,6 +79,12 @@ class VideoFileHandler(FileSystemEventHandler):
         """Extract enhanced metadata for Emby compatibility."""
         # Get basic metadata from renamer
         metadata = self.renamer.extract_metadata(file_path)
+        
+        # 确保 quality_tags 被正确提取
+        if not metadata.get('quality_tags'):
+            # 直接从原始文件名中提取关键词
+            base_name = file_path.stem
+            metadata['quality_tags'] = self.renamer._extract_keywords(base_name)
         
         # Enhance with additional Emby-specific fields
         if metadata.get('tmdb_id'):

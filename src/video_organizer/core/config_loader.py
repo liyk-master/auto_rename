@@ -17,10 +17,10 @@ DEFAULT_CONFIG = {
         'polling_interval': 5
     },
     'naming': {
-        'tv_show_format': '{show_name}/Season {season:02d}/{show_name} - S{season:02d}E{episode:02d} - {episode_name}',
-        'movie_format': 'Movies/{title} ({year})',
-        'anime_format': 'Anime/{show_name}/{show_name} - {episode:03d}',
-        'simple_format': '{title}'
+        'tv_show_format': '{show_name}/Season {season:02d}/{show_name} {season_episode} {quality_tags}',
+        'movie_format': '{movie_name}{year_suffix}/{movie_name}{year_suffix} {quality_tags}',
+        'anime_format': '{anime_name}/{season_name}/{anime_name} - S{season:02d}E{episode:02d} {quality_tags}',
+        'simple_format': '{title} {quality_tags}'
     },
     'tmdb': {
         'api_key': '',
