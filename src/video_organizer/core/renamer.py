@@ -6,7 +6,7 @@ import os
 import re
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from jinja2 import Template
 from src.video_organizer.core.tmdb_client import TMDBClient
@@ -434,6 +434,93 @@ class VideoRenamer:
             
         return prepared
         
+    def _translate_to_english(self, text: str) -> str:
+        """
+        将中文文本翻译为英文
+        
+        Args:
+            text (str): 要翻译的中文文本
+            
+        Returns:
+            str: 翻译后的英文文本
+        """
+        # 这里可以集成实际的翻译API，比如百度翻译、Google翻译等
+        # 为了简化，先使用一个简单的模拟翻译字典
+        # 实际使用时，应该替换为真实的翻译服务
+        translation_dict = {
+            "怪奇物语": "Stranger Things",
+            "权力的游戏": "Game of Thrones",
+            "鱿鱼游戏": "Squid Game",
+            "流浪地球": "The Wandering Earth",
+            "山海情": "Minning Town",
+            "奔跑吧兄弟": "Running Man",
+            "小猪佩奇": "Peppa Pig",
+            "海贼王": "One Piece",
+            "斗罗大陆": "Soul Land",
+            "舌尖上的中国": "A Bite of China",
+            "星期三": "Wednesday"
+        }
+        
+        # 尝试直接翻译
+        if text in translation_dict:
+            translated = translation_dict[text]
+            logger.info(f"使用翻译字典将 '{text}' 翻译为 '{translated}'")
+            return translated
+        
+        # 尝试拆分翻译
+        words = text.split()
+        translated_words = []
+        for word in words:
+            translated_words.append(translation_dict.get(word, word))
+        
+        translated = " ".join(translated_words)
+        logger.info(f"使用拆分翻译将 '{text}' 翻译为 '{translated}'")
+        return translated
+    
+    def _search_with_language(self, search_term: str, media_type_hint: str, year: str, language: str) -> List[Dict]:
+        """
+        基于语言的搜索辅助方法
+        
+        Args:
+            search_term (str): 搜索词
+            media_type_hint (str): 媒体类型提示
+            year (str): 年份
+            language (str): 搜索语言
+            
+        Returns:
+            List[Dict]: 搜索结果列表
+        """
+        results = []
+        try:
+            # 如果搜索语言是英文，且搜索词包含中文，先翻译为英文
+            final_search_term = search_term
+            if language == 'en-US' and re.search(r'[\u4e00-\u9fff]', search_term):
+                final_search_term = self._translate_to_english(search_term)
+                logger.info(f"将中文搜索词 '{search_term}' 翻译为英文 '{final_search_term}' 进行搜索")
+            
+            if media_type_hint == 'tv':
+                # 使用专门的电视剧搜索
+                search_results = self.tmdb_client.search_tv(
+                    final_search_term, 
+                    int(year) if year and year.isdigit() else None,
+                    language=language
+                )
+                if isinstance(search_results, dict) and 'results' in search_results:
+                    results = search_results['results']
+            elif media_type_hint == 'movie':
+                # 使用专门的电影搜索
+                search_results = self.tmdb_client.search_movie(
+                    final_search_term, 
+                    int(year) if year and year.isdigit() else None,
+                    language=language
+                )
+                if isinstance(search_results, dict) and 'results' in search_results:
+                    results = search_results['results']
+        except Exception as e:
+            logger.error(f"语言搜索失败: {e}")
+        
+        return results
+        
     def _enrich_with_tmdb(self, metadata: Dict) -> Dict:
         """使用TMDB API丰富元数据信息，获取更完整的视频详情"""
         # 确保metadata是字典类型
@@ -467,45 +554,36 @@ class VideoRenamer:
             
             results = []
             
-            # 智能搜索策略：先使用优化后的搜索词搜索
-            results = []
-            try:
-                if media_type_hint == 'tv':
-                    # 使用专门的电视剧搜索
-                    search_results = self.tmdb_client.search_tv(prepared_search_term, int(year) if year and year.isdigit() else None)
-                    if isinstance(search_results, dict) and 'results' in search_results:
-                        results = search_results['results']
-                elif media_type_hint == 'movie':
-                    # 使用专门的电影搜索
-                    search_results = self.tmdb_client.search_movie(prepared_search_term, int(year) if year and year.isdigit() else None)
-                    if isinstance(search_results, dict) and 'results' in search_results:
-                        results = search_results['results']
-            except Exception as e:
-                logger.error(f"类型搜索失败: {e}")
+            # 智能搜索策略：
+            # 1. 先使用中文搜索
+            # 2. 如果中文搜索失败，尝试英文搜索
+            # 3. 如果明确类型搜索失败，尝试通用搜索
+            search_languages = ['zh-CN', 'en-US']
+            search_strategies = [
+                # 策略1: 优化后的搜索词 + 明确类型 + 中文
+                lambda: self._search_with_language(prepared_search_term, media_type_hint, year, 'zh-CN'),
+                # 策略2: 优化后的搜索词 + 明确类型 + 英文
+                lambda: self._search_with_language(prepared_search_term, media_type_hint, year, 'en-US'),
+                # 策略3: 原始搜索词 + 明确类型 + 中文
+                lambda: self._search_with_language(search_term, media_type_hint, year, 'zh-CN') if search_term != prepared_search_term else [],
+                # 策略4: 原始搜索词 + 明确类型 + 英文
+                lambda: self._search_with_language(search_term, media_type_hint, year, 'en-US') if search_term != prepared_search_term else [],
+                # 策略5: 优化后的搜索词 + 通用搜索 + 中文
+                lambda: self.tmdb_client.search_video_show(prepared_search_term, year, language='zh-CN'),
+                # 策略6: 优化后的搜索词 + 通用搜索 + 英文
+                lambda: self.tmdb_client.search_video_show(prepared_search_term, year, language='en-US')
+            ]
             
-            # 如果没有专门类型的搜索结果，使用通用搜索
-            if not results:
+            # 执行搜索策略，直到找到结果
+            for i, strategy in enumerate(search_strategies):
                 try:
-                    results = self.tmdb_client.search_video_show(prepared_search_term, year)
+                    strategy_results = strategy()
+                    if isinstance(strategy_results, list) and strategy_results:
+                        results = strategy_results
+                        logger.info(f"搜索策略 {i+1} 成功，找到 {len(results)} 个结果")
+                        break
                 except Exception as e:
-                    logger.error(f"通用搜索失败: {e}")
-            
-            # 如果第一次搜索失败，尝试使用原始搜索词作为备选
-            if not results and search_term != prepared_search_term:
-                logger.info(f"优化搜索词未找到结果，尝试原始搜索词: '{search_term}'")
-                try:
-                    if media_type_hint == 'tv':
-                        search_results = self.tmdb_client.search_tv(search_term, int(year) if year and year.isdigit() else None)
-                        if isinstance(search_results, dict) and 'results' in search_results:
-                            results = search_results['results']
-                    elif media_type_hint == 'movie':
-                        search_results = self.tmdb_client.search_movie(search_term, int(year) if year and year.isdigit() else None)
-                        if isinstance(search_results, dict) and 'results' in search_results:
-                            results = search_results['results']
-                    if not results:
-                        results = self.tmdb_client.search_video_show(search_term, year)
-                except Exception as e:
-                    logger.error(f"备选搜索失败: {e}")
+                    logger.warning(f"搜索策略 {i+1} 失败: {e}")
             
             # 确保results是列表类型
             if not isinstance(results, list):
@@ -521,6 +599,8 @@ class VideoRenamer:
             
             # 寻找最匹配的结果
             best_match = None
+            
+            # 1. 优先匹配年份和媒体类型
             for result in results:
                 # 尝试匹配年份
                 date_field = 'first_air_date' if result.get('media_type') == 'tv' else 'release_date'
@@ -528,11 +608,40 @@ class VideoRenamer:
                     result_year = result[date_field].split('-')[0]
                     if result_year == metadata.get('year'):
                         best_match = result
+                        logger.info(f"找到年份匹配的结果: {result.get('name', result.get('title'))} ({result_year})")
                         break
             
-            # 如果没有找到年份匹配，使用第一个结果
+            # 2. 如果没有找到年份匹配，优先选择与媒体类型提示匹配的结果
+            if not best_match and media_type_hint:
+                for result in results:
+                    if result.get('media_type') == media_type_hint:
+                        best_match = result
+                        logger.info(f"找到媒体类型匹配的结果: {result.get('name', result.get('title'))} (类型: {result.get('media_type')})")
+                        break
+            
+            # 3. 如果没有找到媒体类型匹配，优先选择电视剧结果（电视剧通常更受欢迎）
             if not best_match:
-                best_match = results[0]
+                for result in results:
+                    if result.get('media_type') == 'tv':
+                        best_match = result
+                        logger.info(f"找到电视剧结果: {result.get('name', result.get('title'))}")
+                        break
+            
+            # 4. 如果没有电视剧结果，按 popularity 排序选择最热门的结果
+            if not best_match:
+                # 按 popularity 降序排序
+                sorted_results = sorted(results, key=lambda x: x.get('popularity', 0), reverse=True)
+                best_match = sorted_results[0]
+                logger.info(f"没有找到匹配的结果，使用最热门结果: {best_match.get('name', best_match.get('title'))}")
+            
+            # 3. 确保结果有效
+            if not best_match:
+                logger.warning(f"没有找到有效的匹配结果")
+                # 确保返回的metadata包含必要字段
+                metadata.setdefault('quality_tags', original_quality_tags)
+                metadata.setdefault('year', '')
+                metadata.setdefault('tmdb_id', '')
+                return metadata
             
             # 获取详细信息
             media_type = best_match.get('media_type', 'tv')
@@ -645,6 +754,8 @@ class VideoRenamer:
                             for review in details['reviews']['results'][:3]  # 只取前3条评论
                         ]
             
+            # 设置媒体类型
+            metadata['media_type'] = media_type
             # 恢复原始的quality_tags
             metadata['quality_tags'] = original_quality_tags
             return metadata
@@ -669,13 +780,19 @@ class VideoRenamer:
         Returns:
             str: 分类目录路径
         """
-        # 确定基础分类（电视剧/电影）
+        # 确定基础分类（电视剧/电影/其他）
         media_type = metadata.get('media_type')
-        base_category = 'Movies' if media_type == 'movie' else 'TV Shows'
+        if media_type == 'movie':
+            base_category = 'Movies'
+        elif media_type == 'tv':
+            base_category = 'TV Shows'
+        else:
+            base_category = 'Other'
         
         # 获取语言和地区信息
         original_language = metadata.get('original_language', '').lower()
         origin_countries = metadata.get('origin_country', [])
+        genres = metadata.get('genres', [])
         
         # 扩展的国家/地区识别列表
         chinese_countries = ['CN', 'HK', 'TW']
@@ -687,28 +804,55 @@ class VideoRenamer:
         
         if base_category == 'TV Shows':
             # 电视剧子分类
-            # 1. 检查是否有原始中文名（更可靠的方法）
-            original_show_name = metadata.get('original_show_name', '')
-            if original_show_name and re.search(r'[\u4e00-\u9fff]', original_show_name):
-                sub_category = '国产剧'
-            # 2. 检查语言和地区
-            elif original_language in ['zh', 'cn'] or any(country in chinese_countries for country in origin_countries):
-                sub_category = '国产剧'
-            elif original_language in ['en'] or any(country in english_countries for country in origin_countries):
-                sub_category = '欧美剧'
-            elif original_language in ['ja', 'ko', 'th', 'hi'] or any(country in asian_countries for country in origin_countries):
-                sub_category = '日韩剧'
+            genre_names = [genre.lower() for genre in genres]
+            
+            # 1. 特殊类型分类
+            if any(genre in genre_names for genre in ['documentary', '纪录片']):
+                sub_category = '纪录片'
+            elif any(genre in genre_names for genre in ['reality', 'variety', '综艺', 'game show']):
+                sub_category = '综艺'
+            elif any(genre in genre_names for genre in ['animation', 'animated', '动画']):
+                # 动画类型进一步细分
+                if original_language in ['zh', 'cn'] or any(country in chinese_countries for country in origin_countries):
+                    sub_category = '国漫'
+                elif original_language in ['ja'] or any(country in ['JP'] for country in origin_countries):
+                    sub_category = '日番'
+                elif original_language in ['en'] or any(country in english_countries for country in origin_countries):
+                    sub_category = '欧美动漫'
+                else:
+                    sub_category = '其他动漫'
+            elif any(genre in genre_names for genre in ['kids', 'children', 'child', '儿童', 'family']):
+                sub_category = '儿童'
             else:
-                sub_category = '其他剧'
+                # 2. 普通电视剧分类
+                if original_language in ['zh', 'cn'] or any(country in chinese_countries for country in origin_countries):
+                    sub_category = '国产剧'
+                elif original_language in ['en'] or any(country in english_countries for country in origin_countries):
+                    sub_category = '欧美剧'
+                elif original_language in ['ja', 'ko', 'th', 'hi'] or any(country in asian_countries for country in origin_countries):
+                    sub_category = '日韩剧'
+                else:
+                    # 3. 如果语言和地区无法确定，检查原始名称
+                    original_show_name = metadata.get('original_show_name', '')
+                    if original_show_name and re.search(r'[\u4e00-\u9fff]', original_show_name):
+                        sub_category = '国产剧'
+                    else:
+                        sub_category = '未分类'
         else:
             # 电影子分类
-            original_title = metadata.get('original_title', '')
-            if original_title and re.search(r'[\u4e00-\u9fff]', original_title):
-                sub_category = '华语电影'
-            elif original_language in ['zh', 'cn'] or any(country in chinese_countries for country in origin_countries):
-                sub_category = '华语电影'
+            # 1. 检查是否为动画电影
+            genre_names = [genre.lower() for genre in genres]
+            if any(genre in genre_names for genre in ['animation', 'animated', '动画']):
+                sub_category = '动画电影'
             else:
-                sub_category = '外语电影'
+                # 2. 检查语言和地区
+                original_title = metadata.get('original_title', '')
+                if original_title and re.search(r'[\u4e00-\u9fff]', original_title):
+                    sub_category = '华语电影'
+                elif original_language in ['zh', 'cn'] or any(country in chinese_countries for country in origin_countries):
+                    sub_category = '华语电影'
+                else:
+                    sub_category = '外语电影'
         
         # 组合分类路径
         return f"{base_category}/{sub_category}"

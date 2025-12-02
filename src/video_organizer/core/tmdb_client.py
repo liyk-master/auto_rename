@@ -144,18 +144,18 @@ class TMDBClient:
         url = f"{self.BASE_URL}/{media_type}/{media_id}/images"
         return self._request_with_retry(url)
     
-    def search_tv(self, query: str, year: Optional[int] = None, page: int = 1) -> Optional[Dict]:
+    def search_tv(self, query: str, year: Optional[int] = None, page: int = 1, language: Optional[str] = "zh-CN") -> Optional[Dict]:
         """专门搜索电视剧"""
         url = f"{self.BASE_URL}/search/tv"
-        params = {"query": query, "page": page} if not self.api_key.startswith('eyJ') else {"query": query, "page": page}
+        params = {"query": query, "page": page, "language": language} if not self.api_key.startswith('eyJ') else {"query": query, "page": page, "language": language}
         if year:
             params["first_air_date_year"] = year
         return self._request_with_retry(url, params)
     
-    def search_movie(self, query: str, year: Optional[int] = None, page: int = 1) -> Optional[Dict]:
+    def search_movie(self, query: str, year: Optional[int] = None, page: int = 1, language: Optional[str] = "zh-CN") -> Optional[Dict]:
         """专门搜索电影"""
         url = f"{self.BASE_URL}/search/movie"
-        params = {"query": query, "page": page} if not self.api_key.startswith('eyJ') else {"query": query, "page": page}
+        params = {"query": query, "page": page, "language": language} if not self.api_key.startswith('eyJ') else {"query": query, "page": page, "language": language}
         if year:
             params["year"] = year
         return self._request_with_retry(url, params)
