@@ -44,17 +44,19 @@ class TMDBClient:
             "language": language,
         }
         if year:
+            # 同时添加两个年份参数，以支持电影和电视剧
+            params["year"] = year
             params["first_air_date_year"] = year
             
         data = self._request_with_retry(url, params)
         return data.get("results", []) if data else []
     
-    def get_media_show_details(self, show_id: int, media_type: str) -> Optional[Dict]:
+    def get_media_show_details(self, show_id: int, media_type: str, language: Optional[str] = "zh-CN") -> Optional[Dict]:
         """
         获取视频详细信息
         """
         url = f"{self.BASE_URL}/{media_type}/{show_id}"
-        params = {"append_to_response": "videos,images"} if not self.api_key.startswith('eyJ') else None
+        params = {"append_to_response": "videos,images", "language": language} if not self.api_key.startswith('eyJ') else {"language": language}
         return self._request_with_retry(url, params)
 
     def get_watch_providers(self, show_id: int, season_number: Optional[int] = None) -> Optional[Dict]:
@@ -72,19 +74,21 @@ class TMDBClient:
         # The structure is {'id': , 'results': {'US': { 'flatrate': [...], 'buy': [...] }, 'DE': {...}}}
         return data.get("results", {}) if data else {}
     
-    def get_season_details(self, show_id: int, season_number: int) -> Optional[Dict]:
+    def get_season_details(self, show_id: int, season_number: int, language: Optional[str] = "zh-CN") -> Optional[Dict]:
         """
         Get details about a specific season of a TV show.
         
         Args:
             show_id: TMDB ID of the show
             season_number: Season number
+            language: Language for the response, defaults to "zh-CN"
             
         Returns:
             Season details dictionary or None if error
         """
         url = f"{self.BASE_URL}/tv/{show_id}/season/{season_number}"
-        return self._request_with_retry(url)
+        params = {"language": language} if not self.api_key.startswith('eyJ') else {"language": language}
+        return self._request_with_retry(url, params)
     
     def _request_with_retry(self, url: str, params: Optional[Dict] = None) -> Optional[Dict]:
         """发送API请求并处理响应，包含重试机制"""
@@ -105,33 +109,34 @@ class TMDBClient:
                 logger.warning(f"Request failed, retrying in {wait_time} seconds...")
                 time.sleep(wait_time)
     
-    def get_tv_details(self, tv_id: int, append_to_response: str = "videos,images,credits,content_ratings") -> Optional[Dict]:
+    def get_tv_details(self, tv_id: int, append_to_response: str = "videos,images,credits,content_ratings", language: Optional[str] = "zh-CN") -> Optional[Dict]:
         """获取电视剧的详细信息"""
         url = f"{self.BASE_URL}/tv/{tv_id}"
-        params = {"append_to_response": append_to_response} if not self.api_key.startswith('eyJ') else None
+        params = {"append_to_response": append_to_response, "language": language} if not self.api_key.startswith('eyJ') else {"language": language}
         return self._request_with_retry(url, params)
     
-    def get_movie_details(self, movie_id: int, append_to_response: str = "videos,images,credits,content_ratings,reviews") -> Optional[Dict]:
+    def get_movie_details(self, movie_id: int, append_to_response: str = "videos,images,credits,content_ratings,reviews", language: Optional[str] = "zh-CN") -> Optional[Dict]:
         """获取电影的详细信息"""
         url = f"{self.BASE_URL}/movie/{movie_id}"
-        params = {"append_to_response": append_to_response} if not self.api_key.startswith('eyJ') else None
+        params = {"append_to_response": append_to_response, "language": language} if not self.api_key.startswith('eyJ') else {"language": language}
         return self._request_with_retry(url, params)
     
-    def get_tv_episode_details(self, tv_id: int, season_number: int, episode_number: int) -> Optional[Dict]:
+    def get_tv_episode_details(self, tv_id: int, season_number: int, episode_number: int, language: Optional[str] = "zh-CN") -> Optional[Dict]:
         """获取电视剧集的详细信息"""
         url = f"{self.BASE_URL}/tv/{tv_id}/season/{season_number}/episode/{episode_number}"
-        return self._request_with_retry(url)
-    
-    def get_tv_reviews(self, tv_id: int, page: int = 1) -> Optional[Dict]:
-        """获取电视剧的评论"""
-        url = f"{self.BASE_URL}/tv/{tv_id}/reviews"
-        params = {"page": page} if not self.api_key.startswith('eyJ') else None
+        params = {"language": language} if not self.api_key.startswith('eyJ') else {"language": language}
         return self._request_with_retry(url, params)
     
-    def get_movie_reviews(self, movie_id: int, page: int = 1) -> Optional[Dict]:
+    def get_tv_reviews(self, tv_id: int, page: int = 1, language: Optional[str] = "zh-CN") -> Optional[Dict]:
+        """获取电视剧的评论"""
+        url = f"{self.BASE_URL}/tv/{tv_id}/reviews"
+        params = {"page": page, "language": language} if not self.api_key.startswith('eyJ') else {"page": page, "language": language}
+        return self._request_with_retry(url, params)
+    
+    def get_movie_reviews(self, movie_id: int, page: int = 1, language: Optional[str] = "zh-CN") -> Optional[Dict]:
         """获取电影的评论"""
         url = f"{self.BASE_URL}/movie/{movie_id}/reviews"
-        params = {"page": page} if not self.api_key.startswith('eyJ') else None
+        params = {"page": page, "language": language} if not self.api_key.startswith('eyJ') else {"page": page, "language": language}
         return self._request_with_retry(url, params)
     
     def get_external_ids(self, media_id: int, media_type: str) -> Optional[Dict]:

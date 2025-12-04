@@ -59,6 +59,23 @@ class VideoFileHandler(FileSystemEventHandler):
     def process_file(self, file_path):
         """Process a newly created video file."""
         try:
+            # 首先检查文件是否存在
+            if not file_path.exists():
+                logger.error(f"文件不存在，无法处理: {file_path}")
+                return
+                
+            # 检查文件是否是文件而不是目录
+            if not file_path.is_file():
+                logger.error(f"路径不是文件，无法处理: {file_path}")
+                return
+                
+            # 检查文件大小是否为0
+            if file_path.stat().st_size == 0:
+                logger.error(f"文件大小为0，无法处理: {file_path}")
+                return
+                
+            logger.info(f"开始处理文件: {file_path}")
+            
             # Extract enhanced metadata for Emby
             metadata = self.extract_enhanced_metadata(file_path)
             new_path = self.renamer.generate_new_path(metadata, original_path=file_path, output_dir=self.output_dir)
@@ -72,8 +89,14 @@ class VideoFileHandler(FileSystemEventHandler):
             
             logger.info(f"Successfully processed and moved {file_path} to {new_path}")
             
+        except FileNotFoundError as e:
+            logger.error(f"处理文件时文件不存在: {file_path}, 错误: {e}")
+        except IsADirectoryError as e:
+            logger.error(f"处理文件时路径是目录: {file_path}, 错误: {e}")
+        except PermissionError as e:
+            logger.error(f"没有权限访问文件: {file_path}, 错误: {e}")
         except Exception as e:
-            logger.error(f"Error processing file {file_path}: {e}")
+            logger.error(f"处理文件时发生未预期错误: {file_path}, 错误: {e}")
     
     def extract_enhanced_metadata(self, file_path: Path) -> Dict:
         """Extract enhanced metadata for Emby compatibility."""
@@ -331,15 +354,63 @@ class FileSystemMonitor:
         polling_thread.daemon = True
         polling_thread.start()
     
-    def _is_file_complete(self, file_path, check_interval=1):
-        """检查文件是否已完全写入（通过比较两次检查的文件大小）。"""
+    def _is_file_complete(self, file_path, check_interval=1, max_checks=3):
+        """检查文件是否已完全写入（通过多次比较文件大小）。
+        
+        Args:
+            file_path: 要检查的文件路径
+            check_interval: 每次检查的间隔时间（秒）
+            max_checks: 最大检查次数
+            
+        Returns:
+            bool: 文件是否已完全写入
+        """
         try:
-            size1 = file_path.stat().st_size
-            time.sleep(check_interval)
-            size2 = file_path.stat().st_size
-            return size1 == size2
+            # 首先检查文件是否存在
+            if not file_path.exists():
+                logger.warning(f"文件不存在: {file_path}")
+                return False
+                
+            # 检查文件大小是否为0
+            if file_path.stat().st_size == 0:
+                logger.warning(f"文件大小为0: {file_path}")
+                return False
+                
+            # 多次检查文件大小，确保稳定
+            last_size = file_path.stat().st_size
+            stable_checks = 0
+            
+            for i in range(max_checks):
+                time.sleep(check_interval)
+                current_size = file_path.stat().st_size
+                
+                if current_size == last_size:
+                    stable_checks += 1
+                    # 如果连续两次检查大小稳定，认为文件已完成
+                    if stable_checks >= 2:
+                        logger.info(f"文件已完全写入: {file_path} (大小: {current_size} bytes)")
+                        return True
+                else:
+                    # 文件大小仍在变化，重置稳定计数器
+                    stable_checks = 0
+                    last_size = current_size
+                    logger.debug(f"文件大小仍在变化: {file_path} (当前: {current_size} bytes, 上次: {last_size} bytes)")
+            
+            # 如果经过多次检查仍不稳定，返回False
+            logger.warning(f"文件大小长时间不稳定: {file_path} (最终大小: {last_size} bytes)")
+            return False
+            
+        except FileNotFoundError:
+            logger.error(f"文件不存在: {file_path}")
+            return False
+        except PermissionError:
+            logger.error(f"没有权限访问文件: {file_path}")
+            return False
+        except IsADirectoryError:
+            logger.error(f"路径是目录而不是文件: {file_path}")
+            return False
         except Exception as e:
-            logger.error(f"Error checking file completeness: {e}")
+            logger.error(f"检查文件完整性时出错: {e}")
             return False
     
     def stop(self):
