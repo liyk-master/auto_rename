@@ -14,6 +14,7 @@ from .core.config_loader import load_config, save_default_config
 # 导入监控器和处理器
 from .core.filesystem_monitor import FileSystemMonitor
 from .core.video_file_handler import VideoFileHandler
+from .core.downloader_monitor import DownloaderMonitorFactory
 
 # 导入日志工具
 from .utils.logging_utils import get_logger, setup_logging
@@ -99,29 +100,31 @@ def initialize_monitor(config: dict, cli_options: Optional[Dict[str, Any]] = Non
         if polling_interval == 5:
             polling_interval = monitoring_config.get('polling_interval', 5)
         
-        # 验证必要的目录
+        # 在下载器监控模式下，不再强制要求监控目录
         if not watch_dir:
-            cli_output.print_error("监控目录未配置")
-            logger.error("监控目录未配置")
-            return None
+            cli_output.print_info("监控目录未配置，当前使用下载器监控模式")
+            logger.info("监控目录未配置，当前使用下载器监控模式")
+        elif not os.path.exists(watch_dir):
+            cli_output.print_info(f"监控目录不存在: {watch_dir}，当前使用下载器监控模式")
+            logger.info(f"监控目录不存在: {watch_dir}，当前使用下载器监控模式")
         
-        if not os.path.exists(watch_dir):
-            cli_output.print_error(f"监控目录不存在: {watch_dir}")
-            logger.error(f"监控目录不存在: {watch_dir}")
-            return None
-        
-        # 确保输出目录存在
+        # 输出目录不再强制要求，只在配置时尝试创建
         if output_dir and not os.path.exists(output_dir):
             try:
                 os.makedirs(output_dir)
                 cli_output.print_success(f"创建输出目录: {output_dir}")
                 logger.info(f"创建输出目录: {output_dir}")
             except Exception as e:
-                cli_output.print_error(f"创建输出目录失败", error=e)
-                logger.error(f"创建输出目录失败: {e}")
-                return None
+                cli_output.print_info(f"创建输出目录失败: {e}，当前使用下载器监控模式")
+                logger.info(f"创建输出目录失败: {e}，当前使用下载器监控模式")
         
         # FileSystemMonitor会自己创建和初始化必要的组件，包括event_handler
+        
+        # 从配置中获取Emos配置
+        emos_config = config.get('emos', {})
+        
+        # 从配置中获取下载器配置
+        downloader_configs = config.get('downloaders', [])
         
         # 创建并启动文件系统监控器
         monitor = FileSystemMonitor(
@@ -132,7 +135,11 @@ def initialize_monitor(config: dict, cli_options: Optional[Dict[str, Any]] = Non
             supported_extensions=supported_extensions,
             use_polling=use_polling,
             polling_interval=polling_interval,
-            naming_rules=config.get('naming_rules')
+            naming_rules=config.get('naming_rules'),
+            emos_config=emos_config,
+            processing_config=config.get('processing'),
+            downloader_configs=downloader_configs,
+            config=config  # 传递配置对象，用于路径映射等功能
         )
         
         # 父监控器引用已在FileSystemMonitor内部设置
@@ -175,13 +182,23 @@ def force_process_file(file_path: str, config: dict) -> bool:
         monitoring_config = config.get('monitoring', {})
         output_dir = monitoring_config.get('output_dir', '')
         supported_extensions = monitoring_config.get('supported_extensions', [])
+        
+        # DEBUG: 打印监控配置中的路径映射
+        print(f"DEBUG: force_process_file - Config mappings: {monitoring_config.get('path_mappings')}")
+        
         naming_rules = config.get('naming_rules')
         tmdb_config = config.get('tmdb')
+        emos_config = config.get('emos', {})
         
         # 验证文件存在
         if not os.path.exists(file_path):
             cli_output.print_error(f"文件不存在: {file_path}")
             return False
+        
+        # 如果没有配置输出目录，使用文件所在目录
+        if not output_dir:
+            output_dir = os.path.dirname(file_path)
+            cli_output.print_info(f"未配置输出目录，使用文件所在目录: {output_dir}")
         
         # 验证输出目录
         if not os.path.exists(output_dir):
@@ -193,19 +210,90 @@ def force_process_file(file_path: str, config: dict) -> bool:
             output_dir=output_dir,
             supported_extensions=supported_extensions,
             naming_rules=naming_rules,
-            tmdb_config=tmdb_config
+            tmdb_config=tmdb_config,
+            emos_config=emos_config,
+            processing_config=config.get('processing'),
+            path_mappings=monitoring_config.get('path_mappings'),
+            telegram_config=config.get('telegram')
         )
         
-        # 强制处理文件
-        cli_output.print_info(f"开始处理文件: {file_path}")
-        success = handler.force_process_file(file_path)
+        # 初始化并添加下载器（用于任务清理）
+        # 注意：这里我们只初始化下载器用于删除任务，不需要回调处理
+        downloader_configs = config.get('downloaders', [])
+        if downloader_configs:
+            cli_output.print_info(f"正在初始化 {len(downloader_configs)} 个下载器以支持任务清理...")
+            for dl_config in downloader_configs:
+                try:
+                    # 复制配置并将支持的扩展名添加进去，因为Factory需要
+                    dl_config_ext = dl_config.copy()
+                    dl_config_ext['supported_extensions'] = tuple(supported_extensions)
+                    
+                    # 创建监控器，传入空回调因为我们只用它来执行删除操作
+                    monitor = DownloaderMonitorFactory.create_monitor(
+                        dl_config.get('type'),
+                        lambda path, m=None: None,
+                        dl_config_ext
+                    )
+                    
+                    if monitor:
+                        handler.add_downloader(monitor)
+                        # cli_output.print_info(f"已加载下载器: {dl_config.get('type')}")
+                except Exception as e:
+                    logger.error(f"初始化下载器失败: {e}")
         
-        if success:
-            cli_output.print_success(f"文件处理成功: {file_path}")
+        # 收集待处理文件
+        files_to_process = []
+        if os.path.isdir(file_path):
+            cli_output.print_info(f"正在扫描目录: {file_path}")
+            for root, dirs, files in os.walk(file_path):
+                for file in files:
+                    # 检查扩展名
+                    if any(file.lower().endswith(ext) for ext in supported_extensions):
+                        full_path = os.path.join(root, file)
+                        files_to_process.append(full_path)
+            cli_output.print_info(f"找到 {len(files_to_process)} 个视频文件")
         else:
-            cli_output.print_error(f"文件处理失败: {file_path}")
+            files_to_process.append(file_path)
+
+        if not files_to_process:
+            cli_output.print_warning("未找到可处理的视频文件")
+            return True
+
+        # 批量处理文件
+        success_count = 0
+        total_files = len(files_to_process)
         
-        return success
+        for index, current_file in enumerate(files_to_process, 1):
+            cli_output.print_info(f"[{index}/{total_files}] 开始处理文件: {current_file}")
+            if handler.force_process_file(current_file):
+                success_count += 1
+                cli_output.print_success(f"已加入队列: {current_file}")
+            else:
+                cli_output.print_error(f"处理失败: {current_file}")
+        
+        cli_output.print_separator()
+        cli_output.print_info(f"处理统计: 成功加入队列 {success_count}/{total_files}")
+        
+        if success_count > 0:
+            # 等待上传队列完成
+            if handler._use_queue and handler._queue_running:
+                cli_output.print_info("等待后台处理完成 (按Ctrl+C可强制退出)...")
+                try:
+                    # 循环检查队列是否为空，这样可以响应中断
+                    import time
+                    while not handler._upload_queue.empty() or handler._processing_files or handler._uploading_files:
+                        time.sleep(0.5)
+                    
+                    # 额外等待一点时间确保所有状态更新
+                    time.sleep(1)
+                    cli_output.print_success("所有任务已处理完成")
+                except KeyboardInterrupt:
+                    cli_output.print_warning("用户中断等待，后台任务可能仍在运行")
+        
+        # 停止上传队列线程
+        handler.stop_upload_queue()
+        
+        return success_count > 0
         
     except Exception as e:
         cli_output.print_error(f"处理文件时发生错误", error=e)
@@ -275,18 +363,12 @@ def main() -> None:
     try:
         # 加载配置
         config_path = args.config
-        if not config_path:
-            # 使用默认配置路径
-            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
-        
-        # 确保配置文件存在
-        if not os.path.exists(config_path):
-            cli_output.print_warning(f"配置文件不存在: {config_path}")
-            cli_output.print_info("正在创建默认配置文件...")
-            save_default_config(config_path)
-            cli_output.print_success(f"默认配置文件已创建: {config_path}")
+        # 让load_config处理默认路径逻辑，它能正确处理打包后的环境
         
         config = load_config(config_path)
+        
+        # DEBUG: 打印主函数加载的路径映射
+        print(f"DEBUG: main() - Loaded config mappings: {config.get('monitoring', {}).get('path_mappings')}")
         
         # 初始化日志系统
         setup_logging(config.get('logging', {}))
@@ -322,11 +404,7 @@ def main() -> None:
             cli_output.print_separator()
             # 获取logger实例
             logger = get_logger(__name__)
-            cli_output.print_info(f"开始监控目录: {monitor.watch_path}")
-            cli_output.print_info(f"输出目录: {monitor.processed_path}")
             cli_output.print_info(f"支持的文件类型: {', '.join(monitor.supported_extensions)}")
-            cli_output.print_info(f"轮询间隔: {monitor.polling_interval} 秒")
-            cli_output.print_info(f"使用轮询模式: {'是' if monitor.use_polling else '否'}")
             cli_output.print_success("监控服务已启动！")
             cli_output.print_info("按 Ctrl+C 停止监控")
             cli_output.print_separator()

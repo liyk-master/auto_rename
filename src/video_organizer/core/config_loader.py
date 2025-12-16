@@ -1,4 +1,5 @@
 import os
+import sys
 import configparser
 import logging
 from typing import Dict, Any, List, Optional
@@ -14,7 +15,12 @@ DEFAULT_CONFIG = {
         'poll_interval': 10,
         'supported_extensions': ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv'],
         'use_polling': False,
-        'polling_interval': 5
+        'polling_interval': 5,
+        'path_mappings': {}  # 用于将下载器返回的路径映射到主机实际路径，例如："/downloads": "F:/Downloads"
+    },
+    'emos': {
+        'auth_token': '',
+        'base_url': 'https://emos.lol'
     },
     'naming': {
         'tv_show_format': '{show_name}/Season {season:02d}/{show_name} {season_episode} {quality_tags}',
@@ -33,6 +39,7 @@ DEFAULT_CONFIG = {
         'rename_only': False,
         'copy_mode': False,
         'delete_original': False,
+        'delete_after_upload': False,
         'min_file_size': 0,
         'ignore_patterns': []
     },
@@ -41,7 +48,12 @@ DEFAULT_CONFIG = {
         'log_file': '',
         'console_log': True,
         'file_log': False
-    }
+    },
+    'telegram': {
+        'bot_token': '',
+        'chat_id': ''
+    },
+    'downloaders': []
 }
 
 
@@ -60,12 +72,17 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         ValueError: 如果配置无效
     """
     if not config_path:
-        # 使用默认配置文件路径
-        config_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            'data',
-            'config.ini'
-        )
+        # 检查是否为打包后的环境
+        if getattr(sys, 'frozen', False):
+            # 如果是打包后的exe，配置文件在exe同级目录
+            base_dir = os.path.dirname(sys.executable)
+            config_path = os.path.join(base_dir, 'config.ini')
+        else:
+            # 开发环境：使用项目内配置文件路径
+            config_path = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                'config.ini'
+            )
     
     # 检查配置文件是否存在
     if not os.path.exists(config_path):
@@ -77,7 +94,8 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         logger.info(f"已创建默认配置文件: {config_path}")
     
     config = configparser.ConfigParser()
-    config.read(config_path)
+    # 使用UTF-8编码读取配置文件，避免编码错误
+    config.read(config_path, encoding='utf-8')
     
     # 转换为字典并验证
     config_dict = _config_to_dict(config)
@@ -100,6 +118,10 @@ def save_default_config(config_path: str) -> None:
     
     # 设置默认配置
     for section, options in DEFAULT_CONFIG.items():
+        # 跳过列表类型的配置（如downloaders），它们不能直接作为INI的一个节
+        if not isinstance(options, dict):
+            continue
+            
         config[section] = {}
         for key, value in options.items():
             if isinstance(value, list):
@@ -141,6 +163,24 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
                         config_dict[section][key] = [
                             item.strip() for item in config[section].get(key, '').split(',') if item.strip()
                         ]
+                    elif isinstance(default_options[key], dict):
+                        # 特殊处理字典类型，用于path_mappings配置
+                        if key == 'path_mappings':
+                            mappings_str = config[section].get(key, '')
+                            print(f"DEBUG: Config Loader - path_mappings string: '{mappings_str}'")
+                            mappings = {}
+                            if mappings_str:
+                                for mapping in mappings_str.split(','):
+                                    mapping = mapping.strip()
+                                    if mapping:
+                                        parts = mapping.split(':', 1)
+                                        if len(parts) == 2:
+                                            mappings[parts[0].strip()] = parts[1].strip()
+                                            print(f"DEBUG: Parsed mapping: {parts[0].strip()} -> {parts[1].strip()}")
+                            config_dict[section][key] = mappings
+                            print(f"DEBUG: Final mappings dict: {mappings}")
+                        else:
+                            config_dict[section][key] = config[section].get(key)
                     else:
                         config_dict[section][key] = config[section].get(key)
                 else:
@@ -155,6 +195,18 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
             'anime': config_dict['naming'].pop('anime_format'),
             'simple': config_dict['naming'].pop('simple_format')
         }
+    
+    # 特殊处理下载器配置
+    config_dict['downloaders'] = []
+    for section in config.sections():
+        if section.startswith('downloader.'):
+            downloader_config = {}
+            # 从section名称中提取下载器类型（例如：downloader.aria2 -> aria2）
+            downloader_type = section.split('.')[1] if '.' in section else ''
+            downloader_config['type'] = downloader_type
+            for key, value in config[section].items():
+                downloader_config[key] = value
+            config_dict['downloaders'].append(downloader_config)
     
     return config_dict
 
@@ -171,28 +223,26 @@ def _validate_config(config: Dict[str, Any]) -> bool:
     """
     is_valid = True
     
-    # 验证监控目录
+    # 验证监控配置
     if 'monitoring' in config:
-        watch_dir = config['monitoring'].get('watch_dir', '')
-        if not watch_dir:
-            logger.error("监控目录未配置")
-            is_valid = False
-        elif not os.path.exists(watch_dir):
-            logger.error(f"监控目录不存在: {watch_dir}")
-            is_valid = False
-        
+        # 对于输出目录，不再强制验证，因为我们现在使用下载器监控模式
         output_dir = config['monitoring'].get('output_dir', '')
         if not output_dir:
-            logger.error("输出目录未配置")
-            is_valid = False
+            logger.info("输出目录未配置，当前使用下载器监控模式")
         elif not os.path.exists(output_dir):
             # 尝试创建输出目录
             try:
                 os.makedirs(output_dir)
                 logger.info(f"已创建输出目录: {output_dir}")
             except Exception as e:
-                logger.error(f"创建输出目录失败: {e}")
-                is_valid = False
+                logger.info(f"创建输出目录失败: {e}，当前使用下载器监控模式")
+        
+        # 对于监控目录，不再强制验证，因为我们现在使用下载器监控
+        watch_dir = config['monitoring'].get('watch_dir', '')
+        if not watch_dir:
+            logger.info("监控目录未配置，当前使用下载器监控模式")
+        elif not os.path.exists(watch_dir):
+            logger.info(f"监控目录不存在: {watch_dir}，当前使用下载器监控模式")
     
     # 验证TMDB API密钥
     if 'tmdb' in config:
@@ -219,11 +269,17 @@ def update_config(config_dict: Dict[str, Any], config_path: Optional[str] = None
         config_path: 配置文件路径
     """
     if not config_path:
-        config_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            'data',
-            'config.ini'
-        )
+        # 检查是否为打包后的环境
+        if getattr(sys, 'frozen', False):
+            # 如果是打包后的exe，配置文件在exe同级目录
+            base_dir = os.path.dirname(sys.executable)
+            config_path = os.path.join(base_dir, 'config.ini')
+        else:
+            config_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                'data',
+                'config.ini'
+            )
     
     config = configparser.ConfigParser()
     

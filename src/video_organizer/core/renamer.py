@@ -6,7 +6,7 @@ import os
 import re
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from jinja2 import Template
 from src.video_organizer.core.tmdb_client import TMDBClient
@@ -32,12 +32,12 @@ class VideoRenamer:
         # 使用提供的命名规则或默认规则
         self.naming_rules = naming_rules if naming_rules else self.DEFAULT_NAMING_RULES
         
-    def extract_metadata(self, file_path: Path, media_type_hint: Optional[str] = None) -> Dict:
+    def extract_metadata(self, file_path: Union[str, Path], media_type_hint: Optional[str] = None) -> Dict:
         """
         从视频文件路径中提取元数据。
         
         Args:
-            file_path (Path): 文件路径
+            file_path (Union[str, Path]): 文件路径
             media_type_hint (str, optional): 媒体类型提示（tv, movie等）
             
         Returns:
@@ -45,6 +45,10 @@ class VideoRenamer:
         """
         # 确保返回的是字典类型，即使发生异常
         try:
+            # 转换file_path为Path对象，如果它是字符串的话
+            if isinstance(file_path, str):
+                file_path = Path(file_path)
+            
             # 验证file_path参数
             if not hasattr(file_path, 'name'):
                 logger.error(f"无效的file_path参数: {file_path}")
@@ -938,92 +942,17 @@ class VideoRenamer:
     
     def _determine_category(self, metadata: Dict) -> str:
         """
-        根据元数据确定视频的分类目录
+        简化的分类方法，不进行复杂分类
         
         Args:
             metadata (Dict): 包含视频元数据的字典
             
         Returns:
-            str: 分类目录路径
+            str: 空字符串，不添加分类目录
         """
-        # 确定基础分类（电视剧/电影/其他）
-        media_type = metadata.get('media_type')
-        if media_type == 'movie':
-            base_category = 'Movies'
-        elif media_type == 'tv':
-            base_category = 'TV Shows'
-        else:
-            base_category = 'Other'
-        
-        # 获取语言和地区信息
-        original_language = metadata.get('original_language', '').lower()
-        origin_countries = metadata.get('origin_country', [])
-        genres = metadata.get('genres', [])
-        
-        # 扩展的国家/地区识别列表
-        chinese_countries = ['CN', 'HK', 'TW']
-        english_countries = ['US', 'GB', 'CA', 'AU', 'NZ']
-        asian_countries = ['JP', 'KR', 'TH', 'IN']
-        
-        # 子分类逻辑
-        sub_category = ''
-        
-        if base_category == 'TV Shows':
-            # 电视剧子分类
-            genre_names = [genre.lower() for genre in genres]
-            
-            # 1. 特殊类型分类
-            if any(genre in genre_names for genre in ['documentary', '纪录片']):
-                sub_category = '纪录片'
-            elif any(genre in genre_names for genre in ['reality', 'variety', '综艺', 'game show']):
-                sub_category = '综艺'
-            elif any(genre in genre_names for genre in ['animation', 'animated', '动画']):
-                # 动画类型进一步细分
-                if original_language in ['zh', 'cn'] or any(country in chinese_countries for country in origin_countries):
-                    sub_category = '国漫'
-                elif original_language in ['ja'] or any(country in ['JP'] for country in origin_countries):
-                    sub_category = '日番'
-                elif original_language in ['en'] or any(country in english_countries for country in origin_countries):
-                    sub_category = '欧美动漫'
-                else:
-                    sub_category = '其他动漫'
-            elif any(genre in genre_names for genre in ['kids', 'children', 'child', '儿童', 'family']):
-                sub_category = '儿童'
-            else:
-                # 2. 普通电视剧分类
-                if original_language in ['zh', 'cn'] or any(country in chinese_countries for country in origin_countries):
-                    sub_category = '国产剧'
-                elif original_language in ['en'] or any(country in english_countries for country in origin_countries):
-                    sub_category = '欧美剧'
-                elif original_language in ['ja', 'ko', 'th', 'hi'] or any(country in asian_countries for country in origin_countries):
-                    sub_category = '日韩剧'
-                else:
-                    # 3. 如果语言和地区无法确定，检查原始名称
-                    original_show_name = metadata.get('original_show_name', '')
-                    if original_show_name and re.search(r'[\u4e00-\u9fff]', original_show_name):
-                        sub_category = '国产剧'
-                    else:
-                        sub_category = '未分类'
-        else:
-            # 电影子分类
-            # 1. 检查是否为动画电影
-            genre_names = [genre.lower() for genre in genres]
-            if any(genre in genre_names for genre in ['animation', 'animated', '动画']):
-                sub_category = '动画电影'
-            else:
-                # 2. 检查语言和地区
-                original_title = metadata.get('original_title', '')
-                if original_title and re.search(r'[\u4e00-\u9fff]', original_title):
-                    sub_category = '华语电影'
-                elif original_language in ['zh', 'cn'] or any(country in chinese_countries for country in origin_countries):
-                    sub_category = '华语电影'
-                else:
-                    sub_category = '外语电影'
-        
-        # 组合分类路径
-        return f"{base_category}/{sub_category}"
+        return ""
     
-    def generate_new_path(self, metadata: Dict, rule_type: Optional[str] = None, original_path: Optional[Path] = None, output_dir: Optional[Path] = None) -> Path:
+    def generate_new_path(self, metadata: Dict, rule_type: Optional[str] = None, original_path: Optional[Union[str, Path]] = None, output_dir: Optional[Path] = None) -> Path:
         """
         根据元数据和指定的命名规则生成新的组织路径。
         
@@ -1036,6 +965,10 @@ class VideoRenamer:
         Returns:
             Path: 生成的新路径
         """
+        # 转换original_path为Path对象，如果它是字符串的话
+        if original_path and isinstance(original_path, str):
+            original_path = Path(original_path)
+        
         # 确定媒体类型和适当的命名规则
         media_type = metadata.get('media_type')
         if rule_type is None:
@@ -1182,9 +1115,8 @@ class VideoRenamer:
             
             path = Path(path_str)
             
-            # 添加分类目录前缀
-            category = self._determine_category(metadata)
-            full_path = Path(category) / path
+            # 直接使用文件名，不添加分类目录前缀
+            full_path = path
             
             # 检测并处理文件冲突
             if output_dir:
@@ -1219,12 +1151,11 @@ class VideoRenamer:
             if original_path and original_path.suffix:
                 filename += original_path.suffix
             
-            # Build full path
-            base_path = Path(show_name) / season_str / f"{filename}"
+            # 直接使用文件名，不添加分类目录前缀
+            base_path = Path(f"{filename}")
             
-            # 添加分类目录前缀
-            category = self._determine_category(metadata)
-            return Path(category) / base_path
+            # 不添加分类目录前缀
+            return base_path
         
         return path
     

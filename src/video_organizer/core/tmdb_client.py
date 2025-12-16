@@ -22,7 +22,7 @@ class TMDBClient:
         self.timeout = timeout
         self.session = requests.Session()
         # Check if it's a JWT token (Bearer token) or regular API key
-        if api_key.startswith('eyJ'):
+        if api_key and api_key.startswith('eyJ'):
             # JWT token - use Bearer authentication
             self.session.headers = {
                 "Authorization": f"Bearer {api_key}",
