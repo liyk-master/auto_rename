@@ -25,9 +25,11 @@ class VideoFileHandler:
                  naming_rules: Optional[Dict[str, str]] = None,
                  tmdb_config: Optional[Dict[str, Any]] = None,
                  emos_config: Optional[Dict[str, Any]] = None,
+                 p123_config: Optional[Dict[str, Any]] = None,
                  processing_config: Optional[Dict[str, Any]] = None,
                  path_mappings: Optional[Dict[str, str]] = None,
-                 telegram_config: Optional[Dict[str, Any]] = None):
+                 telegram_config: Optional[Dict[str, Any]] = None,
+                 llm_config: Optional[Dict[str, Any]] = None):
         """
         初始化视频文件处理器
         
@@ -39,6 +41,7 @@ class VideoFileHandler:
             emos_config: Emos配置字典
             processing_config: 处理配置字典
             path_mappings: 路径映射字典 (下载器路径 -> 本地路径)
+            llm_config: LLM 翻译配置
         """
         # 初始化日志记录器
         self.logger = get_logger(__name__)
@@ -50,14 +53,25 @@ class VideoFileHandler:
         # 初始化处理配置
         self.processing_config = processing_config or {}
         self.delete_after_upload = self.processing_config.get('delete_after_upload', False)
+        # 清理配置值中的行内注释
+        raw_targets = self.processing_config.get('upload_targets', 'emos')
+        self.upload_targets = str(raw_targets).split('#')[0].split(';')[0].strip()  # emos, p123, both
         
         # 初始化Emos配置
+        # 初始化Emos配置
         self.emos_config = emos_config or {}
-        self.emos_auth_token = self.emos_config.get('auth_token', '')
+        raw_token = self.emos_config.get('auth_token', '')
+        self.emos_auth_token = str(raw_token).split('#')[0].split(';')[0].strip()
         self.emos_base_url = self.emos_config.get('base_url', 'https://emos.lol')
         self.emos_file_storage = self.emos_config.get('file_storage', 'internal')  # internal 或 global
         self.emos_chunk_size_mb = self.emos_config.get('chunk_size_mb', 50)  # 分片大小(MB)，默认50
         self.max_upload_workers = int(self.processing_config.get('max_upload_workers', 1)) # 并发上传数
+        
+        # 初始化 123 云盘配置
+        self.p123_config = p123_config or {}
+        raw_p123_token = self.p123_config.get('token', '')
+        self.p123_token = str(raw_p123_token).split('#')[0].split(';')[0].strip()
+        self.p123_parent_id = int(self.p123_config.get('parent_id', 0))
         
         # 初始化 Telegram 配置
         self.telegram_config = telegram_config or {}
@@ -75,13 +89,28 @@ class VideoFileHandler:
             except Exception as e:
                 log_failure(self.logger, "初始化TMDB客户端失败", error=e)
         
+        # 初始化 123 云盘上传器
+        self.p123_uploader = None
+        if self.p123_token and self.p123_parent_id != 0:
+            try:
+                from ..upload.upload_p123 import P123Uploader
+                self.p123_uploader = P123Uploader(
+                    self.p123_token,
+                    self.p123_parent_id,
+                    telegram_config=self.telegram_config
+                )
+                self.logger.info("123云盘上传器初始化成功")
+            except Exception as e:
+                self.logger.error(f"初始化123云盘上传器失败: {e}")
+        
         # 初始化文件重命名器
         try:
             # 从配置中获取TMDB API密钥
             tmdb_api_key = tmdb_config.get('api_key') if tmdb_config else None
             self.renamer = VideoRenamer(
                 tmdb_api_key=tmdb_api_key,
-                naming_rules=naming_rules
+                naming_rules=naming_rules,
+                llm_config=llm_config
             )
             self.logger.info("视频重命名器初始化成功")
         except Exception as e:
@@ -404,66 +433,79 @@ class VideoFileHandler:
         print(f"\n🔍 [线程#{worker_id}] 开始深入处理文件: {file_path}")
         
         try:
-            # 第一步：获取视频的tmdbid和media_type
-            file_name = os.path.basename(file_path)
-            recognize_url = f"https://emos.prlo.de/api/recognize?path={file_name}"
+            # 第一步：获取视频的tmdbid和media_type (使用本地 Renamer + TMDB Client)
+            print(f"正在本地分析文件元数据: {os.path.basename(file_path)}")
             
-            # 打印调试信息
-            # print(f"正在调用API识别文件: {file_name}")
+            # 使用 VideoRenamer 提取元数据 (包含 Regex 解析和 TMDB 搜索)
+            # 注意: 这里使用 extract_metadata 会自动调用 _enrich_with_tmdb
+            metadata = self.renamer.extract_metadata(file_path)
             
-            headers = {
-                'accept': '*/*',
-                'accept-language': 'zh-CN,zh;q=0.9',
-                'authorization': f'Bearer {self.emos_auth_token}',
-                'origin': 'https://emos.prlo.de',
-                'priority': 'u=1, i',
-                'referer': 'https://emos.prlo.de/',
-                'sec-ch-ua': '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': '"Windows"',
-                'sec-fetch-dest': 'empty',
-                'sec-fetch-mode': 'cors',
-                'sec-fetch-site': 'same-site',
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
-            }
+            print(f"✓ [线程#{worker_id}] 本地识别完成")
             
-            # 发送请求
-            response1 = requests.get(recognize_url, headers=headers)
-            response1.raise_for_status()  # 检查请求是否成功
-            result1 = response1.json()
+            # 提取所需信息
+            tmdb_id = str(metadata.get('tmdb_id', ''))
+            media_type = metadata.get('media_type', 'tv') # 默认为 tv, renamer 会返回 'tv' 或 'movie'
             
-            print(f"✓ [线程#{worker_id}] API识别成功")
+            # 标题处理：优先使用 title (电影) 或 show_name (剧集)
+            title = metadata.get('title') or metadata.get('show_name') or metadata.get('original_filename', '')
             
-            # 从结果中提取所需信息
-            media_info = result1.get('media_info')
-            if not media_info:
-                print(f"✗ [线程#{worker_id}] API未返回媒体信息，跳过该文件")
-                self._failed_files[file_path] = "API未返回媒体信息"
-                return False
+            # 季集信息处理
+            season = metadata.get('season')
+            episode = metadata.get('episode')
+            season_episode = ""
             
-            tmdb_id = media_info.get('tmdb_id', '')
-            media_type = media_info.get('type', '')
-            title = media_info.get('title', '')
-            
-            # 从meta_info中获取season_episode
-            meta_info = result1.get('meta_info', {})
-            season_episode = meta_info.get('season_episode', '')
+            if season is not None and episode is not None:
+                try:
+                    # 尝试格式化为 SxxExx
+                    s_num = int(season)
+                    e_num = int(episode)
+                    season_episode = f"S{s_num:02d}E{e_num:02d}"
+                except:
+                    # 如果转换整数失败，直接拼接
+                    season_episode = f"S{season}E{episode}"
             
             # 输出获取到的信息
-            print(f"\n[线程#{worker_id}] 文件信息:")
+            print(f"\n[线程#{worker_id}] 文件信息 (本地识别):")
             print(f"  文件: {os.path.basename(file_path)}")
             print(f"  TMDB ID: {tmdb_id}")
             print(f"  媒体类型: {media_type}")
             print(f"  标题: {title}")
             print(f"  季集: {season_episode}")
 
-            media_type = "tv" if media_type == "电视剧" else "movie"
+            # 兼容性处理: 原有逻辑可能依赖 "电视剧" 这样的中文类型，但 Renamer 返回 "tv"/"movie"
+            # 下面的逻辑原本是: media_type = "tv" if media_type == "电视剧" else "movie"
+            # 现在 renamer 直接返回标准代码，所以我们只需确保它是 tv 或 movie
+            if media_type not in ['tv', 'movie']:
+                # 如果是 anime 或其他，归类为 tv
+                 media_type = 'tv'
             
-            # 第二步：如果获取到了tmdb_id、type、title，调用第二个API
-            if tmdb_id and media_type and title:
+            # 初始化匹配结果
+            matched_item_id = None
+            matched_item_type = None
+            
+            # 第二步：如果获取到了tmdb_id、type、title，且需要使用 Emos (非仅 p123)，调用第二个API
+            if tmdb_id and media_type and title and self.upload_targets != 'p123':
                 # print(f"\n正在调用第二个API获取ItemId...")
                 # item_id_url = f"{self.emos_base_url}/api/video/getItemId?type={media_type}&title={title}&tmdb_id={tmdb_id}"
                 item_id_url = f"{self.emos_base_url}/api/video/getItemId?tmdb_id={tmdb_id}"
+                
+                # 定义 Emos API headers
+                headers = {
+                    'accept': '*/*',
+                    'accept-language': 'zh-CN,zh;q=0.9',
+                    'authorization': f'Bearer {self.emos_auth_token}',
+                    'origin': 'https://emos.prlo.de',
+                    'priority': 'u=1, i',
+                    'referer': 'https://emos.prlo.de/',
+                    'sec-ch-ua': '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
+                    'sec-ch-ua-mobile': '?0',
+                    'sec-ch-ua-platform': '"Windows"',
+                    'sec-fetch-dest': 'empty',
+                    'sec-fetch-mode': 'cors',
+                    'sec-fetch-site': 'same-site',
+                    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
+                }
+                
                 headers2 = headers.copy()
                 headers2.update({
                     'sec-fetch-site': 'cross-site',
@@ -478,8 +520,6 @@ class VideoFileHandler:
                 
                 # 解析季集信息并匹配对应的item_id
                 # 解析季集信息并匹配对应的item_id
-                matched_item_id = None
-                matched_item_type = None
                 
                 if media_type == "movie" and result2:
                     # 电影匹配逻辑：通常result2中直接包含电影信息，或者是一个包含电影信息的列表
@@ -539,27 +579,35 @@ class VideoFileHandler:
                     except Exception as e:
                         print(f"✗ [线程#{worker_id}] 解析季集信息时出错: {e}")
                 
-                if not matched_item_id:
-                    print(f"✗ [线程#{worker_id}] 未找到匹配的item_id")
+                # if not matched_item_id:
+                #     print(f"✗ [线程#{worker_id}] 未找到匹配的item_id")
                 
-                # 步骤4：如果获取到了matched_item_id，上传视频
-                if matched_item_id:
-                    self._execute_upload(file_path, matched_item_type, matched_item_id, worker_id, 
-                                       tmdb_id, media_type, title, season_episode)
-                else:
-                    # 没有匹配到item_id，只记录元数据
-                    self._failed_files[file_path] = "未找到匹配的item_id"
-                    log_success(self.logger, "文件元数据获取成功但未匹配到item_id", {
-                         "original_path": file_path, "tmdb_id": tmdb_id, "media_type": media_type,
-                         "title": title, "season_episode": season_episode
-                    })
+            # 步骤4：决定是否需要上传
+            # 如果只上传到123云盘，不需要 item_id，可以直接上传
+            if self.upload_targets == 'p123':
+                # 只上传到123，不需要 Emos 的 item_id
+                print(f"✓ [线程#{worker_id}] 配置为仅上传到123云盘，跳过Emos匹配")
+                self._execute_upload(file_path, media_type, None, worker_id, 
+                                    tmdb_id, media_type, title, season_episode, metadata)
+            elif matched_item_id:
+                print(f"✓ [线程#{worker_id}] 找到匹配的item_id: {matched_item_id}")
+                # 需要上传到 Emos 或两者，必须有 item_id
+                self._execute_upload(file_path, matched_item_type, matched_item_id, worker_id, 
+                                    tmdb_id, media_type, title, season_episode, metadata)
             else:
-                print(f"\n[线程#{worker_id}] 跳过第二个API请求：缺少必要参数")
-                # 记录结果
-                log_success(self.logger, "文件元数据获取成功但跳过API请求", {
-                    "original_path": file_path, "tmdb_id": tmdb_id, "media_type": media_type,
-                    "title": title, "season_episode": season_episode
+                # 需要 Emos 但没有 item_id
+                self._failed_files[file_path] = "未找到匹配的item_id"
+                log_success(self.logger, "文件元数据获取成功但未匹配到item_id", {
+                        "original_path": file_path, "tmdb_id": tmdb_id, "media_type": media_type,
+                        "title": title, "season_episode": season_episode
                 })
+            # else:
+            #     print(f"\n[线程#{worker_id}] 跳过第二个API请求：缺少必要参数")
+            #     # 记录结果
+            #     log_success(self.logger, "文件元数据获取成功但跳过API请求", {
+            #         "original_path": file_path, "tmdb_id": tmdb_id, "media_type": media_type,
+            #         "title": title, "season_episode": season_episode
+            #     })
             
             return True
 
@@ -582,17 +630,10 @@ class VideoFileHandler:
             self._processing_files.discard(file_path)
 
     def _execute_upload(self, file_path, matched_item_type, matched_item_id, worker_id, 
-                       tmdb_id, media_type, title, season_episode):
-        """执行具体的上传操作"""
-        print(f"\n=== [线程#{worker_id}] 开始上传视频到Emos ===")
+                       tmdb_id, media_type, title, season_episode, metadata):
+        """执行具体的上传操作（支持多云盘）"""
+        print(f"\n=== [线程#{worker_id}] 开始上传视频 ===")
         
-        # 使用配置中的认证令牌
-        auth_token = self.emos_auth_token
-        if not auth_token:
-            print(f"✗ [线程#{worker_id}] 未配置Emos认证令牌，跳过上传")
-            self._failed_files[file_path] = "未配置Emos认证令牌"
-            return
-
         # 检查文件是否已经上传完成
         if file_path in self._uploaded_files:
             print(f"✗ [线程#{worker_id}] 文件已上传完成，跳过: {file_path}")
@@ -601,24 +642,132 @@ class VideoFileHandler:
         # 添加到上传中集合
         self._uploading_files.add(file_path)
         
+        # 准备媒体信息（用于123云盘创建文件夹）
+        media_info = {
+            'title': title,
+            'season_episode': season_episode,
+            'tmdb_id': tmdb_id,
+            'media_type': media_type
+        }
+        
+        # 根据配置决定上传到哪些云盘
+        upload_results = {}
+        
         try:
-            # 使用增强版上传器
-            print(f"\n{'='*60}")
-            print(f"📤 [线程#{worker_id}] 开始上传视频")
-            # print(f"文件: {file_path}")
-            print(f"类型: {matched_item_type}")
-            print(f"项目ID: {matched_item_id}")
-            print(f"{'='*60}\n")
+            # 1. 上传到 Emos
+            if self.upload_targets in ['emos', 'both']:
+                print(f"\n{'='*60}")
+                print(f"📤 [线程#{worker_id}] 上传到 Emos")
+                print(f"类型: {matched_item_type}")
+                print(f"项目ID: {matched_item_id}")
+                print(f"{'='*60}\n")
+                
+                if not self.emos_auth_token:
+                    print(f"✗ [线程#{worker_id}] 未配置Emos认证令牌，跳过Emos上传")
+                    upload_results['emos'] = None
+                else:
+                    try:
+                        from ..upload.upload_emos import RobustEmosVideoUploader
+                        uploader = RobustEmosVideoUploader(
+                            self.emos_auth_token, 
+                            chunk_size_mb=int(self.emos_chunk_size_mb),
+                            telegram_config=self.telegram_config
+                        )
+                        upload_results['emos'] = uploader.upload_video(
+                            file_path, matched_item_type, str(matched_item_id), self.emos_file_storage
+                        )
+                        
+                        if upload_results['emos']:
+                            print(f"\n🎉 [线程#{worker_id}] Emos上传成功!")
+                        else:
+                            print(f"\n❌ [线程#{worker_id}] Emos上传失败!")
+                    except Exception as e:
+                        print(f"\n❌ [线程#{worker_id}] Emos上传异常: {e}")
+                        upload_results['emos'] = None
             
-            uploader = RobustEmosVideoUploader(
-                auth_token, 
-                chunk_size_mb=int(self.emos_chunk_size_mb),
-                telegram_config=self.telegram_config
-            )
-            upload_result = uploader.upload_video(file_path, matched_item_type, str(matched_item_id), self.emos_file_storage)
+            # 2. 上传到 123云盘
+            if self.upload_targets in ['p123', 'both']:
+                print(f"\n{'='*60}")
+                print(f"📤 [线程#{worker_id}] 上传到 123云盘")
+                print(f"{'='*60}\n")
+                
+                if not self.p123_token:
+                    print(f"✗ [线程#{worker_id}] 未配置123云盘Token，跳过123上传")
+                    upload_results['p123'] = None
+                else:
+                    try:
+                        # 确保上传器已初始化
+                        uploader = self.p123_uploader
+                        if not uploader:
+                            # 兜底：如果初始化失败，尝试在此重新初始化
+                            from ..upload.upload_p123 import P123Uploader
+                            uploader = P123Uploader(
+                                self.p123_token,
+                                self.p123_parent_id,
+                                telegram_config=self.telegram_config
+                            )
+                        
+                        # 生成标准化路径（包含文件夹结构和新文件名）
+                        # 例如: Show Name (2023) {tmdbid=123}/Season 01/Show Name S01E01.mkv
+                        try:
+                            # 复用本函数开头已经提取好的 metadata
+                            renamed_relative_path = self.renamer.generate_new_path(metadata, original_path=file_path)
+                            
+                            # 获取重命名后的文件名
+                            target_filename = renamed_relative_path.name
+                            
+                            # 获取目录结构列表
+                            folder_parts = list(renamed_relative_path.parent.parts)
+                            
+                            # 构建完整目录结构
+                            base_folders = ["media"]
+                            if media_type == "movie":
+                                base_folders.append("Movies")
+                            else:
+                                base_folders.append("TV Shows")
+                            
+                            # 合并目录结构
+                            folder_structure = base_folders + folder_parts
+                            
+                            print(f"[线程#{worker_id}] 标准化重命名计划: {os.path.basename(file_path)} -> {renamed_relative_path}")
+                            print(f"[线程#{worker_id}] 网盘目录结构: {' -> '.join(folder_structure)}")
+                            
+                        except Exception as e:
+                            print(f"生成标准化路径失败: {e}，使用默认命名")
+                            target_filename = os.path.basename(file_path)
+                            folder_structure = None
+
+                        upload_results['p123'] = uploader.upload_video(
+                            file_path, media_type, str(matched_item_id), 
+                            None, media_info,
+                            rename_to=target_filename,
+                            folder_structure=folder_structure
+                        )
+                        
+                        if upload_results['p123']:
+                            print(f"\n🎉 [线程#{worker_id}] 123云盘上传成功!")
+                        else:
+                            print(f"\n❌ [线程#{worker_id}] 123云盘上传失败!")
+                    except Exception as e:
+                        print(f"\n❌ [线程#{worker_id}] 123云盘上传异常: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        upload_results['p123'] = None
             
-            if upload_result:
-                print(f"\n🎉 [线程#{worker_id}] 视频上传成功!")
+            # 3. 判断是否所有目标云盘都上传成功
+            required_targets = []
+            if self.upload_targets == 'emos':
+                required_targets = ['emos']
+            elif self.upload_targets == 'p123':
+                required_targets = ['p123']
+            elif self.upload_targets == 'both':
+                required_targets = ['emos', 'p123']
+            
+            # 检查所有必需的上传是否都成功
+            all_success = all(upload_results.get(target) is not None for target in required_targets)
+            
+            if all_success:
+                print(f"\n🎉 [线程#{worker_id}] 所有云盘上传成功!")
                 # 从上传中集合移除，添加到已上传集合
                 self._uploaded_files.add(file_path)
                 self._uploading_files.discard(file_path)
@@ -628,8 +777,8 @@ class VideoFileHandler:
                 if self.delete_after_upload:
                     try:
                         os.remove(file_path)
-                        print(f"✅ [线程#{worker_id}] 上传成功后已删除原文件")
-                        self.logger.info(f"上传成功后已删除原文件: {file_path}")
+                        print(f"✅ [线程#{worker_id}] 所有云盘上传成功后已删除原文件")
+                        self.logger.info(f"所有云盘上传成功后已删除原文件: {file_path}")
                         deleted = True
                     except Exception as e:
                         print(f"❌ [线程#{worker_id}] 删除原文件失败: {e}")
@@ -642,19 +791,27 @@ class VideoFileHandler:
                 log_success(self.logger, "文件元数据获取并上传成功", {
                     "original_path": file_path, "tmdb_id": tmdb_id, "media_type": media_type,
                     "title": title, "season_episode": season_episode, "matched_item_id": matched_item_id,
-                    "upload_success": True, "media_uuid": upload_result.get("media_uuid"), "deleted_after_upload": deleted
+                    "upload_success": True, 
+                    "upload_targets": self.upload_targets,
+                    "emos_uuid": upload_results.get('emos', {}).get("media_uuid") if upload_results.get('emos') else None,
+                    "p123_fileid": upload_results.get('p123', {}).get("fileid") if upload_results.get('p123') else None,
+                    "deleted_after_upload": deleted
                 })
                 
                 # 清理旧记录防止内存泄露
                 self._cleanup_old_records()
                 
             else:
-                print(f"\n❌ [线程#{worker_id}] 视频上传失败!")
+                # 部分上传失败
+                failed_targets = [t for t in required_targets if not upload_results.get(t)]
+                print(f"\n❌ [线程#{worker_id}] 部分云盘上传失败: {', '.join(failed_targets)}")
+                print(f"⚠️  [线程#{worker_id}] 保留本地文件，等待重试或手动处理")
                 self._uploading_files.discard(file_path)
-                log_success(self.logger, "文件元数据获取成功但上传失败", {
+                log_success(self.logger, "文件元数据获取成功但部分云盘上传失败", {
                     "original_path": file_path, "tmdb_id": tmdb_id, "media_type": media_type,
                     "title": title, "season_episode": season_episode, "matched_item_id": matched_item_id,
-                    "upload_success": False
+                    "upload_success": False,
+                    "failed_targets": failed_targets
                 })
         except Exception as e:
             print(f"\n❌ [线程#{worker_id}] 视频上传错误: {e}")
@@ -662,7 +819,7 @@ class VideoFileHandler:
             log_success(self.logger, "文件元数据获取成功但上传出错", {
                 "original_path": file_path, "tmdb_id": tmdb_id, "media_type": media_type,
                 "title": title, "season_episode": season_episode, "matched_item_id": matched_item_id,
-                "upload_success": False, "upload_error": str(e)
+                "upload_success": False, "error": str(e)
             })
                 
     

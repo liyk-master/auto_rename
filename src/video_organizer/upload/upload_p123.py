@@ -1,0 +1,331 @@
+"""
+123云盘上传器
+包装 p123do.py 的上传逻辑，提供统一的上传接口
+"""
+import os
+import sys
+import time
+import requests
+from pathlib import Path
+from typing import Optional, Dict, Any
+
+# 导入 p123 客户端
+try:
+    from p123client import P123Client
+except ImportError:
+    print("警告: p123client 未安装，123云盘上传功能不可用")
+    P123Client = None
+
+# 导入 p123do 的上传函数
+from .p123do import upload_file as p123_upload_file, calculate_md5, get_file_size
+
+
+class P123Uploader:
+    """123云盘上传器（支持文件夹管理和TG通知）"""
+    
+    def __init__(self, token: str, parent_id: int = 0, telegram_config: Optional[Dict[str, Any]] = None):
+        """
+        初始化 123 云盘上传器
+        
+        Args:
+            token: 123云盘 API Token
+            parent_id: 根目录文件夹ID
+            telegram_config: Telegram 配置
+        """
+        if not P123Client:
+            raise ImportError("p123client 未安装，无法使用 123 云盘上传功能")
+        
+        self.token = token
+        self.root_parent_id = parent_id
+        self.telegram_config = telegram_config or {}
+        self.client = P123Client(token)
+        
+        # TG 通知相关
+        self.tg_bot_token = self.telegram_config.get('bot_token', '')
+        self.tg_chat_id = self.telegram_config.get('chat_id', '')
+        self.tg_message_id = None
+        self.tg_last_update_time = 0
+        self.tg_update_interval = 2
+        
+        # 文件夹缓存 {folder_name: folder_id}
+        self._folder_cache = {}
+    
+    def _get_or_create_folder(self, folder_name: str, parent_id: int) -> Optional[int]:
+        """
+        获取或创建文件夹
+        
+        Args:
+            folder_name: 文件夹名称
+            parent_id: 父文件夹ID
+            
+        Returns:
+            文件夹ID，失败返回None
+        """
+        cache_key = f"{parent_id}_{folder_name}"
+        
+        # 检查缓存
+        if cache_key in self._folder_cache:
+            return self._folder_cache[cache_key]
+        
+        try:
+            # 列出父文件夹内容，查找是否已存在
+            # 这里的 fs_list 并不是标准的列出文件接口，根据提供的属性列表，看起来更像是在操作文件系统
+            # 尝试使用 upload_list 或者 fs_list
+            # 根据提供的属性列表，fs_list 看起来是列出文件的。通常需要 parent_id, page, limit
+            # 但为了保险，我们先假设 fs_list 是正确的方法
+            
+            # 从属性列表中看，有 fs_list, upload_list 等。通常 fs_list 用于管理文件
+            list_resp = self.client.fs_list(
+                parentFileId=parent_id,
+                page=1,
+                limit=100,
+                orderBy="file_id",
+                orderDirection="asc"
+            )
+            
+            if list_resp.get('code') == 0:
+                for item in list_resp.get('data', {}).get('InfoList', []):
+                    if item.get('Type') == 1 and item.get('FileName') == folder_name:
+                        folder_id = item.get('FileId')
+                        self._folder_cache[cache_key] = folder_id
+                        print(f"  [文件夹] 已存在: '{folder_name}' (ID: {folder_id})")
+                        return folder_id
+            
+            # 不存在则创建
+            print(f"  [文件夹] 正在网盘创建新目录: '{folder_name}' 在父目录 {parent_id} 下")
+            # 使用 fs_mkdir 创建文件夹
+            create_resp = self.client.fs_mkdir(folder_name, parent_id, 0)
+            if create_resp.get('code') == 0:
+                folder_id = create_resp.get('data', {}).get('Info', {}).get('FileId')
+                self._folder_cache[cache_key] = folder_id
+                print(f"  [文件夹] 创建成功: '{folder_name}' (新 ID: {folder_id})")
+                return folder_id
+            else:
+                print(f"  [错误] 创建目录失败: {create_resp.get('message')}")
+                return None
+                
+        except AttributeError as e:
+            print(f"[WARNING] P123Client 方法调用失败: {e}。将上传到根目录。")
+            return None
+        except Exception as e:
+            print(f"[ERROR] 获取/创建文件夹异常: {e}")
+            return None
+    
+    def _send_tg_progress(self, file_name: str, progress_percent: float, uploaded_mb: float, 
+                         total_mb: float, speed_mbps: float = 0):
+        """发送/更新 Telegram 进度消息"""
+        if not self.tg_bot_token or not self.tg_chat_id:
+            return
+        
+        current_time = time.time()
+        if self.tg_message_id and (current_time - self.tg_last_update_time) < self.tg_update_interval:
+            return
+        
+        # 创建进度条
+        bar_length = 20
+        filled_length = int(bar_length * progress_percent / 100)
+        bar = '█' * filled_length + '░' * (bar_length - filled_length)
+        
+        # 构建消息文本
+        message_text = (
+            f"📤 *上传进度 [123云]*\n\n"
+            f"文件: `{file_name}`\n"
+            f"进度: {progress_percent:.1f}%\n"
+            f"[{bar}]\n\n"
+            f"已上传: {uploaded_mb:.2f} MB / {total_mb:.2f} MB\n"
+            f"速度: {speed_mbps:.2f} MB/s"
+        )
+        
+        try:
+            if self.tg_message_id is None:
+                url = f"https://api.telegram.org/bot{self.tg_bot_token}/sendMessage"
+                data = {'chat_id': self.tg_chat_id, 'text': message_text, 'parse_mode': 'Markdown'}
+                response = requests.post(url, json=data, timeout=10)
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get('ok'):
+                        self.tg_message_id = result['result']['message_id']
+                        self.tg_last_update_time = current_time
+            else:
+                url = f"https://api.telegram.org/bot{self.tg_bot_token}/editMessageText"
+                data = {
+                    'chat_id': self.tg_chat_id,
+                    'message_id': self.tg_message_id,
+                    'text': message_text,
+                    'parse_mode': 'Markdown'
+                }
+                response = requests.post(url, json=data, timeout=10)
+                if response.status_code == 200:
+                    self.tg_last_update_time = current_time
+        except:
+            pass
+    
+    def upload_video(self, file_path: str, item_type: str = None, item_id: str = None, 
+                    file_storage: str = None, media_info: Optional[Dict[str, Any]] = None,
+                    rename_to: Optional[str] = None, folder_structure: Optional[list] = None) -> Optional[Dict[str, Any]]:
+        """
+        上传视频到 123 云盘
+        
+        Args:
+            file_path: 本地文件路径
+            item_type: 媒体类型（用于创建子文件夹: movie/tv）
+            item_id: 媒体ID（123云盘不需要）
+            file_storage: 存储类型（123云盘不需要）
+            media_info: 媒体信息字典，包含 title, season_episode 等
+            rename_to: 上传后的重命名文件名（如果为None则使用原文件名）
+            folder_structure: 目标文件夹层级列表，例如 ["TV Shows", "Show Name", "Season 01"]
+        
+        Returns:
+            上传成功返回文件信息字典，失败返回 None
+        """
+        try:
+            file_path_obj = Path(file_path)
+            # 确定最终文件名
+            target_filename = rename_to if rename_to else file_path_obj.name
+            
+            print(f"\n=== 开始上传到 123 云盘 ===")
+            print(f"本地文件: {file_path_obj.name}")
+            print(f"目标文件名: {target_filename}")
+            
+            # 重置 TG 消息ID（每次上传新文件）
+            self.tg_message_id = None
+            
+            # 确定目标父文件夹ID
+            target_parent_id = self.root_parent_id
+            
+            # 如果提供了显式的文件夹结构，优先使用
+            if folder_structure and isinstance(folder_structure, list):
+                print(f"创建/查找目录结构: {' -> '.join(folder_structure)}")
+                current_pid = self.root_parent_id
+                
+                # 默认先进入 media 目录 (保持与原有逻辑一致，或者是用户的隐式需求)
+                # 用户没有明确说不要 media 目录，但为了整洁，我们把 folder_structure 视为相对于 root (parent_id) 的路径
+                # 为了保险，我们还是先检查是否存在 media 目录，如果 folder_structure 第一项不是 media
+                # 但根据截图，结构是 media -> TV Shows -> ...
+                # 所以我们可以在 video_file_handler 传过来的 folder_structure 中包含 media
+                
+                for folder_name in folder_structure:
+                    if not folder_name: continue
+                    # 清理文件夹名称
+                    import re
+                    safe_folder_name = re.sub(r'[\\/:*?"<>|]', "", str(folder_name)).strip()
+                    # 创建/获取文件夹
+                    folder_id = self._get_or_create_folder(safe_folder_name, current_pid)
+                    if folder_id:
+                        current_pid = folder_id
+                        target_parent_id = folder_id
+                    else:
+                        print(f"[ERROR] 无法创建目录: {safe_folder_name}，将上传到上一级")
+                        break
+            
+            elif item_type and media_info:
+                # 兼容旧逻辑
+                # 第零层：media 文件夹
+                media_folder_id = self._get_or_create_folder("media", self.root_parent_id)
+                if not media_folder_id:
+                     print("[WARNING] 创建/获取 media 文件夹失败，将使用根目录")
+                     media_folder_id = self.root_parent_id
+                
+                # 第一层：媒体类型文件夹 (Movies / TV Shows)
+                type_folder = "Movies" if item_type in ["movie", "vl"] else "TV Shows"
+                type_folder_id = self._get_or_create_folder(type_folder, media_folder_id)
+                
+                if type_folder_id:
+                    target_parent_id = type_folder_id
+                    
+                    # 第二层：具体作品文件夹（使用标题）
+                    title = media_info.get('title', '')
+                    if title:
+                        import re
+                        safe_title = re.sub(r'[\\/:*?"<>|]', "", title)
+                        title_folder_id = self._get_or_create_folder(safe_title, type_folder_id)
+                        if title_folder_id:
+                            target_parent_id = title_folder_id
+            
+            print(f"最终目标文件夹ID: {target_parent_id}")
+            
+            # 调用 p123do 的上传函数（带进度回调）
+            # 注意: p123do.upload_file 需要支持 new_name 参数来重命名
+            result = self._upload_with_progress(file_path, target_parent_id, target_filename)
+            
+            if result:
+                print(f"\n🎉 123云盘上传成功!")
+                print(f"文件ID: {result.get('fileid')}")
+                return result
+            else:
+                print(f"\n❌ 123云盘上传失败!")
+                return None
+                
+        except Exception as e:
+            print(f"\n❌ 123云盘上传异常: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def _upload_with_progress(self, file_path: str, parent_id: int, file_name: str) -> Optional[Dict[str, Any]]:
+        """带进度通知的上传（简化版，复用 p123do 逻辑）"""
+        
+        file_size = os.path.getsize(file_path)
+        total_mb = file_size / (1024 * 1024)
+        start_time = time.time()
+        self._last_update_time = start_time
+        self._last_uploaded_bytes = 0
+        
+        # 定义进度回调函数
+        def progress_callback(current_uploaded: int, total_size: int):
+            if total_size > 0:
+                progress = (current_uploaded / total_size) * 100
+                uploaded_mb = current_uploaded / (1024 * 1024)
+                
+                # 计算瞬时速度
+                current_time = time.time()
+                time_diff = current_time - self._last_update_time
+                
+                # 为了避免波动太大，只在时间间隔大于 0.5 秒时或者进度完成时更新速度
+                if time_diff >= 1.0 or current_uploaded == total_size:
+                    bytes_diff = current_uploaded - self._last_uploaded_bytes
+                    speed_mbps = 0
+                    if time_diff > 0:
+                        speed_mbps = (bytes_diff / (1024 * 1024)) / time_diff
+                    
+                    # 更新基准点
+                    self._last_update_time = current_time
+                    self._last_uploaded_bytes = current_uploaded
+                    
+                    # 只有当进度有显著变化或时间间隔足够时才发送，这在 _send_tg_progress 内部控制
+                    self._send_tg_progress(file_name, progress, uploaded_mb, total_mb, speed_mbps)
+                    
+                    # 在命令行打印进度（每5%打印一次，避免刷屏）
+                    # 使用 sys.stdout.write 和 \r 可以实现单行刷新
+                    # 但为了兼容性，也可以直接 print
+                    if hasattr(self, '_last_print_progress'):
+                        if progress - self._last_print_progress >= 5 or progress >= 100:
+                            print(f"[{time.strftime('%H:%M:%S')}] 进度: {progress:.1f}% ({uploaded_mb:.1f}MB / {total_mb:.1f}MB) - {speed_mbps:.2f} MB/s")
+                            self._last_print_progress = progress
+                    else:
+                        self._last_print_progress = progress
+                        print(f"[{time.strftime('%H:%M:%S')}] 进度: {progress:.1f}% ({uploaded_mb:.1f}MB / {total_mb:.1f}MB) - {speed_mbps:.2f} MB/s")
+                elif self.tg_message_id is None:
+                     # 第一次强制发送
+                     self._send_tg_progress(file_name, progress, uploaded_mb, total_mb, 0)
+
+        # 发送初始进度
+        self._last_print_progress = 0
+        self._send_tg_progress(file_name, 0, 0, total_mb, 0)
+        
+        # 调用原始上传函数，传入回调
+        # p123do.upload_file 已经修改为支持 callback 参数
+        result = p123_upload_file(
+            client=self.client,
+            file_path=file_path,
+            parent_id=parent_id,
+            new_name=file_name,
+            max_retries=3,
+            callback=progress_callback
+        )
+        
+        # 发送完成进度
+        if result:
+            self._send_tg_progress(file_name, 100, total_mb, total_mb, 0)
+        
+        return result

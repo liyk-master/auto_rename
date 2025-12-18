@@ -57,9 +57,11 @@ class FileSystemMonitor:
             naming_rules=naming_rules,
             tmdb_config=tmdb_config,
             emos_config=emos_config,
+            p123_config=self.config.get('p123') if self.config else None,
             processing_config=processing_config,
             path_mappings=self.config.get('monitoring', {}).get('path_mappings') if self.config else None,
-            telegram_config=self.config.get('telegram') if self.config else None
+            telegram_config=self.config.get('telegram') if self.config else None,
+            llm_config=self.config.get('llm_translation') if self.config else None
         )
         self.event_handler._parent_monitor = self  # 设置父监控器引用
         
@@ -127,8 +129,8 @@ class FileSystemMonitor:
                 
                 # 检查文件是否存在
                 if not os.path.exists(mapped_file_path):
-                    logger.warning(f"Mapped file does not exist (skipping and marking as processed): {mapped_file_path}")
-                    self.processed_files.add(file_path_str)
+                    logger.warning(f"Mapped file does not exist (will retry later): {mapped_file_path}")
+                    # 不再添加标记，允许下次重试
                     return
                 
                 # 标记为已处理，防止重复

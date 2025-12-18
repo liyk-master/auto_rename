@@ -74,6 +74,11 @@ def setup_logging(config: Optional[Dict[str, Any]] = None) -> None:
         except Exception as e:
             print(f"设置日志文件失败: {e}")
     
+    # 抑制第三方库的日志
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+    logging.getLogger('httpcore').setLevel(logging.WARNING)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+    
     # 记录初始化信息
     root_logger.info("日志系统初始化完成")
 

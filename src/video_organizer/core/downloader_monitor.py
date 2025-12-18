@@ -4,6 +4,10 @@ Downloader monitor module for monitoring download completion events from aria2 a
 
 import logging
 import threading
+import os
+import time
+import requests
+from pathlib import Path
 from abc import ABC, abstractmethod
 from typing import Optional, Callable
 
@@ -100,7 +104,6 @@ class Aria2Monitor(DownloaderMonitor):
             bool: True if connected, False otherwise.
         """
         try:
-            import requests
             headers = {
                 "Content-Type": "application/json"
             }
@@ -127,8 +130,6 @@ class Aria2Monitor(DownloaderMonitor):
         Returns:
             bool: 删除成功返回 True，否则返回 False
         """
-        import requests
-        
         try:
             # 获取所有已完成的下载
             completed_downloads = self._get_completed_downloads()
@@ -137,7 +138,23 @@ class Aria2Monitor(DownloaderMonitor):
             for download in completed_downloads:
                 files = download.get("files", [])
                 for file_info in files:
-                    if file_info.get("path") == file_path:
+                    # 获取 aria2 内部记录的文件路径（通常是绝对路径）
+                    aria2_path = file_info.get("path")
+                    if not aria2_path:
+                        continue
+                        
+                    # 标准化路径比较
+                    norm_aria2_path = os.path.normpath(aria2_path).lower()
+                    norm_file_path = os.path.normpath(file_path).lower()
+                    
+                    # 匹配逻辑：
+                    # 1. 完整路径精确匹配
+                    # 2. 后缀匹配：如果传入的 file_path 以 aria2 记录的文件名结尾
+                    #    注意：这里取 aria2_path 的 basename 来匹配，解决路径映射不一致的问题
+                    
+                    aria2_filename = os.path.basename(norm_aria2_path)
+                    
+                    if norm_aria2_path == norm_file_path or norm_file_path.endswith(aria2_filename):
                         gid = download.get("gid")
                         
                         # 调用 aria2.removeDownloadResult 删除下载记录
@@ -170,9 +187,6 @@ class Aria2Monitor(DownloaderMonitor):
         """
         Main monitoring loop for aria2.
         """
-        import time
-        import requests
-        
         while self.running:
             try:
                 logger.debug("Aria2 monitoring loop iteration")
@@ -235,8 +249,6 @@ class Aria2Monitor(DownloaderMonitor):
         Returns:
             list: List of completed downloads.
         """
-        import requests
-        
         headers = {
             "Content-Type": "application/json"
         }
@@ -335,70 +347,95 @@ class QBittorrentMonitor(DownloaderMonitor):
 
     def remove_download(self, file_path: str) -> bool:
         """
-        从 qBittorrent 中删除指定文件的种子任务
+        从 qBittorrent 中删除指定文件的种子任务 (只有当所有视频都处理完后才真正执行)
         
         Args:
-            file_path: 文件路径
+            file_path: 文件路径 (可能是主机映射后的路径)
             
         Returns:
-            bool: 删除成功返回 True，否则返回 False
+            bool: 触发了检查动作返回 True，如果真正执行了删除也返回 True
         """
-        import requests
-        import os
-        
         try:
             # 获取所有已完成的种子
             completed_torrents = self._get_completed_torrents()
             
+            # 标准化输入路径
+            norm_input_path = os.path.normpath(file_path).lower()
+            
             # 查找包含该文件的种子
+            target_torrent = None
             for torrent in completed_torrents:
-                torrent_hash = torrent["hash"]
                 save_path = torrent.get("save_path", "")
+                files = self._get_torrent_files(torrent["hash"])
                 
-                # 获取种子的文件列表
-                files = self._get_torrent_files(torrent_hash)
-                
-                for file in files:
-                    file_name = file["name"]
-                    full_path = os.path.join(save_path, file_name)
+                for f in files:
+                    # 组合完整路径进行比对
+                    f_name = f["name"]
+                    full_torrent_file_path = os.path.normpath(os.path.join(save_path, f_name)).lower()
                     
-                    if full_path == file_path or file_path.endswith(file_name):
-                        # 调用 qBittorrent API 删除种子
-                        # deleteFiles=true 表示同时删除文件
-                        delete_url = f"{self.rpc_url}/torrents/delete"
-                        data = {
-                            "hashes": torrent_hash,
-                            "deleteFiles": "false"  # 不删除文件，因为已经被上传程序删除了
-                        }
+                    # 匹配逻辑：绝对路径一致，或者输入路径是以种子内文件路径结尾的（处理映射点差异）
+                    if full_torrent_file_path == norm_input_path or norm_input_path.endswith(os.path.normpath(f_name).lower()):
+                        target_torrent = torrent
+                        break
+                if target_torrent:
+                    break
+            
+            if not target_torrent:
+                logger.debug(f"在 qBittorrent 中未找到对应文件的任务: {file_path}")
+                return False
+                
+            torrent_hash = target_torrent["hash"]
+            
+            # 检查种子内是否还有其他待处理的视频文件
+            all_files = self._get_torrent_files(torrent_hash)
+            remaining_videos = []
+            
+            for f in all_files:
+                f_name = f["name"]
+                # 检查是否是视频文件
+                if f_name.lower().endswith(self.supported_extensions):
+                    f_full_path = str(Path(os.path.join(target_torrent.get("save_path", ""), f_name)))
+                    # 检查该文件是否在已处理集合中
+                    if f_full_path not in self._processed_files:
+                        # 再次尝试标准化匹配一次
+                        is_processed = False
+                        norm_f_full = os.path.normpath(f_full_path).lower()
+                        for p_file in self._processed_files:
+                            if os.path.normpath(p_file).lower() == norm_f_full:
+                                is_processed = True
+                                break
                         
-                        # 使用 requests 而不是 self.session
-                        headers = {
-                            "Cookie": self.session_cookie
-                        }
-                        import requests
-                        response = requests.post(delete_url, data=data, timeout=30, headers=headers)
-                        if response.status_code == 200:
-                            logger.info(f"已从 qBittorrent 删除种子任务: {torrent_hash} ({file_path})")
-                            return True
-                        else:
-                            logger.warning(f"从 qBittorrent 删除种子任务失败: {torrent_hash}, 状态码: {response.status_code}")
-                            return False
+                        if not is_processed:
+                            remaining_videos.append(f_name)
             
-            logger.debug(f"在 qBittorrent 中未找到文件的种子任务: {file_path}")
-            return False
+            if remaining_videos:
+                logger.info(f"种子 {torrent_hash} 仍有 {len(remaining_videos)} 个视频未处理完毕，将种子暂时保留在下载器中。剩余: {remaining_videos[:2]}...")
+                return False # 返回 False，外层处理器将不会打印“已从下载器中删除”
             
+            # 所有视频都已处理，执行删除
+            delete_url = f"{self.rpc_url}/torrents/delete"
+            data = {
+                "hashes": torrent_hash,
+                "deleteFiles": "false" 
+            }
+            
+            headers = {"Cookie": self.session_cookie}
+            response = requests.post(delete_url, data=data, timeout=30, headers=headers)
+            if response.status_code == 200:
+                logger.info(f"🎉 种子内所有视频已处理完毕，已删除 qBittorrent 任务: {target_torrent.get('name')} ({torrent_hash})")
+                return True
+            else:
+                logger.warning(f"从 qBittorrent 删除任务失败: {torrent_hash}, 状态码: {response.status_code}")
+                return False
+                
         except Exception as e:
-            logger.error(f"从 qBittorrent 删除种子任务时出错: {e}")
+            logger.error(f"从 qBittorrent 清理任务时发生错误: {e}")
             return False
 
     def _monitor_loop(self):
         """
         Main monitoring loop for qBittorrent.
         """
-        import time
-        import requests
-        import os
-        
         while self.running:
             try:
                 # 检查会话是否有效，如果无效则重新登录
@@ -413,11 +450,16 @@ class QBittorrentMonitor(DownloaderMonitor):
                 for torrent in all_completed_torrents:
                     torrent_hash = torrent["hash"]
                     
-                    # 跳过已处理的种子
+                    # 1. 核心改进：跳过已处理完毕的种子，极大提升大种子库处理性能
                     if torrent_hash in self._processed_torrents:
                         continue
-                    
-                    # 获取种子的保存路径
+                        
+                    # 2. 核心改进：通过进度判断是否完成，比 filter 更稳健
+                    if torrent.get("progress", 0) < 1:
+                        # 虽然 filter 过滤了完成，但双重保险
+                        continue
+                        
+                    # 检查种子的保存路径
                     save_path = torrent.get("save_path", "")
                     if not save_path:
                         logger.error(f"Failed to get save path for torrent: {torrent_hash}")
@@ -425,26 +467,38 @@ class QBittorrentMonitor(DownloaderMonitor):
                     
                     # 获取种子中的文件
                     files = self._get_torrent_files(torrent_hash)
+                    
+                    # 记录种子是否完全处理完毕
+                    torrent_fully_processed = True
+                    
                     for file in files:
                         file_name = file["name"]
-                        if file_name.endswith((".mp4", ".mkv", ".avi", ".mov", ".wmv", ".strm")):
+                        if file_name.lower().endswith(self.supported_extensions):
                             # 构建完整的文件路径
-                            file_path = os.path.join(save_path, file_name)
+                            file_path = str(Path(os.path.join(save_path, file_name)))
                             
-                            # 检查文件是否已经处理过
-                            if file_path in self._processed_files:
-                                logger.debug(f"qBittorrent: File {file_path} already processed, skipping")
+                            # 3. 核心改进：使用标准化路径进行“已处理”检测
+                            file_path_norm = os.path.normpath(file_path).lower()
+                            if any(os.path.normpath(f).lower() == file_path_norm for f in self._processed_files):
                                 continue
                             
-                            logger.info(f"Detected completed video file: {file_path}")
-                            self.callback(file_path, downloader_monitor=self)
-                            # 标记文件为已处理
-                            self._processed_files.add(file_path)
-                            logger.debug(f"qBittorrent: Marked file as processed: {file_path}")
+                            logger.info(f"qBittorrent: Detected completed video file: {file_path}")
+                            # 调用回调处理文件
+                            try:
+                                self.callback(file_path, downloader_monitor=self)
+                                self._processed_files.add(file_path)
+                                logger.debug(f"qBittorrent: Marked file as processed: {file_path}")
+                            except Exception as e:
+                                logger.error(f"qBittorrent: Failed to process file {file_path}: {e}")
+                                torrent_fully_processed = False
+                        else:
+                            # 非视频文件不计入处理依赖，但有些种子可能只有非视频文件
+                            pass
                     
-                    # 标记种子为已处理
-                    self._processed_torrents.add(torrent_hash)
-                    logger.info(f"Marked torrent as processed: {torrent_hash}")
+                    # 如果种子中所有视频文件都已处理，且该种子之前未被标记，则标记种子为已处理
+                    if torrent_fully_processed and torrent_hash not in self._processed_torrents:
+                        self._processed_torrents.add(torrent_hash)
+                        logger.info(f"Marked torrent as fully processed: {torrent_hash}")
                 
                 # 等待一段时间后再次检查
                 time.sleep(5)
@@ -459,8 +513,6 @@ class QBittorrentMonitor(DownloaderMonitor):
         Returns:
             bool: True if login successful, False otherwise.
         """
-        import requests
-        
         try:
             url = f"{self.rpc_url}/auth/login"
             data = {
@@ -487,19 +539,26 @@ class QBittorrentMonitor(DownloaderMonitor):
         Returns:
             list: List of completed torrents.
         """
-        import requests
-        
         url = f"{self.rpc_url}/torrents/info"
         params = {
-            "filter": "completed"
+            "filter": "all" # 改用 all，手动过滤进度，避免状态误判
         }
         headers = {
             "Cookie": self.session_cookie
         }
         
-        response = requests.get(url, params=params, headers=headers, timeout=30)
-        response.raise_for_status()
-        return response.json()
+        max_retries = 3
+        for i in range(max_retries):
+            try:
+                response = requests.get(url, params=params, headers=headers, timeout=30)
+                response.raise_for_status()
+                return response.json()
+            except Exception as e:
+                logger.warning(f"获取 qBittorrent 种子列表失败 ({i+1}/{max_retries}): {e}")
+                if i < max_retries - 1:
+                    time.sleep(2)
+                else:
+                    raise
     
     def _get_torrent_files(self, torrent_hash: str):
         """
@@ -511,8 +570,6 @@ class QBittorrentMonitor(DownloaderMonitor):
         Returns:
             list: List of files in the torrent.
         """
-        import requests
-        
         url = f"{self.rpc_url}/torrents/files"
         params = {
             "hash": torrent_hash

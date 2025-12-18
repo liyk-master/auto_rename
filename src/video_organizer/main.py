@@ -189,6 +189,7 @@ def force_process_file(file_path: str, config: dict) -> bool:
         naming_rules = config.get('naming_rules')
         tmdb_config = config.get('tmdb')
         emos_config = config.get('emos', {})
+        p123_config = config.get('p123', {})
         
         # 验证文件存在
         if not os.path.exists(file_path):
@@ -212,9 +213,11 @@ def force_process_file(file_path: str, config: dict) -> bool:
             naming_rules=naming_rules,
             tmdb_config=tmdb_config,
             emos_config=emos_config,
+            p123_config=p123_config,
             processing_config=config.get('processing'),
             path_mappings=monitoring_config.get('path_mappings'),
-            telegram_config=config.get('telegram')
+            telegram_config=config.get('telegram'),
+            llm_config=config.get('llm_translation')
         )
         
         # 初始化并添加下载器（用于任务清理）

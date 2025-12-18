@@ -83,3 +83,7 @@ docs/upload_emos.py
 # OS
 .DS_Store
 Thumbs.db
+
+debug_output.txt
+debug_regex.py
+ext_test_res.txt

@@ -22,6 +22,10 @@ DEFAULT_CONFIG = {
         'auth_token': '',
         'base_url': 'https://emos.lol'
     },
+    'p123': {
+        'token': '',
+        'parent_id': 0
+    },
     'naming': {
         'tv_show_format': '{show_name}/Season {season:02d}/{show_name} {season_episode} {quality_tags}',
         'movie_format': '{movie_name}{year_suffix}/{movie_name}{year_suffix} {quality_tags}',
@@ -41,7 +45,8 @@ DEFAULT_CONFIG = {
         'delete_original': False,
         'delete_after_upload': False,
         'min_file_size': 0,
-        'ignore_patterns': []
+        'ignore_patterns': [],
+        'upload_targets': 'emos'
     },
     'logging': {
         'log_level': 'INFO',
@@ -52,6 +57,12 @@ DEFAULT_CONFIG = {
     'telegram': {
         'bot_token': '',
         'chat_id': ''
+    },
+    'llm_translation': {
+        'api_key': '',
+        'api_url': 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+        'model': 'GLM-4.5-Flash',
+        'enabled': False
     },
     'downloaders': []
 }
