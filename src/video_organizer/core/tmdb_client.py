@@ -98,6 +98,12 @@ class TMDBClient:
         while retry_count >= 0:
             try:
                 response = self.session.get(url, params=params, timeout=self.timeout)
+                
+                # 对404错误不进行重试，因为资源不存在的状态不会改变
+                if response.status_code == 404:
+                    logger.warning(f"TMDB API returned 404 Not Found for URL: {url}")
+                    return None
+                
                 response.raise_for_status()
                 return response.json()
             except requests.exceptions.RequestException as e:
@@ -105,6 +111,12 @@ class TMDBClient:
                 if retry_count < 0:
                     logger.error(f"TMDB API request failed after multiple attempts: {e}")
                     return None
+                
+                # 对404错误不进行重试
+                if hasattr(e, 'response') and getattr(e.response, 'status_code') == 404:
+                    logger.warning(f"TMDB API returned 404 Not Found for URL: {url}")
+                    return None
+                
                 wait_time = 2 ** (self.retry_count - retry_count)  # 指数退避
                 logger.warning(f"Request failed, retrying in {wait_time} seconds...")
                 time.sleep(wait_time)
@@ -155,7 +167,12 @@ class TMDBClient:
         params = {"query": query, "page": page, "language": language} if not self.api_key.startswith('eyJ') else {"query": query, "page": page, "language": language}
         if year:
             params["first_air_date_year"] = year
-        return self._request_with_retry(url, params)
+        result = self._request_with_retry(url, params)
+        # 为搜索结果添加media_type字段
+        if result and "results" in result:
+            for item in result["results"]:
+                item["media_type"] = "tv"
+        return result
     
     def search_movie(self, query: str, year: Optional[int] = None, page: int = 1, language: Optional[str] = "zh-CN") -> Optional[Dict]:
         """专门搜索电影"""
@@ -163,7 +180,12 @@ class TMDBClient:
         params = {"query": query, "page": page, "language": language} if not self.api_key.startswith('eyJ') else {"query": query, "page": page, "language": language}
         if year:
             params["year"] = year
-        return self._request_with_retry(url, params)
+        result = self._request_with_retry(url, params)
+        # 为搜索结果添加media_type字段
+        if result and "results" in result:
+            for item in result["results"]:
+                item["media_type"] = "movie"
+        return result
                 
     def get_tv_credits(self, show_id: int) -> Optional[Dict]:
         """

@@ -296,9 +296,17 @@ class VideoRenamer:
         
         # Common patterns
         patterns = [
+            # Movie-specific patterns - 电影专用匹配模式
+            # 匹配带发布组、年份、技术信息和语言标签的电影格式
+            r"^\[(?P<release_group>[^\]]+)\]\s*(?P<show_name>[^\(]+?)\s*\((?P<year>\d{4})\)\s*(?:\([^\)]+\))+\s*(?:(?P<language>[A-Z]+)\s*)?\[[^\]]+\]",
+            # 匹配带发布组和年份的电影格式
+            r"^\[(?P<release_group>[^\]]+)\]\s*(?P<show_name>[^\(]+?)\s*\((?P<year>\d{4})\)\s*(?:\([^\)]+\))+",
+            # 匹配点分隔的电影格式 (731.Operation.Cherry.Blossoms.at.Night.2025.2160p.WEB-DL.H265.DTS.mkv)
+            r"^(?P<show_name>[\w\s\.]+?)\.(?P<year>\d{4})\.(?P<quality>[\w\-\.]+)",
+            # 匹配简化的点分隔电影格式 (电影名称.年份)
+            r"^(?P<show_name>[\w\s\.]+?)\.(?P<year>\d{4})\.",
             # 1. Show Name Season 01 Episode 01
             r"^(?P<show_name>.*?)[. ]?S(?P<season>\d+)E(?P<episode>\d+)",
-            
             # 2. Season patterns (English & Chinese)
             r"(?P<show_name>.*?)\s*Season\s*(?P<season>\d+)",
             r"(?P<show_name>.*?)\s*第(?P<season_cn>[一二三四五六七八九十\d]+)季",
@@ -329,6 +337,7 @@ class VideoRenamer:
             
             # 基础降级模式 (只抓集号，添加年份排除)
             r"(?<!\d{4})第(?P<episode>\d+(?:-\d+)?)集",
+            r"(?<!\d{4})第(?P<episode>\d+(?:-\d+)?)话",
             r"(?<!\d{4})EP(?P<episode>\d+(?:-\d+)?)",
             r"(?<!\d{4})\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
         ]
@@ -378,12 +387,22 @@ class VideoRenamer:
                 show_name = re.sub(r'^\[[^\]]+\]\s*', '', show_name)
                 # 2. 移除括号内的年份 (2022) - 无论位置如何
                 show_name = re.sub(r'\s*\(\d{4}(?:-\d{4})?\)\s*', ' ', show_name)
-                # 3. 移除方括号 [国漫] 等通用标签
-                show_name = re.sub(r'\[(?:国漫|日漫|美漫|新番|GM-Team|Team|Group|Raws|Studio|Group)\]', '', show_name, flags=re.IGNORECASE)
-                # 4. 如果匹配到的剧名依然带方括号，且不仅是括号，去掉括号
-                show_name = re.sub(r'\[([^\]]+)\]', r'\1', show_name)
+                # 3. 移除方括号内的标签，如 [国漫]、[中文配音] 等
+                # 先移除特定的常见标签
+                common_tags = ['国漫', '日漫', '美漫', '新番', 'GM-Team', 'Team', 'Group', 'Raws', 'Studio', '中文配音', '中配', '配音', '繁中', '简中', 'CHT', 'CHS']
+                for tag in common_tags:
+                    show_name = re.sub(r'\[\s*' + re.escape(tag) + r'\s*\]', '', show_name, flags=re.IGNORECASE)
+                # 4. 移除剩余的所有方括号内容（用于搜索时更干净）
+                show_name = re.sub(r'\[[^\]]+\]', '', show_name)
                 
-                # 5. 额外清理：如果剧名末尾残存了连集信息（如 Pocket Monsters 115），剔除它
+                # 5. 移除常见的语言标签
+                language_tags = ['CHINESE', 'ENGLISH', 'JAPANESE', 'KOREAN', '中文', '英语', '日语', '韩语', '中字', '英字', '双语']
+                for tag in language_tags:
+                    show_name = re.sub(r'\s+' + re.escape(tag) + r'\s*$', '', show_name, flags=re.IGNORECASE)
+                    show_name = re.sub(r'^\s*' + re.escape(tag) + r'\s+', '', show_name, flags=re.IGNORECASE)
+                    show_name = re.sub(r'\s+' + re.escape(tag) + r'\s+', ' ', show_name, flags=re.IGNORECASE)
+                
+                # 6. 额外清理：如果剧名末尾残存了连集信息（如 Pocket Monsters 115），剔除它
                 show_name = re.sub(r'\s+\d+(?:-\d+)?$', '', show_name)
                 
                 metadata['show_name'] = show_name.strip()
@@ -440,8 +459,9 @@ class VideoRenamer:
         # SxxExx格式是最明确的剧集标识，应该优先识别
         if re.search(r'(?i)(^|[^a-zA-Z])S\d+E\d+($|[^a-zA-Z])', base_name):
             is_tv = True
-        # 检查其他季集信息，但排除PT/网盘常见标签（避免将年份等数字误识别为集号）
-        elif re.search(r'(?i)(^|[^a-zA-Z])第\d+季|第\d+集|EP\d+', base_name) and not re.search(r'(?i)(2160p|4k|uhd|fhd|1080p|720p|480p|360p|240p|web-dl|bluray|x264|x265|h264|h265|hevc|dts|ac3|dd5\.1|aac)', base_name):
+        # 检查其他季集信息，包括中文季集格式，即使包含分辨率等信息
+        # 只要有明确的季集标识就应识别为TV，避免将包含分辨率的中文剧集误判为电影
+        elif re.search(r'(?i)(^|[^a-zA-Z])(第\d+季|第\d+集|EP\d+|\d+话)', base_name):
             is_tv = True
         elif metadata.get('season') and metadata.get('episode'):
             # 检查season和episode是否合理（避免将年份等数字误识别）
@@ -504,16 +524,25 @@ class VideoRenamer:
             is_movie = True
         
         # 3. 确定最终媒体类型
-        if is_tv and not is_movie:
+        # 优先考虑明确的剧集格式，即使同时满足电影格式也应识别为TV
+        if is_tv:
             metadata['media_type'] = 'tv'
-        else:
+        elif is_movie:
             metadata['media_type'] = 'movie'
+        else:
+            # 默认情况，根据是否有季集信息判断
+            if metadata.get('season') or metadata.get('episode'):
+                metadata['media_type'] = 'tv'
+            else:
+                metadata['media_type'] = 'movie'
         
         # 根据媒体类型处理season和episode的默认值
         media_type = metadata.get('media_type')
         if media_type == 'tv':
-            # 对于电视剧，如果有episode但没有season，默认设置season=1
-            if metadata.get('episode') and not metadata.get('season'):
+            # 对于电视剧，如果有明确的季集标识（SxxExx或第x季第x集），但只有episode没有season，默认设置season=1
+            # 但对于单独的集号（如EP01、第01集、01话），不应自动设置season=1，保持None
+            has_explicit_season = re.search(r'(?i)(^|[^a-zA-Z])(S\d+|第\d+季)', base_name)
+            if metadata.get('episode') and not metadata.get('season') and has_explicit_season:
                 metadata['season'] = '1'
         else:  # movie类型
             # 对于电影，清空season和episode
@@ -538,14 +567,24 @@ class VideoRenamer:
             
             # 3. 处理点号分隔的情况
             # 例如：瑞草洞.Law.and.the.City.2025 -> 瑞草洞
-            # 中文+英文组合，只保留中文部分
+            # 但保留类似"假面骑士.ZEZTZ"中的系列标识
             if '.' in show_name and re.search(r'[\u4e00-\u9fff]', show_name) and metadata.get('media_type') != 'movie':
                 parts = show_name.split('.')
-                # 找到第一个包含中文的部分
+                # 收集所有相关部分：包含中文的部分和可能的系列标识
+                relevant_parts = []
+                found_chinese = False
                 for part in parts:
                     if re.search(r'[\u4e00-\u9fff]', part):
-                        show_name = part
+                        relevant_parts.append(part)
+                        found_chinese = True
+                    elif found_chinese and (part.isupper() or re.match(r'^[A-Z0-9]{2,}$', part)):
+                        # 如果已经找到了中文部分，并且下一个部分是大写字母组合（可能是系列标识），则保留
+                        relevant_parts.append(part)
+                    elif found_chinese:
+                        # 否则停止收集
                         break
+                if relevant_parts:
+                    show_name = ' '.join(relevant_parts)
             # 对于电影，不要截断英文名称，保留所有有意义的部分
             # 只移除明显的质量标签和年份信息
             elif '.' in show_name and metadata.get('media_type') == 'movie':
@@ -569,13 +608,24 @@ class VideoRenamer:
             
             # 4. 处理空格分隔的副标题
             # 例如：瑞草洞 Law and the City -> 瑞草洞
+            # 但保留类似"假面骑士 ZEZTZ"中的系列标识
             if ' ' in show_name and re.search(r'[\u4e00-\u9fff]', show_name):
                 parts = show_name.split(' ')
-                # 找到第一个包含中文的部分
+                # 收集所有相关部分：包含中文的部分和可能的系列标识
+                relevant_parts = []
+                found_chinese = False
                 for part in parts:
                     if re.search(r'[\u4e00-\u9fff]', part):
-                        show_name = part
+                        relevant_parts.append(part)
+                        found_chinese = True
+                    elif found_chinese and (part.isupper() or re.match(r'^[A-Z0-9]{2,}$', part)):
+                        # 如果已经找到了中文部分，并且下一个部分是大写字母组合（可能是系列标识），则保留
+                        relevant_parts.append(part)
+                    elif found_chinese:
+                        # 否则停止收集
                         break
+                if relevant_parts:
+                    show_name = ' '.join(relevant_parts)
             
             # 5. 移除常见的修饰词
             modifiers = [
@@ -712,6 +762,7 @@ class VideoRenamer:
         
         if re.search(r'[\u4e00-\u9fff]', prepared):
             prepared = re.sub(r'S\d+E\d+', '', prepared, flags=re.IGNORECASE)
+            prepared = re.sub(r'S\d+', '', prepared, flags=re.IGNORECASE)
             prepared = re.sub(r'第\d+季(第\d+集)?', '', prepared, flags=re.IGNORECASE)
             prepared = re.sub(r'\d+集', '', prepared)
             prepared = prepared.strip()
@@ -830,29 +881,52 @@ class VideoRenamer:
                 final_search_term = self._translate_to_english(search_term)
                 logger.info(f"将中文搜索词 '{search_term}' 翻译为英文 '{final_search_term}' 进行搜索")
             
+            # 安全地处理年份参数，避免无效年份导致搜索失败
+            year_param = None
+            if year:
+                try:
+                    year_param = int(year)
+                except (ValueError, TypeError):
+                    logger.warning(f"无效的年份值: '{year}'，将不使用年份过滤条件进行搜索")
+                    year_param = None
+            
+            # 搜索方法选择
             if media_type_hint == 'tv':
-                # 使用专门的电视剧搜索
-                search_results = self.tmdb_client.search_tv(
-                    final_search_term, 
-                    int(year) if year and year.isdigit() else None,
-                    language=language
-                )
-                if isinstance(search_results, dict) and 'results' in search_results:
-                    results = search_results['results']
+                search_method = self.tmdb_client.search_tv
             elif media_type_hint == 'movie':
-                # 使用专门的电影搜索
-                search_results = self.tmdb_client.search_movie(
+                search_method = self.tmdb_client.search_movie
+            else:
+                return results
+            
+            # 1. 第一次搜索：使用年份参数
+            search_results = search_method(
+                final_search_term, 
+                year_param,
+                language=language
+            )
+            if isinstance(search_results, dict) and 'results' in search_results:
+                results = search_results['results']
+            
+            # 2. 降级搜索：如果没有找到结果且使用了年份参数，则去掉年份重新搜索
+            if not results and year_param:
+                logger.info(f"使用年份 {year_param} 搜索无结果，尝试去掉年份参数重新搜索")
+                search_results = search_method(
                     final_search_term, 
-                    int(year) if year and year.isdigit() else None,
+                    None,
                     language=language
                 )
                 if isinstance(search_results, dict) and 'results' in search_results:
                     results = search_results['results']
+                    if results:
+                        logger.info(f"去掉年份后搜索到 {len(results)} 个结果")
         except Exception as e:
             logger.error(f"语言搜索失败: {e}")
         
         return results
         
+    # 添加缓存机制，避免重复搜索
+    _search_cache = {}
+    
     def _enrich_with_tmdb(self, metadata: Dict) -> Dict:
         """使用TMDB API丰富元数据信息，获取更完整的视频详情"""
         # 确保metadata是字典类型
@@ -885,144 +959,143 @@ class VideoRenamer:
             media_type_hint = metadata.get('media_type', metadata.get('type', ''))
             year = metadata.get('year')
             
-            results = []
+            # 定义缓存键
+            cache_key = (prepared_search_term, media_type_hint, year)
             
-            # 智能搜索策略：
-            # 1. 判断优化后的搜索词的语言（中文/英文）
-            # 2. 根据语言自动选择搜索语言进行第一次搜索
-            # 3. 如果没有完全匹配到，将搜索词翻译成另一种语言
-            # 4. 用翻译后的搜索词进行第二次搜索
-            # 5. 检查第二次搜索结果中是否有完全匹配的
-            # 6. 如果有完全匹配就用，没有的话结合两次搜索的结果进行筛选
-            # 7. 优先使用中文元数据
-            
-            all_results = []
-            unique_ids = set()
-            
-            # 定义完全匹配检查函数
-            def has_exact_match(search_results, target_term):
-                if not search_results:
-                    return False, None
-                # 确保search_results是列表类型
-                if isinstance(search_results, dict) and 'results' in search_results:
-                    search_results = search_results['results']
-                if not isinstance(search_results, list):
-                    return False, None
-                    
-                # 提前翻译目标术语，避免在循环中重复翻译
-                target_term_lower = target_term.lower()
-                
-                for result in search_results:
-                    result_title = result.get('name', result.get('title', '')).lower()
-                    original_name = result.get('original_name', '').lower()
-                    
-                    # 1. 直接匹配
-                    if result_title == target_term_lower or original_name == target_term_lower:
-                        return True, result
-                    
-                    # 2. 简繁基础兼容 (针对 Dragon Raja)
-                    if (target_term_lower == "龍族" and result_title == "龙族") or \
-                       (target_term_lower == "龙族" and result_title == "龍族"):
-                        return True, result
-                    
-                return False, None
-            
-            # 定义语言检测函数
-            def is_chinese(text):
-                """检测文本是否包含中文"""
-                return bool(re.search(r'[\u4e00-\u9fff]', text))
-            
-            # 检测优化后搜索词的语言
-            search_term_is_chinese = is_chinese(prepared_search_term)
-            logger.info(f"检测到优化后的搜索词 '{prepared_search_term}' 包含中文: {search_term_is_chinese}")
-            
-            # 第一步：根据语言自动选择搜索语言进行第一次搜索
-            # 第一步：根据语言自动选择搜索语言进行第一次搜索
-            first_search_language = 'zh-CN' if search_term_is_chinese else 'en-US'
-            logger.info(f"第一步：使用优化后的搜索词 '{prepared_search_term}' 进行{first_search_language}搜索")
-            
-            # 策略1: 优化后的搜索词 + 明确类型 + 自动选择语言
-            first_language_results = self._search_with_language(prepared_search_term, media_type_hint, year, first_search_language)
-            
-            # 策略2: 优化后的搜索词 + 通用搜索 + 自动选择语言
-            general_first_language_results = self.tmdb_client.search_video_show(prepared_search_term, year, language=first_search_language)
-            
-            # 补救策略：如果优化后的词没搜到，试试原始词
-            if not (first_language_results or (isinstance(general_first_language_results, dict) and general_first_language_results.get('results'))):
-                 logger.info(f"优化搜索词无结果，尝试使用原始搜索词: {search_term}")
-                 first_language_results = self._search_with_language(search_term, media_type_hint, year, first_search_language)
-
-            # 合并第一步搜索结果
-            first_pass_results = []
-            for results_list in [first_language_results, general_first_language_results]:
-                if isinstance(results_list, list):
-                    first_pass_results.extend(results_list)
-                elif isinstance(results_list, dict) and 'results' in results_list:
-                    first_pass_results.extend(results_list['results'])
-            
-            # 检查第一步搜索结果中是否有完全匹配
-            exact_match_found, exact_match_result = has_exact_match(first_pass_results, prepared_search_term)
-            if not exact_match_found:
-                 exact_match_found, exact_match_result = has_exact_match(first_pass_results, search_term)
-
-            if exact_match_found:
-                logger.info(f"在第一步搜索结果中找到完全匹配: {exact_match_result.get('name', exact_match_result.get('title'))}")
-                results = [exact_match_result]
+            # 检查缓存
+            if cache_key in self._search_cache:
+                logger.info(f"使用缓存的搜索结果: {cache_key}")
+                results = self._search_cache[cache_key]
             else:
-                # 保存第一步搜索结果，继续第二次搜索
-                logger.info(f"第一步搜索未找到完全匹配，保存搜索结果 ({len(first_pass_results)} 个)")
-                # 保存第一步搜索结果到总结果中
-                for result in first_pass_results:
-                    if result.get('id') not in unique_ids:
-                        all_results.append(result)
-                        unique_ids.add(result.get('id'))
+                # 优化的搜索策略：减少API调用次数
+                # 1. 优先使用精确搜索（明确类型+语言匹配）
+                # 2. 仅在必要时进行跨语言搜索
+                # 3. 合并搜索结果，避免重复请求
                 
-                # 第二步：将优化后的搜索词翻译成另一种语言进行搜索
-                # 优化：减少不准确翻译的影响，只使用可靠的翻译方式
-                second_search_language = 'en-US' if search_term_is_chinese else 'zh-CN'
-                logger.info(f"第二步：尝试将优化后的搜索词 '{prepared_search_term}' 翻译成{second_search_language}进行搜索")
+                # 定义语言检测函数（移到类级别或作为静态方法可进一步优化）
+                def is_chinese(text):
+                    """检测文本是否包含中文"""
+                    return bool(re.search(r'[\u4e00-\u9fff]', text))
                 
-                # 翻译优化后的搜索词，使用统一的翻译方法
-                target_lang = 'en-US' if search_term_is_chinese else 'zh-CN'
-                translated_search_term = self._translate_text(prepared_search_term, target_language=target_lang)
-                
-                # 如果翻译结果与原词相同（说明翻译失败或不需要翻译），则跳过这次搜索
-                if translated_search_term != prepared_search_term:
-                    logger.info(f"将搜索词 '{prepared_search_term}' 翻译为 '{translated_search_term}' 进行{second_search_language}搜索")
-                    
-                    # 策略3: 翻译后的搜索词 + 明确类型 + 第二种语言
-                    second_language_results = self._search_with_language(translated_search_term, media_type_hint, year, second_search_language)
-                    
-                    # 策略4: 翻译后的搜索词 + 通用搜索 + 第二种语言
-                    general_second_language_results = self.tmdb_client.search_video_show(translated_search_term, year, language=second_search_language)
-                    
-                    # 合并第二次搜索结果
-                    second_pass_results = []
-                    for results_list in [second_language_results, general_second_language_results]:
-                        if isinstance(results_list, list):
-                            second_pass_results.extend(results_list)
-                        elif isinstance(results_list, dict) and 'results' in results_list:
-                            second_pass_results.extend(results_list['results'])
-                    
-                    # 检查第二次搜索结果中是否有与翻译后的搜索词完全匹配的
-                    exact_match_found, exact_match_result = has_exact_match(second_pass_results, translated_search_term)
-                    if exact_match_found:
-                        logger.info(f"在{second_search_language}搜索结果中找到完全匹配: {exact_match_result.get('name', exact_match_result.get('title'))}")
-                        results = [exact_match_result]
-                    else:
-                        # 没有完全匹配，合并两次搜索结果
-                        logger.info(f"{second_search_language}搜索未找到完全匹配，合并两次搜索结果")
+                # 定义完全匹配检查函数
+                def has_exact_match(search_results, target_term):
+                    if not search_results:
+                        return False, None
+                    # 确保search_results是列表类型
+                    if isinstance(search_results, dict) and 'results' in search_results:
+                        search_results = search_results['results']
+                    if not isinstance(search_results, list):
+                        return False, None
                         
-                        # 保存第二次搜索结果到总结果中
-                        for result in second_pass_results:
-                            if result.get('id') not in unique_ids:
-                                all_results.append(result)
-                                unique_ids.add(result.get('id'))
+                    # 提前翻译目标术语，避免在循环中重复翻译
+                    target_term_lower = target_term.lower()
+                    
+                    for result in search_results:
+                        result_title = result.get('name', result.get('title', '')).lower()
+                        original_name = result.get('original_name', '').lower()
                         
-                        results = all_results
+                        # 1. 直接匹配
+                        if result_title == target_term_lower or original_name == target_term_lower:
+                            return True, result
+                        
+                        # 2. 简繁基础兼容 (针对 Dragon Raja)
+                        if (target_term_lower == "龍族" and result_title == "龙族") or \
+                           (target_term_lower == "龙族" and result_title == "龍族"):
+                            return True, result
+                        
+                    return False, None
+                
+                # 检测优化后搜索词的语言
+                search_term_is_chinese = is_chinese(prepared_search_term)
+                logger.info(f"检测到优化后的搜索词 '{prepared_search_term}' 包含中文: {search_term_is_chinese}")
+                
+                # 初始搜索语言选择
+                primary_language = 'zh-CN' if search_term_is_chinese else 'en-US'
+                secondary_language = 'en-US' if search_term_is_chinese else 'zh-CN'
+                
+                all_results = []
+                unique_ids = set()
+                exact_match_result = None
+                
+                # 1. 第一次搜索：精确类型+主要语言搜索
+                logger.info(f"第一次搜索：使用优化后的搜索词 '{prepared_search_term}' 进行{primary_language}搜索")
+                primary_results = []
+                
+                # 如果有明确的媒体类型，优先使用专用搜索
+                if media_type_hint:
+                    primary_results = self._search_with_language(prepared_search_term, media_type_hint, year, primary_language)
+                    if primary_results:
+                        logger.info(f"专用类型搜索返回 {len(primary_results)} 个结果")
+                
+                # 如果专用搜索没有结果，尝试通用搜索
+                if not primary_results:
+                    general_results = self.tmdb_client.search_video_show(prepared_search_term, year, language=primary_language)
+                    if isinstance(general_results, dict) and 'results' in general_results:
+                        primary_results = general_results['results']
+                        logger.info(f"通用搜索返回 {len(primary_results)} 个结果")
+                
+                # 检查是否有完全匹配
+                if primary_results:
+                    exact_match_found, exact_match_result = has_exact_match(primary_results, prepared_search_term)
+                    if not exact_match_found:
+                        exact_match_found, exact_match_result = has_exact_match(primary_results, search_term)
+                
+                if exact_match_result:
+                    logger.info(f"找到完全匹配: {exact_match_result.get('name', exact_match_result.get('title'))}")
+                    results = [exact_match_result]
                 else:
-                    logger.info(f"翻译结果与原词相同，跳过第二语言搜索")
-                    results = all_results
+                    # 保存第一次搜索结果
+                    for result in primary_results:
+                        if result.get('id') not in unique_ids:
+                            all_results.append(result)
+                            unique_ids.add(result.get('id'))
+                    
+                    # 2. 仅在必要时进行第二次跨语言搜索
+                    # 只有当第一次搜索结果少于3个或者没有明确匹配时，才进行跨语言搜索
+                    if len(all_results) < 3:
+                        logger.info(f"第一次搜索结果较少({len(all_results)}个)，进行跨语言搜索")
+                        
+                        # 翻译搜索词
+                        translated_search_term = self._translate_text(prepared_search_term, target_language=secondary_language)
+                        
+                        # 如果翻译结果与原词不同，进行跨语言搜索
+                        if translated_search_term != prepared_search_term:
+                            logger.info(f"将搜索词 '{prepared_search_term}' 翻译为 '{translated_search_term}' 进行{secondary_language}搜索")
+                            
+                            # 跨语言搜索
+                            secondary_results = []
+                            if media_type_hint:
+                                secondary_results = self._search_with_language(translated_search_term, media_type_hint, year, secondary_language)
+                            
+                            if not secondary_results:
+                                general_secondary_results = self.tmdb_client.search_video_show(translated_search_term, year, language=secondary_language)
+                                if isinstance(general_secondary_results, dict) and 'results' in general_secondary_results:
+                                    secondary_results = general_secondary_results['results']
+                            
+                            # 检查跨语言搜索结果
+                            if secondary_results:
+                                exact_match_found, exact_match_result = has_exact_match(secondary_results, translated_search_term)
+                                if exact_match_result:
+                                    logger.info(f"在跨语言搜索中找到完全匹配: {exact_match_result.get('name', exact_match_result.get('title'))}")
+                                    results = [exact_match_result]
+                                else:
+                                    # 合并跨语言搜索结果
+                                    for result in secondary_results:
+                                        if result.get('id') not in unique_ids:
+                                            all_results.append(result)
+                                            unique_ids.add(result.get('id'))
+                                    results = all_results
+                            else:
+                                results = all_results
+                        else:
+                            logger.info(f"翻译结果与原词相同，跳过跨语言搜索")
+                            results = all_results
+                    else:
+                        logger.info(f"第一次搜索结果充足({len(all_results)}个)，跳过跨语言搜索")
+                        results = all_results
+                
+                # 保存到缓存
+                self._search_cache[cache_key] = results
             
             # 确保results是列表类型
             if not isinstance(results, list):
@@ -1117,87 +1190,93 @@ class VideoRenamer:
                 # 如果中文信息不完整，尝试获取英文信息
                 if not details or not (details.get('name') or details.get('overview')):
                     details = self.tmdb_client.get_tv_details(best_match['id'], language='en-US')
-                    logger.info("中文电视剧信息不完整，使用英文信息")
-                if details:
-                    # 保存原始标题
-                    original_name = metadata.get('show_name')
-                    metadata['original_show_name'] = original_name
-                    # 丰富元数据，优先使用中文标题
-                    # 如果获取到的是中文详情，使用中文标题；否则使用原始标题
-                    if details.get('name') and is_chinese(details['name']):
-                        metadata['show_name'] = details['name']
-                        logger.info(f"使用中文标题: {details['name']}")
+                    if details:
+                        logger.info("中文电视剧信息不完整，使用英文信息")
+                if not details:
+                    logger.warning(f"无法获取TV详情(ID: {best_match['id']})")
+                    # 确保返回原始metadata，而不是False
+                    return metadata
+                # 保存原始标题
+                original_name = metadata.get('show_name')
+                metadata['original_show_name'] = original_name
+                # 丰富元数据，优先使用中文标题
+                # 无论标题是否为中文，都设置完整的元数据
+                if details.get('name') and is_chinese(details['name']):
+                    metadata['show_name'] = details['name']
+                    logger.info(f"使用中文标题: {details['name']}")
+                else:
+                    metadata['show_name'] = original_name  # 优先使用原始标题，不覆盖为英文
+                
+                # 无论标题是否为中文，都设置完整的元数据
+                metadata['overview'] = details.get('overview', '')
+                metadata['rating'] = details.get('vote_average', 0)
+                metadata['genres'] = [genre['name'] for genre in details.get('genres', [])]
+                metadata['original_name'] = details.get('original_name', '')
+                metadata['original_language'] = details.get('original_language', '')
+                metadata['origin_country'] = details.get('origin_country', [])
+                metadata['first_air_date'] = details.get('first_air_date', '')
+                metadata['last_air_date'] = details.get('last_air_date', '')
+                metadata['status'] = details.get('status', '')
+                metadata['number_of_seasons'] = details.get('number_of_seasons', 0)
+                metadata['number_of_episodes'] = details.get('number_of_episodes', 0)
+                metadata['tmdb_id'] = best_match['id']
+                    
+                # 提取年份 - 确保年份被正确设置
+                if details.get('first_air_date'):
+                    metadata['year'] = details['first_air_date'].split('-')[0]
+                    logger.debug(f"从TMDB获取到年份: {metadata['year']}")
+                else:
+                    # 如果没有first_air_date，尝试从搜索结果中获取
+                    if 'first_air_date' in best_match and best_match['first_air_date']:
+                        metadata['year'] = best_match['first_air_date'].split('-')[0]
+                        logger.debug(f"从搜索结果获取到年份: {metadata['year']}")
                     else:
-                        metadata['show_name'] = original_name  # 优先使用原始标题，不覆盖为英文
-                    metadata['overview'] = details.get('overview', '')
-                    metadata['rating'] = details.get('vote_average', 0)
-                    metadata['genres'] = [genre['name'] for genre in details.get('genres', [])]
-                    metadata['original_name'] = details.get('original_name', '')
-                    metadata['original_language'] = details.get('original_language', '')
-                    metadata['origin_country'] = details.get('origin_country', [])
-                    metadata['first_air_date'] = details.get('first_air_date', '')
-                    metadata['last_air_date'] = details.get('last_air_date', '')
-                    metadata['status'] = details.get('status', '')
-                    metadata['number_of_seasons'] = details.get('number_of_seasons', 0)
-                    metadata['number_of_episodes'] = details.get('number_of_episodes', 0)
-                    metadata['tmdb_id'] = best_match['id']
+                        # 确保year字段存在，避免后续处理出错
+                        if 'year' not in metadata:
+                            metadata['year'] = ''
+                        logger.debug(f"没有找到年份信息，使用现有year: {metadata['year']}")
+                
+                # 获取网络信息
+                if 'networks' in details:
+                    metadata['networks'] = [network['name'] for network in details['networks']]
+                
+                # 获取演职人员信息
+                credits = self.tmdb_client.get_tv_credits(best_match['id'])
+                if credits:
+                    # 只取前10位演员
+                    metadata['cast'] = [
+                        {'name': actor['name'], 'character': actor.get('character', ''), 'profile_path': actor.get('profile_path', '')}
+                        for actor in credits.get('cast', [])[:10]
+                    ]
+                    # 只取导演和编剧
+                    metadata['crew'] = [
+                        {'name': crew['name'], 'job': crew.get('job', '')}
+                        for crew in credits.get('crew', []) 
+                        if crew.get('job') in ['Director', 'Writer', 'Creator']
+                    ][:5]  # 限制数量
+                
+                # 如果有剧集信息，尝试找到对应的剧集
+                if 'season' in metadata and 'episode' in metadata:
+                    # 处理连集 (如 115-120)，提取第一个集号用于搜索
+                    search_episode = str(metadata['episode']).split('-')[0] if '-' in str(metadata['episode']) else metadata['episode']
                     
-                    # 提取年份 - 确保年份被正确设置
-                    if details.get('first_air_date'):
-                        metadata['year'] = details['first_air_date'].split('-')[0]
-                        logger.debug(f"从TMDB获取到年份: {metadata['year']}")
-                    else:
-                        # 如果没有first_air_date，尝试从搜索结果中获取
-                        if 'first_air_date' in best_match and best_match['first_air_date']:
-                            metadata['year'] = best_match['first_air_date'].split('-')[0]
-                            logger.debug(f"从搜索结果获取到年份: {metadata['year']}")
-                        else:
-                            # 确保year字段存在，避免后续处理出错
-                            if 'year' not in metadata:
-                                metadata['year'] = ''
-                            logger.debug(f"没有找到年份信息，使用现有year: {metadata['year']}")
-                    
-                    # 获取网络信息
-                    if 'networks' in details:
-                        metadata['networks'] = [network['name'] for network in details['networks']]
-                    
-                    # 获取演职人员信息
-                    credits = self.tmdb_client.get_tv_credits(best_match['id'])
-                    if credits:
-                        # 只取前10位演员
-                        metadata['cast'] = [
-                            {'name': actor['name'], 'character': actor.get('character', ''), 'profile_path': actor.get('profile_path', '')}
-                            for actor in credits.get('cast', [])[:10]
-                        ]
-                        # 只取导演和编剧
-                        metadata['crew'] = [
-                            {'name': crew['name'], 'job': crew.get('job', '')}
-                            for crew in credits.get('crew', []) 
-                            if crew.get('job') in ['Director', 'Writer', 'Creator']
-                        ][:5]  # 限制数量
-                    
-                    # 如果有剧集信息，尝试找到对应的剧集
-                    if 'season' in metadata and 'episode' in metadata:
-                        # 处理连集 (如 115-120)，提取第一个集号用于搜索
-                        search_episode = str(metadata['episode']).split('-')[0] if '-' in str(metadata['episode']) else metadata['episode']
-                        
-                        try:
-                            # 获取剧集详细信息，优先使用中文
+                    try:
+                        # 获取剧集详细信息，优先使用中文
+                        episode_details = self.tmdb_client.get_tv_episode_details(
+                            best_match['id'], 
+                            metadata['season'], 
+                            search_episode,
+                            language='zh-CN'
+                        )
+                        # 如果中文剧集信息不完整，尝试获取英文信息
+                        if not episode_details or not episode_details.get('name'):
                             episode_details = self.tmdb_client.get_tv_episode_details(
                                 best_match['id'], 
                                 metadata['season'], 
-                                search_episode,
-                                language='zh-CN'
+                                metadata['episode'],
+                                language='en-US'
                             )
-                            # 如果中文剧集信息不完整，尝试获取英文信息
-                            if not episode_details or not episode_details.get('name'):
-                                episode_details = self.tmdb_client.get_tv_episode_details(
-                                    best_match['id'], 
-                                    metadata['season'], 
-                                    metadata['episode'],
-                                    language='en-US'
-                                )
-                                logger.info("中文剧集信息不完整，使用英文信息")
+                            logger.info("中文剧集信息不完整，使用英文信息")
                             
                             if episode_details:
                                 # 设置剧集名称
@@ -1205,50 +1284,58 @@ class VideoRenamer:
                                 metadata['episode_overview'] = episode_details.get('overview', '')
                                 metadata['air_date'] = episode_details.get('air_date', '')
                                 metadata['episode_rating'] = episode_details.get('vote_average', 0)
-                        except Exception as e:
-                            logger.warning(f"获取剧集详情失败: {e}")
+                    except Exception as e:
+                        logger.warning(f"获取剧集详情失败: {e}")
             else:
                 # 获取电影详细信息，优先使用中文
                 details = self.tmdb_client.get_movie_details(best_match['id'], language='zh-CN')
                 # 如果中文信息不完整，尝试获取英文信息
                 if not details or not (details.get('title') or details.get('overview')):
                     details = self.tmdb_client.get_movie_details(best_match['id'], language='en-US')
-                    logger.info("中文电影信息不完整，使用英文信息")
-                if details:
-                    # 保存原始标题
-                    original_title = metadata.get('title')
-                    metadata['original_title'] = original_title
-                    # 丰富元数据，优先使用中文标题
-                    # 如果获取到的是中文详情，使用中文标题；否则使用原始标题
-                    if details.get('title') and is_chinese(details['title']):
-                        metadata['title'] = details['title']
-                        logger.info(f"使用中文标题: {details['title']}")
-                    else:
-                        metadata['title'] = original_title  # 优先使用原始标题，不覆盖为英文
-                    metadata['overview'] = details.get('overview', '')
-                    metadata['rating'] = details.get('vote_average', 0)
-                    metadata['genres'] = [genre['name'] for genre in details.get('genres', [])]
-                    metadata['original_title'] = details.get('original_title', '')
-                    metadata['original_language'] = details.get('original_language', '')
-                    metadata['origin_country'] = details.get('origin_country', [])
-                    metadata['release_date'] = details.get('release_date', '')
-                    metadata['runtime'] = details.get('runtime', 0)
-                    metadata['status'] = details.get('status', '')
-                    metadata['budget'] = details.get('budget', 0)
-                    metadata['revenue'] = details.get('revenue', 0)
+                    if details:
+                        logger.info("中文电影信息不完整，使用英文信息")
+                if not details:
+                    logger.warning(f"无法获取电影详情(ID: {best_match['id']})")
+                    # 确保返回原始metadata，而不是False
+                    return metadata
+                # 保存原始标题，并处理None值情况
+                original_title = metadata.get('title')
+                # 丰富元数据，优先使用中文标题
+                # 无论是否是中文标题，都设置所有元数据字段
+                if details.get('title') and is_chinese(details['title']):
+                    metadata['title'] = details['title']
+                    logger.info(f"使用中文标题: {details['title']}")
+                else:
+                    # 如果原始标题为None或空字符串，使用TMDB的原始标题
+                    metadata['title'] = original_title or details.get('original_title', '')
+                    logger.info(f"使用原始标题: {metadata['title']}")
+                
+                # 始终设置其他元数据字段
+                metadata['overview'] = details.get('overview', '')
+                metadata['rating'] = details.get('vote_average', 0)
+                metadata['genres'] = [genre['name'] for genre in details.get('genres', [])]
+                metadata['original_title'] = details.get('original_title', '')
+                metadata['original_language'] = details.get('original_language', '')
+                metadata['origin_country'] = details.get('origin_country', [])
+                metadata['release_date'] = details.get('release_date', '')
+                metadata['runtime'] = details.get('runtime', 0)
+                metadata['status'] = details.get('status', '')
+                metadata['budget'] = details.get('budget', 0)
+                metadata['revenue'] = details.get('revenue', 0)
                     
-                    # 获取外部ID信息
-                    external_ids = self.tmdb_client.get_external_ids(best_match['id'], 'movie')
-                    if external_ids:
-                        metadata['imdb_id'] = external_ids.get('imdb_id', '')
-                        metadata['tmdb_id'] = external_ids.get('id', '')
-                    
-                    # 获取评论（如果可用）
-                    if 'reviews' in details and details['reviews'].get('results'):
-                        metadata['reviews'] = [
-                            {'author': review['author'], 'content': review['content']}
-                            for review in details['reviews']['results'][:3]  # 只取前3条评论
-                        ]
+                # 获取外部ID信息
+                external_ids = self.tmdb_client.get_external_ids(best_match['id'], 'movie')
+                if external_ids:
+                    metadata['imdb_id'] = external_ids.get('imdb_id', '')
+                    metadata['tmdb_id'] = external_ids.get('id', '')
+                    logger.info(f"获取到外部ID: IMDB={metadata['imdb_id']}, TMDB={metadata['tmdb_id']}")
+                
+                # 获取评论（如果可用）
+                if 'reviews' in details and details['reviews'].get('results'):
+                    metadata['reviews'] = [
+                        {'author': review['author'], 'content': review['content']}
+                        for review in details['reviews']['results'][:3]  # 只取前3条评论
+                    ]
             
             # 设置媒体类型
             metadata['media_type'] = media_type
@@ -1429,7 +1516,7 @@ class VideoRenamer:
         season_episode = f"S{s_str}E{e_str}"
         
         format_vars = {
-            'title': self._sanitize_filename(metadata.get('title', metadata.get('original_title', metadata.get('show_name', 'Unknown Title')))),
+            'title': self._sanitize_filename(metadata.get('title') or metadata.get('original_title') or metadata.get('show_name', 'Unknown Title')),
             'year': metadata.get('year', ''),
             'year_suffix': year_suffix,
             'year_bracket_suffix': year_bracket_suffix,
@@ -1455,12 +1542,15 @@ class VideoRenamer:
             'season': season,
             'episode': episode,
             'episode_name': self._sanitize_filename(metadata.get('episode_name', '')),
-            'movie_name': self._sanitize_filename(metadata.get('title', metadata.get('original_title', 'Unknown Movie'))),
+            'movie_name': self._sanitize_filename(metadata.get('title') or metadata.get('original_title') or metadata.get('show_name', 'Unknown Movie')),
             'anime_name': self._sanitize_filename(metadata.get('show_name', metadata.get('original_show_name', 'Unknown Anime'))),
             'season_name': f"Season {s_str}",
             'quality_tags': metadata.get('quality_tags', ''),
             'quality_tags_suffix': f" {metadata.get('quality_tags', '')}" if metadata.get('quality_tags', '') else ''
         }
+        
+        # 添加调试日志，追踪变量值和模板渲染
+
         
         try:
             # 提取后缀名：优先使用 original_path，其次使用 metadata 中的 extension 备份
