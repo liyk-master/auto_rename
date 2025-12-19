@@ -20,25 +20,60 @@ class VideoRenamer:
     
     # 默认命名规则模板
     DEFAULT_NAMING_RULES = {
-        "tv_show": "{show_name}{year_suffix}{tmdbid_suffix}/Season {season:02d}/{show_name} {season_episode}{quality_tags_suffix}",
-        "movie": "{movie_name}{year_suffix}{tmdbid_suffix}/{movie_name}{en_title_suffix}{year_suffix}{quality_tags_suffix}",
-        "anime": "{anime_name}/{season_name}/{anime_name} - S{season:02d}E{episode:02d}{quality_tags_suffix}",
-        "simple": "{title}{quality_tags_suffix}"
+        "tv_show": "{show_name}{year_suffix}{tmdbid_suffix}/Season {season:02d}/{show_name} {season_episode}{quality_tags_suffix}{release_group_suffix}",
+        "movie": "{movie_name}{year_suffix}{tmdbid_suffix}/{movie_name}{en_title_suffix}{year_suffix}{quality_tags_suffix}{release_group_suffix}",
+        "anime": "{anime_name}/{season_name}/{anime_name} - S{season:02d}E{episode:02d}{quality_tags_suffix}{release_group_suffix}",
+        "simple": "{title}{quality_tags_suffix}{release_group_suffix}"
     }
     
-    def __init__(self, tmdb_api_key: str, ai_service_url: Optional[str] = None, watch_path: Optional[Path] = None, naming_rules: Optional[Dict] = None, llm_config: Optional[Dict] = None):
+    def __init__(self, tmdb_api_key: str, ai_service_url: Optional[str] = None, watch_path: Optional[Path] = None, naming_rules: Optional[Dict] = None, llm_config: Optional[Dict] = None, config: Optional[Dict] = None):
         self.tmdb_client = TMDBClient(tmdb_api_key) if tmdb_api_key else None
         self.ai_service_url = ai_service_url
         self.watch_path = watch_path
         self.naming_rules = naming_rules or self.DEFAULT_NAMING_RULES
+        self.config = config  # 保存完整配置对象
         
         # 初始化 LLM 翻译器
         self.llm_translator = None
-        if llm_config and llm_config.get('enabled') and llm_config.get('api_key'):
+        
+        # 检查是否有 LLM 翻译配置
+        llm_enabled = False
+        llm_api_key = None
+        llm_api_url = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
+        llm_model = 'GLM-4.5-Flash'
+        
+        # 优先使用 llm_translation 配置
+        if llm_config and isinstance(llm_config, dict):
+            llm_enabled = llm_config.get('enabled', False)
+            llm_api_key = llm_config.get('api_key')
+            llm_api_url = llm_config.get('api_url', llm_api_url)
+            llm_model = llm_config.get('model', llm_model)
+        
+        # 如果没有 llm_translation 配置，尝试使用 ai_translate 配置
+        if not llm_enabled or not llm_api_key:
+            # 从配置中获取 ai_translate 配置
+            ai_translate_config = {}  # 默认空配置
+            if hasattr(self, 'config') and isinstance(self.config, dict):
+                ai_translate_config = self.config.get('ai_translate', {})
+            elif hasattr(self, '_config') and isinstance(self._config, dict):
+                ai_translate_config = self._config.get('ai_translate', {})
+            
+            # 检查 ai_translate 配置
+            ai_translate_enabled = ai_translate_config.get('enabled', False)
+            ai_translate_api_key = ai_translate_config.get('api_key')
+            
+            if ai_translate_enabled and ai_translate_api_key:
+                llm_enabled = True
+                llm_api_key = ai_translate_api_key
+                llm_api_url = ai_translate_config.get('api_url', llm_api_url)
+                llm_model = ai_translate_config.get('model', llm_model)
+        
+        # 如果有有效的配置，初始化 LLM 翻译器
+        if llm_enabled and llm_api_key:
             self.llm_translator = LLMTranslator(
-                api_key=llm_config['api_key'],
-                api_url=llm_config.get('api_url', 'https://open.bigmodel.cn/api/paas/v4/chat/completions'),
-                model=llm_config.get('model', 'GLM-4.5-Flash')
+                api_key=llm_api_key,
+                api_url=llm_api_url,
+                model=llm_model
             )
             logger.info("VideoRenamer: LLM 翻译器初始化成功")
         
@@ -180,15 +215,15 @@ class VideoRenamer:
         # 从原始文件名中提取关键词，保留原始顺序
         original_filename = filename
         
-        # 定义要提取的关键词模式，使用非单词边界匹配，支持点号分隔
+        # 定义要提取的关键词模式，使用非单词边界匹配，支持点号和下划线分隔
         # 优化顺序，先匹配长模式，避免短模式被重复匹配
         keyword_patterns = [
-            r'(?:[^\w]|^)(2160p|4K|UHD|FHD|1080p|720p|480p|360p|240p)(?:[^\w]|$)',
+            r'(?:[^\w]|^)(2160p|4K|UHD|FHD|1080p|720p|480p|360p|240p|Ma10p|Ma10p_1080p)(?:[^\w]|$)',
             r'(?:[^\w]|^)(Dolby\s*Vision|HDR10|HDR|SDR)(?:[^\w]|$)',
             r'(?:[^\w]|^)(Netflix|Disney\+|HBO|Amazon|Prime|Apple\+|iTunes)(?:[^\w]|$)',
             r'(?:[^\w]|^)(BDRip|BluRay|DVDRip|WEB-DL|WEBRip|WEB|BD|DVD)(?:[^\w]|$)',
-            r'(?:[^\w]|^)(x265|x264|h265|h264|HEVC|AVC|MPEG4)(?:[^\w]|$)',
-            r'(?:[^\w]|^)(DTS-HD|TrueHD|Atmos|DDP|DTS|AAC|AC3)(?:[^\w]|$)',
+            r'(?:[^\w]|^)(x265|x264|h265|h264|HEVC|AVC|MPEG4|x265_flac|x264_flac)(?:[^\w]|$)',
+            r'(?:[^\w]|^)(DTS-HD|TrueHD|Atmos|DDP|DTS|AAC|AC3|FLAC|flac)(?:[^\w]|$)',
             r'(?:[^\w]|^)(REPACK|PROPER|INTERNAL)(?:[^\w]|$)',
             r'(?:[^\w]|^)(CHS|ENG|双语|字幕|中字|英字)(?:[^\w]|$)'
         ]
@@ -222,7 +257,8 @@ class VideoRenamer:
         metadata = {
             'original_filename': filename,
             'season': None,
-            'episode': None
+            'episode': None,
+            'release_group': None
         }
         
         # 提取文件基本信息
@@ -275,23 +311,26 @@ class VideoRenamer:
             r"(?P<show_name>.*?)(?<![a-zA-Z0-9])(?P<roman_season>X|I)(?![a-zA-Z0-9])\s*(?::|-|\[|\(|\r?$)",
             
             # 3. Episode patterns with strict boundaries (avoiding Hash [Checksum])
-            # 匹配 Show Name - 09
-            r"^(?:\[[^\]]+\])?\s*(?P<show_name>.*?)\s*-\s*(?P<episode>\d+(?:-\d+)?)\s*(?:\[|\(|$)",
-            # 匹配 Show Name EP09 / Ep09
-            r"^(?:\[[^\]]+\])?\s*(?P<show_name>.*?)\s*(?:EP|Ep|第)\s*(?P<episode>\d+(?:-\d+)?)\s*(?:集)?\s*(?:\[|\(|$)",
+            # 匹配 Show Name - 09 (严格限制show_name不能只含数字)
+            r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$).*?)\s*-\s*(?P<episode>\d+(?:-\d+)?)\s*(?:\[|\(|$)",
+            # 匹配 Show Name EP09 / Ep09 (严格限制show_name不能只含数字)
+            r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$).*?)\s*(?:EP|Ep|第)\s*(?P<episode>\d+(?:-\d+)?)\s*(?:集)?\s*(?:\[|\(|$)",
             
             # --- 常用 BT 资源/动漫格式匹配 ---
-            # 匹配 [VCB-Studio] Show Name [12] -> 限制集号长度，排除年份
-            r"^\[[^\]]+\]\s*(?P<show_name>.*?)\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
-            # 匹配 Show Name [12][...]
-            r"^(?P<show_name>.*?)\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
-            # 匹配 剧名 22 [GB] (空格集号)
-            r"^(?:\[[^\]]+\])?\s*(?P<show_name>[\u4e00-\u9fff\w\s]+?)\s+(?P<episode>\d+(?:-\d+)?)\s*(?:\[|\]|$)",
+            # 匹配 [VCB-Studio] Show Name [12] 或 [denisplay] Detective Conan Movie 12 - Full Score of Fear (2008) [20th] 等格式
+            r"^\[[^\]]+\]\s*(?P<show_name>.*?)\s*(?:\(\d{4}\))?\s*(?:\[[^\]\d]+\])?\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
+            # 匹配 Show Name [12][...] (严格限制show_name不能只含数字)
+            r"^(?P<show_name>(?!^\d+$).*?)\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
+            # 匹配 剧名 22 [GB] (空格集号，严格限制show_name不能只含数字且不含年份，且集号必须小于1000)
+            # 添加年份前向否定断言，避免将年份误识别为集号
+            r"^(?:\[[^\]]+\]\s+)?(?P<show_name>(?!^\d+$)[\u4e00-\u9fff\w\s]+?(?<!\d{4}))\s+(?P<episode>\d{1,3}(?:-\d{1,3})?)(?<!\d{4})(?:\s|$)",
+            # 匹配 [Nekomoe kissaten][Watashi wo Tabetai, Hitodenashi][12][1080p][JPSC] 格式
+            r"^\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
             
-            # 基础降级模式 (只抓集号)
-            r"第(?P<episode>\d+(?:-\d+)?)集",
-            r"EP(?P<episode>\d+(?:-\d+)?)",
-            r"\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
+            # 基础降级模式 (只抓集号，添加年份排除)
+            r"(?<!\d{4})第(?P<episode>\d+(?:-\d+)?)集",
+            r"(?<!\d{4})EP(?P<episode>\d+(?:-\d+)?)",
+            r"(?<!\d{4})\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
         ]
         
         match_found = False
@@ -313,11 +352,14 @@ class VideoRenamer:
                         metadata[key] = value
                 match_found = True
 
-        # 兜底填充默认值
-        if metadata.get('season') is None:
-            metadata['season'] = '1'
-        if metadata.get('episode') is None:
-            metadata['episode'] = '1'
+        # 提取字幕组信息（通常在文件名开头，格式为[字幕组名称]）
+        # 在所有其他正则匹配之后提取，确保不会被覆盖
+        release_group_pattern = r'^\[([^\]]+)\]'
+        release_group_match = re.search(release_group_pattern, base_name)
+        if release_group_match:
+            metadata['release_group'] = release_group_match.group(1)
+
+        # 先移除此处的媒体类型相关代码，将在后面统一处理
 
         if match_found:
             # Clean up show name
@@ -390,9 +432,98 @@ class VideoRenamer:
                 if show_name:
                     metadata['show_name'] = show_name
         
-        # 如果检测到剧集信息（season或episode），自动设置为电视剧类型
-        if metadata.get('season') or metadata.get('episode'):
+        # 媒体类型检测逻辑改进：
+        # 1. 优先检测明显的剧集格式
+        is_tv = False
+        
+        # 检查是否有明确的SxxExx格式（即使包含PT/网盘标签）
+        # SxxExx格式是最明确的剧集标识，应该优先识别
+        if re.search(r'(?i)(^|[^a-zA-Z])S\d+E\d+($|[^a-zA-Z])', base_name):
+            is_tv = True
+        # 检查其他季集信息，但排除PT/网盘常见标签（避免将年份等数字误识别为集号）
+        elif re.search(r'(?i)(^|[^a-zA-Z])第\d+季|第\d+集|EP\d+', base_name) and not re.search(r'(?i)(2160p|4k|uhd|fhd|1080p|720p|480p|360p|240p|web-dl|bluray|x264|x265|h264|h265|hevc|dts|ac3|dd5\.1|aac)', base_name):
+            is_tv = True
+        elif metadata.get('season') and metadata.get('episode'):
+            # 检查season和episode是否合理（避免将年份等数字误识别）
+            try:
+                season_num = int(metadata['season'])
+                episode_num = int(metadata['episode'])
+                # 如果season大于10或episode大于1000，可能是误识别
+                if season_num > 10 or episode_num > 1000:
+                    is_tv = False
+                else:
+                    # 进一步检查：如果集号等于年份，很可能是误识别
+                    if metadata.get('year') and str(episode_num) == metadata.get('year'):
+                        is_tv = False
+                    else:
+                        is_tv = True
+            except (ValueError, TypeError):
+                is_tv = False
+        elif metadata.get('season') or metadata.get('episode'):
+            # 只有season或只有episode的情况
+            try:
+                if metadata.get('season'):
+                    season_num = int(metadata['season'])
+                    if season_num > 10:
+                        is_tv = False
+                    else:
+                        # 进一步检查：如果季号等于年份，很可能是误识别
+                        if metadata.get('year') and str(season_num) == metadata.get('year'):
+                            is_tv = False
+                        else:
+                            is_tv = True
+                if metadata.get('episode'):
+                    episode_num = int(metadata['episode'])
+                    if episode_num > 1000:
+                        is_tv = False
+                    else:
+                        # 进一步检查：如果集号等于年份，很可能是误识别
+                        if metadata.get('year') and str(episode_num) == metadata.get('year'):
+                            is_tv = False
+                        else:
+                            is_tv = True
+            except (ValueError, TypeError):
+                is_tv = False
+        
+        # 2. 检测电影类型
+        is_movie = False
+        # 优先检测PT/网盘常见的电影命名格式（包含分辨率、编码、来源等信息）
+        if re.search(r'(?i)(2160p|4k|uhd|fhd|1080p|720p|480p|360p|240p)(?:\.|\s)(web-dl|bluray|bdrip|hdrip|dvdrip|webdl|bd|dvd)(?:\.|\s)(x264|x265|h264|h265|hevc|xvid|divx)', base_name):
+            is_movie = True
+        elif re.search(r'\bMovie\b|\bmovie\b|\bFilm\b|\bfilm\b', base_name, re.IGNORECASE):
+            is_movie = True
+        elif metadata.get('year'):
+            # 如果season或episode等于年份，很可能是电影
+            if metadata.get('season') == metadata.get('year') or metadata.get('episode') == metadata.get('year'):
+                is_movie = True
+            # 如果文件名中包含年份，且没有明确的剧集格式，倾向于判定为电影
+            elif not re.search(r'(?i)(^|[^a-zA-Z])S\d+E\d+($|[^a-zA-Z])|第\d+季|第\d+集|EP\d+', base_name):
+                is_movie = True
+        # 3. 如果文件名看起来像电影格式（包含分辨率、编码等信息），判定为电影
+        elif re.search(r'(?i)(2160p|4k|uhd|fhd|1080p|720p|480p|360p|240p)\s*(?:\[|\()?\d{4}(?:\]|\))?', base_name):
+            is_movie = True
+        
+        # 3. 确定最终媒体类型
+        if is_tv and not is_movie:
             metadata['media_type'] = 'tv'
+        else:
+            metadata['media_type'] = 'movie'
+        
+        # 根据媒体类型处理season和episode的默认值
+        media_type = metadata.get('media_type')
+        if media_type == 'tv':
+            # 对于电视剧，如果有episode但没有season，默认设置season=1
+            if metadata.get('episode') and not metadata.get('season'):
+                metadata['season'] = '1'
+        else:  # movie类型
+            # 对于电影，清空season和episode
+            metadata['season'] = None
+            metadata['episode'] = None
+        
+        # 额外的安全检查：如果是电影，确保没有season和episode
+        if metadata.get('media_type') == 'movie':
+            metadata['season'] = None
+            metadata['episode'] = None
         
         # 最终清理：确保show_name纯净，不包含年份、副标题等无关信息
         if 'show_name' in metadata:
@@ -408,16 +539,33 @@ class VideoRenamer:
             # 3. 处理点号分隔的情况
             # 例如：瑞草洞.Law.and.the.City.2025 -> 瑞草洞
             # 中文+英文组合，只保留中文部分
-            if '.' in show_name and re.search(r'[\u4e00-\u9fff]', show_name):
+            if '.' in show_name and re.search(r'[\u4e00-\u9fff]', show_name) and metadata.get('media_type') != 'movie':
                 parts = show_name.split('.')
                 # 找到第一个包含中文的部分
                 for part in parts:
                     if re.search(r'[\u4e00-\u9fff]', part):
                         show_name = part
                         break
-            elif '.' in show_name:
-                # 纯英文或数字，只保留第一个点号前的内容
-                show_name = show_name.split('.')[0]
+            # 对于电影，不要截断英文名称，保留所有有意义的部分
+            # 只移除明显的质量标签和年份信息
+            elif '.' in show_name and metadata.get('media_type') == 'movie':
+                # 保留所有点号分隔的部分，但移除年份和质量标签
+                parts = show_name.split('.')
+                filtered_parts = []
+                quality_tags = ['2160p', '4k', 'uhd', 'fhd', '1080p', '720p', '480p', '360p', '240p', 
+                              'web-dl', 'bluray', 'bdrip', 'hdrip', 'dvdrip', 'webdl', 'bd', 'dvd',
+                              'x264', 'x265', 'h264', 'h265', 'hevc', 'xvid', 'divx',
+                              'dts', 'ac3', 'dd5.1', 'aac', '5.1', '7.1']
+                for part in parts:
+                    # 跳过明显的年份和质量标签
+                    if re.match(r'^\d{4}$', part) or part.lower() in quality_tags:
+                        continue
+                    filtered_parts.append(part)
+                if filtered_parts:
+                    show_name = ' '.join(filtered_parts)
+                else:
+                    # 如果过滤后没有内容，保留原始show_name
+                    show_name = metadata['show_name']
             
             # 4. 处理空格分隔的副标题
             # 例如：瑞草洞 Law and the City -> 瑞草洞
@@ -572,20 +720,20 @@ class VideoRenamer:
             
         return prepared.strip()
         
-    def _translate_to_english(self, text: str) -> str:
+    def _translate_text(self, text: str, target_language: str = 'en-US') -> str:
         """
-        将中文文本翻译为英文
+        将文本翻译为目标语言，支持多种语言互译
         
         Args:
-            text (str): 要翻译的中文文本
+            text (str): 要翻译的文本
+            target_language (str): 目标语言，默认为英文(en-US)
             
         Returns:
-            str: 翻译后的英文文本
+            str: 翻译后的文本
         """
-        # 这里可以集成实际的翻译API，比如百度翻译、Google翻译等
-        # 为了简化，先使用一个简单的模拟翻译字典
-        # 实际使用时，应该替换为真实的翻译服务
+        # 统一翻译字典，支持多种语言互译
         translation_dict = {
+            # 中文到英文
             "怪奇物语": "Stranger Things",
             "权力的游戏": "Game of Thrones",
             "鱿鱼游戏": "Squid Game",
@@ -599,10 +747,27 @@ class VideoRenamer:
             "星期三": "Wednesday",
             "龙族": "Dragon Raja",
             "龍族": "Dragon Raja",
-            "Pocket Monsters Horizontes": "宝可梦 地平线",
-            "Pocket Monsters": "宝可梦",
+            "间谍过家家": "Spy x Family",
+            "宝可梦": "Pokémon",
+            "宝可梦 地平线": "Pokémon Horizons",
+            
+            # 英文到中文
+            "Stranger Things": "怪奇物语",
+            "Game of Thrones": "权力的游戏",
+            "Squid Game": "鱿鱼游戏",
+            "The Wandering Earth": "流浪地球",
+            "Minning Town": "山海情",
+            "Running Man": "奔跑吧兄弟",
+            "Peppa Pig": "小猪佩奇",
+            "One Piece": "海贼王",
+            "Soul Land": "斗罗大陆",
+            "A Bite of China": "舌尖上的中国",
+            "Wednesday": "星期三",
+            "Dragon Raja": "龙族",
             "Spy x Family": "间谍过家家",
-            "Spy Family": "间谍过家家"
+            "Spy Family": "间谍过家家",
+            "Pokémon": "宝可梦",
+            "Pokémon Horizons": "宝可梦 地平线"
         }
         
         # 尝试直接翻译
@@ -611,12 +776,12 @@ class VideoRenamer:
             logger.info(f"使用翻译字典将 '{text}' 翻译为 '{translated}'")
             return translated
         
-        # AI 翻译兜底 (中 -> 英)0
+        # AI 翻译兜底
         if self.llm_translator:
             try:
-                translated = self.llm_translator.translate_video_name(text, target_language='English')
-                if translated:
-                    logger.info(f"使用 AI 翻译将 '{text}' 翻译为英文 '{translated}'")
+                translated = self.llm_translator.translate_video_name(text, target_language=target_language)
+                if translated and translated != text:
+                    logger.info(f"使用 AI 翻译将 '{text}' 翻译为 '{target_language}' 的 '{translated}'")
                     return translated
             except Exception as e:
                 logger.error(f"AI 翻译失败: {e}")
@@ -628,8 +793,21 @@ class VideoRenamer:
             translated_words.append(translation_dict.get(word, word))
         
         translated = " ".join(translated_words)
-        logger.info(f"使用拆分翻译将 '{text}' 翻译为 '{translated}'")
+        if translated != text:
+            logger.info(f"使用拆分翻译将 '{text}' 翻译为 '{translated}'")
         return translated
+    
+    def _translate_to_english(self, text: str) -> str:
+        """
+        将文本翻译为英文（向后兼容方法）
+        
+        Args:
+            text (str): 要翻译的文本
+            
+        Returns:
+            str: 翻译后的英文文本
+        """
+        return self._translate_text(text, target_language='en-US')
     
     def _search_with_language(self, search_term: str, media_type_hint: str, year: str, language: str) -> List[Dict]:
         """
@@ -684,8 +862,9 @@ class VideoRenamer:
         
         try:
             logger.info(f"开始TMDB搜索: metadata={metadata}")
-            # 保存原始的quality_tags，避免被覆盖
+            # 保存原始的quality_tags和release_group，避免被覆盖
             original_quality_tags = metadata.get('quality_tags', '')
+            original_release_group = metadata.get('release_group', '')
             
             # 优先使用show_name搜索，否则使用title，确保搜索词存在
             search_term = metadata.get('show_name', metadata.get('title', ''))
@@ -730,10 +909,12 @@ class VideoRenamer:
                 if not isinstance(search_results, list):
                     return False, None
                     
+                # 提前翻译目标术语，避免在循环中重复翻译
+                target_term_lower = target_term.lower()
+                
                 for result in search_results:
                     result_title = result.get('name', result.get('title', '')).lower()
                     original_name = result.get('original_name', '').lower()
-                    target_term_lower = target_term.lower()
                     
                     # 1. 直接匹配
                     if result_title == target_term_lower or original_name == target_term_lower:
@@ -744,11 +925,6 @@ class VideoRenamer:
                        (target_term_lower == "龙族" and result_title == "龍族"):
                         return True, result
                     
-                    # 3. 通过翻译归一化匹配
-                    term_trans = self._translate_to_english(target_term_lower).lower()
-                    if term_trans and (term_trans == original_name or term_trans == result_title):
-                        return True, result
-                        
                 return False, None
             
             # 定义语言检测函数
@@ -802,79 +978,50 @@ class VideoRenamer:
                         unique_ids.add(result.get('id'))
                 
                 # 第二步：将优化后的搜索词翻译成另一种语言进行搜索
+                # 优化：减少不准确翻译的影响，只使用可靠的翻译方式
                 second_search_language = 'en-US' if search_term_is_chinese else 'zh-CN'
-                logger.info(f"第二步：将优化后的搜索词 '{prepared_search_term}' 翻译成{second_search_language}进行搜索")
+                logger.info(f"第二步：尝试将优化后的搜索词 '{prepared_search_term}' 翻译成{second_search_language}进行搜索")
                 
-                # 翻译优化后的搜索词
-                if search_term_is_chinese:
-                    # 中文翻译成英文
-                    translated_search_term = self._translate_to_english(prepared_search_term)
-                    logger.info(f"将中文搜索词 '{prepared_search_term}' 翻译为英文 '{translated_search_term}' 进行搜索")
-                else:
-                    # 英文翻译成中文（暂时使用简单的翻译字典，实际应用中可以集成翻译API）
-                    # 这里我们使用反向翻译字典
-                    reverse_translation_dict = {
-                        "Wednesday": "星期三",
-                        "Stranger Things": "怪奇物语",
-                        "Squid Game": "鱿鱼游戏",
-                        "The Wandering Earth": "流浪地球",
-                        "Minning Town": "山海情",
-                        "Running Man": "奔跑吧兄弟",
-                        "Peppa Pig": "小猪佩奇",
-                        "One Piece": "海贼王",
-                        "Soul Land": "斗罗大陆",
-                        "A Bite of China": "舌尖上的中国",
-                        "Dragon Raja": "龙族",
-                        "Spy x Family": "间谍过家家"
-                    }
-                    translated_search_term = reverse_translation_dict.get(prepared_search_term)
+                # 翻译优化后的搜索词，使用统一的翻译方法
+                target_lang = 'en-US' if search_term_is_chinese else 'zh-CN'
+                translated_search_term = self._translate_text(prepared_search_term, target_language=target_lang)
+                
+                # 如果翻译结果与原词相同（说明翻译失败或不需要翻译），则跳过这次搜索
+                if translated_search_term != prepared_search_term:
+                    logger.info(f"将搜索词 '{prepared_search_term}' 翻译为 '{translated_search_term}' 进行{second_search_language}搜索")
                     
-                    if not translated_search_term:
-                        # 尝试通过 AI 翻译 (英 -> 中)
-                        if self.llm_translator:
-                            try:
-                                ai_result = self.llm_translator.translate_video_name(prepared_search_term, target_language='Chinese')
-                                if ai_result:
-                                    translated_search_term = ai_result
-                                    logger.info(f"使用 AI 将 '{prepared_search_term}' 翻译为中文: '{translated_search_term}'")
-                            except Exception as e:
-                                logger.error(f"AI 翻译失败: {e}")
+                    # 策略3: 翻译后的搜索词 + 明确类型 + 第二种语言
+                    second_language_results = self._search_with_language(translated_search_term, media_type_hint, year, second_search_language)
+                    
+                    # 策略4: 翻译后的搜索词 + 通用搜索 + 第二种语言
+                    general_second_language_results = self.tmdb_client.search_video_show(translated_search_term, year, language=second_search_language)
+                    
+                    # 合并第二次搜索结果
+                    second_pass_results = []
+                    for results_list in [second_language_results, general_second_language_results]:
+                        if isinstance(results_list, list):
+                            second_pass_results.extend(results_list)
+                        elif isinstance(results_list, dict) and 'results' in results_list:
+                            second_pass_results.extend(results_list['results'])
+                    
+                    # 检查第二次搜索结果中是否有与翻译后的搜索词完全匹配的
+                    exact_match_found, exact_match_result = has_exact_match(second_pass_results, translated_search_term)
+                    if exact_match_found:
+                        logger.info(f"在{second_search_language}搜索结果中找到完全匹配: {exact_match_result.get('name', exact_match_result.get('title'))}")
+                        results = [exact_match_result]
+                    else:
+                        # 没有完全匹配，合并两次搜索结果
+                        logger.info(f"{second_search_language}搜索未找到完全匹配，合并两次搜索结果")
                         
-                        # 如果返回的还是原来的（说明字典和 AI 都没成），则保持
-                        if not translated_search_term:
-                            translated_search_term = prepared_search_term
-                            
-                    logger.info(f"将英文搜索词 '{prepared_search_term}' 翻译为中文 '{translated_search_term}' 进行搜索")
-                
-                # 策略3: 翻译后的搜索词 + 明确类型 + 第二种语言
-                second_language_results = self._search_with_language(translated_search_term, media_type_hint, year, second_search_language)
-                
-                # 策略4: 翻译后的搜索词 + 通用搜索 + 第二种语言
-                general_second_language_results = self.tmdb_client.search_video_show(translated_search_term, year, language=second_search_language)
-                
-                # 合并第二次搜索结果
-                second_pass_results = []
-                for results_list in [second_language_results, general_second_language_results]:
-                    if isinstance(results_list, list):
-                        second_pass_results.extend(results_list)
-                    elif isinstance(results_list, dict) and 'results' in results_list:
-                        second_pass_results.extend(results_list['results'])
-                
-                # 检查第二次搜索结果中是否有与翻译后的搜索词完全匹配的
-                exact_match_found, exact_match_result = has_exact_match(second_pass_results, translated_search_term)
-                if exact_match_found:
-                    logger.info(f"在{second_search_language}搜索结果中找到完全匹配: {exact_match_result.get('name', exact_match_result.get('title'))}")
-                    results = [exact_match_result]
+                        # 保存第二次搜索结果到总结果中
+                        for result in second_pass_results:
+                            if result.get('id') not in unique_ids:
+                                all_results.append(result)
+                                unique_ids.add(result.get('id'))
+                        
+                        results = all_results
                 else:
-                    # 没有完全匹配，合并两次搜索结果
-                    logger.info(f"{second_search_language}搜索未找到完全匹配，合并两次搜索结果")
-                    
-                    # 保存第二次搜索结果到总结果中
-                    for result in second_pass_results:
-                        if result.get('id') not in unique_ids:
-                            all_results.append(result)
-                            unique_ids.add(result.get('id'))
-                    
+                    logger.info(f"翻译结果与原词相同，跳过第二语言搜索")
                     results = all_results
             
             # 确保results是列表类型
@@ -920,16 +1067,14 @@ class VideoRenamer:
                 
                 # 计算标题相似度并按相似度和流行度排序
                 search_term_lower = search_term.lower()
-                term_trans = self._translate_to_english(search_term_lower).lower()
                 
                 def calculate_score(result):
                     title = result.get('name', result.get('title', '')).lower()
                     original_name = result.get('original_name', '').lower()
                     
                     score = 0
-                    # 1. 完全匹配得分极高 (包括翻译后匹配)
+                    # 1. 完全匹配得分极高
                     if search_term_lower == title or search_term_lower == original_name or \
-                       (term_trans and (term_trans == original_name or term_trans == title)) or \
                        (search_term_lower == "龍族" and title == "龙族") or \
                        (search_term_lower == "龙族" and title == "龍族"):
                         score = 10000
@@ -1107,13 +1252,15 @@ class VideoRenamer:
             
             # 设置媒体类型
             metadata['media_type'] = media_type
-            # 恢复原始的quality_tags
+            # 恢复原始的quality_tags和release_group
             metadata['quality_tags'] = original_quality_tags
+            metadata['release_group'] = original_release_group
             return metadata
         except Exception as e:
             logger.error(f"TMDB enrichment failed: {e}")
-            # 确保quality_tags存在
+            # 确保quality_tags和release_group存在
             metadata['quality_tags'] = original_quality_tags
+            metadata['release_group'] = original_release_group
             # 确保year和tmdb_id字段存在，避免后续处理出错
             if 'year' not in metadata:
                 metadata['year'] = ''
@@ -1123,15 +1270,90 @@ class VideoRenamer:
     
     def _determine_category(self, metadata: Dict) -> str:
         """
-        简化的分类方法，不进行复杂分类
+        根据元数据确定视频的分类目录
         
         Args:
             metadata (Dict): 包含视频元数据的字典
             
         Returns:
-            str: 空字符串，不添加分类目录
+            str: 分类目录路径
         """
-        return ""
+        # 确定基础分类（电视剧/电影/其他）
+        media_type = metadata.get('media_type')
+        if media_type == 'movie':
+            base_category = 'Movies'
+        elif media_type == 'tv':
+            base_category = 'TV Shows'
+        else:
+            base_category = 'Other'
+        
+        # 获取语言和地区信息
+        original_language = metadata.get('original_language', '').lower()
+        origin_countries = metadata.get('origin_country', [])
+        genres = metadata.get('genres', [])
+        
+        # 扩展的国家/地区识别列表
+        chinese_countries = ['CN', 'HK', 'TW']
+        english_countries = ['US', 'GB', 'CA', 'AU', 'NZ']
+        asian_countries = ['JP', 'KR', 'TH', 'IN']
+        
+        # 子分类逻辑
+        sub_category = ''
+        
+        if base_category == 'TV Shows':
+            # 电视剧子分类
+            genre_names = [genre.lower() for genre in genres]
+            
+            # 1. 特殊类型分类
+            if any(genre in genre_names for genre in ['documentary', '纪录片']):
+                sub_category = '纪录片'
+            elif any(genre in genre_names for genre in ['reality', 'variety', '综艺', 'game show']):
+                sub_category = '综艺'
+            elif any(genre in genre_names for genre in ['animation', 'animated', '动画']):
+                # 动画类型进一步细分
+                if original_language in ['zh', 'cn'] or any(country in chinese_countries for country in origin_countries):
+                    sub_category = '国漫'
+                elif original_language in ['ja'] or any(country in ['JP'] for country in origin_countries):
+                    sub_category = '日番'
+                elif original_language in ['en'] or any(country in english_countries for country in origin_countries):
+                    sub_category = '欧美动漫'
+                else:
+                    sub_category = '其他动漫'
+            elif any(genre in genre_names for genre in ['kids', 'children', 'child', '儿童', 'family']):
+                sub_category = '儿童'
+            else:
+                # 2. 普通电视剧分类
+                if original_language in ['zh', 'cn'] or any(country in chinese_countries for country in origin_countries):
+                    sub_category = '国产剧'
+                elif original_language in ['en'] or any(country in english_countries for country in origin_countries):
+                    sub_category = '欧美剧'
+                elif original_language in ['ja', 'ko', 'th', 'hi'] or any(country in asian_countries for country in origin_countries):
+                    sub_category = '日韩剧'
+                else:
+                    # 3. 如果语言和地区无法确定，检查原始名称
+                    original_show_name = metadata.get('original_show_name', '')
+                    if original_show_name and re.search(r'[\u4e00-\u9fff]', original_show_name):
+                        sub_category = '国产剧'
+                    else:
+                        sub_category = '未分类'
+        else:
+            # 电影子分类
+            # 1. 检查是否为动画电影
+            genre_names = [genre.lower() for genre in genres]
+            if any(genre in genre_names for genre in ['animation', 'animated', '动画']):
+                sub_category = '动画电影'
+            else:
+                # 2. 检查语言和地区
+                original_title = metadata.get('original_title', '')
+                if original_title and re.search(r'[\u4e00-\u9fff]', original_title):
+                    sub_category = '华语电影'
+                elif original_language in ['zh', 'cn'] or any(country in chinese_countries for country in origin_countries):
+                    sub_category = '华语电影'
+                else:
+                    sub_category = '外语电影'
+        
+        # 组合分类路径
+        return f"{base_category}/{sub_category}"
     
     def generate_new_path(self, metadata: Dict, rule_type: Optional[str] = None, original_path: Optional[Union[str, Path]] = None, output_dir: Optional[Path] = None) -> Path:
         """
@@ -1153,10 +1375,10 @@ class VideoRenamer:
         # 确定媒体类型和适当的命名规则
         media_type = metadata.get('media_type')
         if rule_type is None:
-            if media_type == 'tv' or (metadata.get('season') and metadata.get('episode')):
-                rule_type = 'tv_show'
-            elif media_type == 'movie':
+            if media_type == 'movie':
                 rule_type = 'movie'
+            elif media_type == 'tv' or (metadata.get('season') and metadata.get('episode')):
+                rule_type = 'tv_show'
             else:
                 rule_type = 'simple'
         
@@ -1315,8 +1537,18 @@ class VideoRenamer:
             
             path = Path(path_str)
             
-            # 直接使用文件名，不添加分类目录前缀
-            full_path = path
+            # 确定分类目录
+            category_path = self._determine_category(metadata)
+            
+            # 获取基础分类
+            base_category = "TV Shows" if media_type == 'tv' else "Movies"
+            
+            # 组合分类目录和文件名，避免重复的基础分类
+            if path.parts and path.parts[0] == base_category:
+                # 如果path已经包含了base_category，就去掉path的第一个部分
+                full_path = Path(category_path) / Path(*path.parts[1:])
+            else:
+                full_path = Path(category_path) / path
             
             # 检测并处理文件冲突
             if output_dir:

@@ -719,12 +719,8 @@ class VideoFileHandler:
                             # 获取目录结构列表
                             folder_parts = list(renamed_relative_path.parent.parts)
                             
-                            # 构建完整目录结构
+                            # 构建完整目录结构（直接使用generate_new_path返回的分类结构）
                             base_folders = ["media"]
-                            if media_type == "movie":
-                                base_folders.append("Movies")
-                            else:
-                                base_folders.append("TV Shows")
                             
                             # 合并目录结构
                             folder_structure = base_folders + folder_parts

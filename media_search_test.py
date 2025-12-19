@@ -19,6 +19,10 @@ except ImportError as e:
 # 配置日志
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+# 将所有模块的日志级别设置为DEBUG
+for logger_name in logging.Logger.manager.loggerDict:
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(logging.DEBUG)
 
 def main():
     parser = argparse.ArgumentParser(description="单独测试 Renamer 和 TMDB Client 的工具")
@@ -52,6 +56,7 @@ def main():
         api_key = None
         naming_conf = {}
         tmdb_conf = {}
+        config = {}
         
     # 2. 初始化客户端
     tmdb_client = None
@@ -64,7 +69,9 @@ def main():
     
     renamer = VideoRenamer(
         tmdb_api_key=api_key,
-        naming_rules=naming_conf
+        naming_rules=naming_conf,
+        llm_config=config.get('llm_translation', {}),
+        config=config  # 传递完整配置对象
     )
     if tmdb_client:
         renamer.tmdb_client = tmdb_client
@@ -121,7 +128,7 @@ def main():
         metadata = renamer.extract_metadata(args.comprehensive, media_type_hint=args.type)
         
         print("\n最终元数据 (包含 TMDB 丰富结果):")
-        important_fields = ['show_name', 'title', 'tmdb_id', 'media_type', 'season', 'episode', 'year', 'quality_tags']
+        important_fields = ['show_name', 'title', 'tmdb_id', 'media_type', 'season', 'episode', 'year', 'quality_tags', 'release_group']
         for field in important_fields:
             if metadata.get(field):
                 print(f"  {field}: {metadata.get(field)}")
