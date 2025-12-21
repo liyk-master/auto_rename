@@ -13,7 +13,6 @@ from tqdm import tqdm  # 引入进度条库
 # 以前的全局配置加载代码已移除，现在由外部传入配置
 # CONFIG = load_config()
 # TOKEN = CONFIG.get("token")
-# ...
 
 def calculate_md5(file_path, block_size=65536):
     """
@@ -61,40 +60,12 @@ def get_file_size(file_path):
         print(f"错误: 获取文件 '{file_path}' 大小时发生未知错误: {e}")
         return None
 
-# client = P123Client(TOKEN)
-# # file = "F:\XunLeiDownLoad\FDM\瑞草洞.Law.and.the.City.2025.S01E01.1080p.DSNP.WEB-DL.H264.AAC.mkv"
-# file = "F:\\XunLeiDownLoad\\media\\[Studio GreenTea] Silent Witch - Chinmoku no Majo no Kakushigoto [11][WebRip][hevc-10bit 1080p AAC][JPSC].mp4"
-# file = os.path.normpath(file)
-# # 调用函数计算MD5和大小
-# file_md5 = calculate_md5(file)
-# file_size = get_file_size(file)
-# if file_md5 is not None and file_size is not None:
-#     print(f"\n计算完成！")
-#     print(f"文件大小 (file_size): {file_size} 字节")
-#     print(f"文件 MD5 (file_md5): {file_md5}")
-    
-#     # 这里是您提供的原始上传代码，现在可以使用计算出的变量
-#     # 假设 client 和其他变量已定义
-#     # parent_id = 18656553
-#     # duplicate = 0
-#     # res = client.upload_file(file_path_to_check, file_md5, os.path.basename(file_path_to_check), file_size, parent_id, duplicate, async_=False)
-#     # print("\n上传结果:", res)
-# else:
-#     print("\n文件计算失败，请检查文件路径是否正确。")
-#     sys.exit(1) # 如果计算失败，退出程序
-# file_name = "[Studio GreenTea] Silent Witch - Chinmoku no Majo no Kakushigoto [11][WebRip][hevc-10bit 1080p AAC][JPSC].mp4"
-# parent_id = 18656553
-# duplicate = 0
-# # res = client.upload_file(file=file, file_name=file_name, parent_id=parent_id, duplicate=duplicate, async_=False)
-# res = client.upload_file(file=file,file_md5=file_md5, file_name=file_name, file_size=file_size,parent_id=parent_id, duplicate=duplicate, async_=False)
-# print(res)
-
 import os
 import hashlib
 import time
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import NoReturn, Optional, Dict, Any
 from functools import wraps
 
 def retry(max_retries=3, delay=5):
@@ -184,12 +155,33 @@ def upload_file(
 
     # 如果无法秒传，进行普通上传
     try:
+        # 请求upload_list获取已经上传的块
+        upload_list_resp = client.upload_list({
+            "bucket": resp["data"]["Bucket"],
+            "key": resp["data"]["Key"],
+            "storageNode": resp["data"]["StorageNode"],
+            "uploadId": resp["data"]["UploadId"],
+        })
+        len_uploaded_parts = 0
+        if upload_list_resp.get("code") == 0:
+            print(f"[INFO] upload_list_resp: {upload_list_resp}")
+            # 验证Parts字段是否存在且不为None
+            parts = upload_list_resp["data"].get("Parts")
+            if parts is not None:
+                len_uploaded_parts = len(parts)
+                print(f"[INFO] 已上传分块: {parts}")
+                print(f"[INFO] 已上传分块数: {len_uploaded_parts}")
+            else:
+                print(f"[INFO] 暂无已上传分块")
+        else:
+            print(f"[ERROR] 获取已上传分块失败: {upload_list_resp.get('message')}")
+            print(f"[INFO] upload_list_resp: {upload_list_resp}")
         upload_data = resp["data"]
         slice_size = int(upload_data.get("SliceSize", 200 * 1024 * 1024))
         
         if file_size > slice_size:
             print(f"[INFO] 开始分块上传: {target_name} ({file_size/1024/1024:.2f}MB)")
-            return _upload_large_file(client, file_path, upload_data, target_name, file_size, slice_size, callback)
+            return _upload_large_file(client, file_path, upload_data, target_name, file_size, slice_size, callback, len_uploaded_parts)
         else:
             print(f"[INFO] 开始直接上传: {target_name}")
             return _upload_small_file(client, file_path, upload_data, target_name, callback)
@@ -202,8 +194,10 @@ def upload_file(
 UPLOAD_HEADERS = {
     'Accept': '*/*',
     'Accept-Language': 'zh-CN,zh;q=0.9',
+    'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
     'Origin': 'https://www.123pan.com',
+    'Pragma': 'no-cache',
     'Referer': 'https://www.123pan.com/',
     'Sec-Fetch-Dest': 'empty',
     'Sec-Fetch-Mode': 'cors',
@@ -221,7 +215,8 @@ def _upload_large_file(
     target_name: str,
     file_size: int,
     slice_size: int,
-    callback=None
+    callback=None,
+    len_uploaded_parts: int = 0
 ) -> Dict[str, Any]:
     """分块上传大文件（带重试机制 + 进度条）"""
     total_parts = (file_size + slice_size - 1) // slice_size
@@ -236,7 +231,7 @@ def _upload_large_file(
     with tqdm(total=file_size, unit='B', unit_scale=True, desc=f"上传 {target_name}", ncols=80) as pbar:
         current_uploaded = 0
         with open(file_path, "rb") as f:
-            slice_no = 1
+            slice_no = len_uploaded_parts + 1
             for chunk in iter(lambda: f.read(slice_size), b""):
                 num_to_upload = len(chunk)
 
@@ -261,13 +256,57 @@ def _upload_large_file(
                 
                 while retry_count < max_retries and not upload_success:
                     try:
+                        # 重试前，获取最新的已上传分块信息
+                        if retry_count > 0:
+                            try:
+                                upload_list_resp = client.upload_list({
+                                    "bucket": upload_data["Bucket"],
+                                    "key": upload_data["Key"],
+                                    "storageNode": upload_data["StorageNode"],
+                                    "uploadId": upload_data["UploadId"],
+                                })
+                                if upload_list_resp.get("code") == 0:
+                                    # 安全获取Parts字段，避免KeyError和TypeError
+                                    parts = upload_list_resp["data"].get("Parts")
+                                    if parts is not None:
+                                        len_uploaded_parts = len(parts)
+                                        print(f"[INFO] 重试前已上传分块: {parts}")
+                                        print(f"[INFO] 重试前已上传分块数: {len_uploaded_parts}")
+                                        # 更新当前分片号，跳过已上传的分块
+                                        slice_no = len_uploaded_parts + 1
+                                    else:
+                                        print(f"[INFO] 重试前暂无已上传分块")
+                            except Exception as list_err:
+                                print(f"[WARNING] 获取已上传分块信息失败: {list_err}")
+                        
+                        # 在每次重试时重新获取当前分片的URL
+                        # 如果是首次上传或之前没有重新获取过URL，则使用之前的current_upload_url_resp
+                        # 否则使用重新获取的URL
+                        if retry_count > 0:
+                            try:
+                                # 确保只重新获取当前失败分片的URL
+                                upload_data["partNumberStart"] = slice_no
+                                upload_data["partNumberEnd"] = slice_no + 1
+                                
+                                # 直接重新获取当前分片的URL
+                                current_upload_url_resp = client.upload_prepare(upload_data)
+                                if current_upload_url_resp.get("code") != 0:
+                                    raise Exception(f"重新获取上传URL失败: {current_upload_url_resp.get('message')}")
+                                print(f"[INFO] 成功重新获取分片 {slice_no} URL")
+                            except Exception as url_err:
+                                print(f"[ERROR] 重新获取上传URL失败: {url_err}")
+                                if "tokens number has exceeded the limit" in str(url_err):
+                                    print(f"[WARNING] 触发API频率限制，等待 30 秒后重试...")
+                                    time.sleep(30)
+                        
+                        # 获取当前分片的上传URL
                         upload_url = current_upload_url_resp["data"]["presignedUrls"][str(slice_no)]
                         
                         # 准备 Headers
                         headers = UPLOAD_HEADERS.copy()
                         # headers['Content-Length'] = str(num_to_upload) # requests会自动计算
                         
-                        # 使用 requests 直接上传，避免 client.request 的 JSON 解析问题
+                        # 尝试上传
                         response = requests.put(
                             upload_url,
                             data=chunk,
@@ -280,30 +319,9 @@ def _upload_large_file(
                     except Exception as upload_err:
                         retry_count += 1
                         error_msg = str(upload_err)
-                        print(f"[WARNING] 分片 {slice_no} 上传异常 ({retry_count}/{max_retries}): {error_msg}")
                         
-                        if retry_count < max_retries:
-                            # 针对 API 限制错误的特殊处理
-                            if "tokens number has exceeded the limit" in error_msg:
-                                print(f"[WARNING] 触发API频率限制，等待 30 秒后重试...")
-                                time.sleep(30)
-                            else:
-                                time.sleep(5)
-                            
-                            try:
-                                # pbar.write(f"[INFO] 重新获取分片 {slice_no} URL")
-                                current_upload_url_resp = client.upload_prepare(upload_data)
-                                if current_upload_url_resp.get("code") != 0:
-                                    raise Exception(f"重新获取上传URL失败: {current_upload_url_resp.get('message')}")
-                            except Exception as url_err:
-                                print(f"[ERROR] 重新获取上传URL失败: {url_err}")
-                                # 如果是 limit 错误，这里可能还会失败，但我们会继续重试循环
-                                if "tokens number has exceeded the limit" in str(url_err):
-                                     time.sleep(30)
-                                     retry_count -= 1 # 这次获取URL失败不算在上传重试次数里？或者保持原样
-                                raise
-                        else:
-                            pbar.write(f"[ERROR] 分片 {slice_no} 失败，达到最大重试次数")
+                        if retry_count >= max_retries:
+                            print(f"[ERROR] 分片 {slice_no} 失败，达到最大重试次数")
                             raise
 
                 slice_no += 1

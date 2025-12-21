@@ -309,6 +309,7 @@ class VideoRenamer:
             r"^(?P<show_name>.*?)[. ]?S(?P<season>\d+)E(?P<episode>\d+)",
             # 2. Season patterns (English & Chinese)
             r"(?P<show_name>.*?)\s*Season\s*(?P<season>\d+)",
+            r"(?P<show_name>.*?)\s*(?P<season>\d+)(?:st|nd|rd|th)\s*Season",
             r"(?P<show_name>.*?)\s*第(?P<season_cn>[一二三四五六七八九十\d]+)季",
             r"\[(?P<show_name>[^\]]+?)\s+第(?P<season_cn>[一二三四五六七八九十\d]+)季\]",
             
@@ -644,6 +645,22 @@ class VideoRenamer:
             show_name = re.sub(r'[^\w\s\u4e00-\u9fff]', '', show_name)
             
             metadata['show_name'] = show_name
+        # 如果没有提取到show_name，使用清理后的文件名作为默认值
+        elif cleaned_name:
+            # 移除明显的年份和质量标签
+            default_show_name = cleaned_name
+            # 移除括号内的内容
+            default_show_name = re.sub(r'[\[\(].*?[\]\)]', '', default_show_name)
+            # 移除年份
+            default_show_name = re.sub(r'\s*\d{4}\s*', '', default_show_name)
+            # 移除多余的空格和特殊字符
+            default_show_name = default_show_name.strip().rstrip('.')
+            default_show_name = re.sub(r'\s+', ' ', default_show_name)
+            default_show_name = re.sub(r'[^\w\s\u4e00-\u9fff]', '', default_show_name)
+            metadata['show_name'] = default_show_name
+        # 最后的备用方案：使用文件名的基本部分
+        else:
+            metadata['show_name'] = os.path.splitext(base_name)[0]
                         
         return metadata
     
