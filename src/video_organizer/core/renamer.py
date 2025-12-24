@@ -180,8 +180,11 @@ class VideoRenamer:
             metadata.setdefault('quality_tags', '')
             metadata.setdefault('year', '')
             metadata.setdefault('tmdb_id', '')
-            metadata.setdefault('season', 1)
-            metadata.setdefault('episode', 1)
+            # 确保season和episode有默认值1，即使它们已经存在但值为None
+            if metadata.get('season') is None:
+                metadata['season'] = 1
+            if metadata.get('episode') is None:
+                metadata['episode'] = 1
             
             return metadata
         except Exception as e:
@@ -322,12 +325,16 @@ class VideoRenamer:
             # 3. Episode patterns with strict boundaries (avoiding Hash [Checksum])
             # 匹配 Show Name - 09 (严格限制show_name不能只含数字)
             r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$).*?)\s*-\s*(?P<episode>\d+(?:-\d+)?)\s*(?:\[|\(|$)",
-            # 匹配 Show Name EP09 / Ep09 (严格限制show_name不能只含数字)
-            r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$).*?)\s*(?:EP|Ep|第)\s*(?P<episode>\d+(?:-\d+)?)\s*(?:集)?\s*(?:\[|\(|$)",
+            # 匹配 Show Name EP09 / Ep09 / Show.Name.EP09 (严格限制show_name不能只含数字，支持点分隔)
+            r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$).*?)(?=[.\s]*(?:EP|Ep|第)[.\s]*\d)[.\s]*(?:EP|Ep|第)[.\s]*(?P<episode>\d+(?:-\d+)?)[.\s]*(?:集)?[.\s]*(?:\[|\(|$)",
             
             # --- 常用 BT 资源/动漫格式匹配 ---
             # 匹配 [VCB-Studio] Show Name [12] 或 [denisplay] Detective Conan Movie 12 - Full Score of Fear (2008) [20th] 等格式
             r"^\[[^\]]+\]\s*(?P<show_name>.*?)\s*(?:\(\d{4}\))?\s*(?:\[[^\]\d]+\])?\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
+            # 匹配 [VCB-Studio] Show Name [OVA03] 等OVA格式
+            r"^\[[^\]]+\]\s*(?P<show_name>.*?)\s*\[OVA(?P<episode>\d{1,4})\]",
+            # 匹配 Show Name [OVA03] 等不带字幕组的OVA格式
+            r"^(?P<show_name>(?!^\d+$).*?)\s*\[OVA(?P<episode>\d{1,4})\]",
             # 匹配 Show Name [12][...] (严格限制show_name不能只含数字)
             r"^(?P<show_name>(?!^\d+$).*?)\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
             # 匹配 剧名 22 [GB] (空格集号，严格限制show_name不能只含数字且不含年份，且集号必须小于1000)
@@ -337,6 +344,8 @@ class VideoRenamer:
             r"^\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
             
             # 基础降级模式 (只抓集号，添加年份排除)
+            # 匹配 [Doomdos] - 荒古恩仇录·破 风篇 - 第32话 - [1080P] 这种格式
+            r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$).*?)\s*-\s*第(?P<episode>\d+(?:-\d+)?)话\s*",
             r"(?<!\d{4})第(?P<episode>\d+(?:-\d+)?)集",
             r"(?<!\d{4})第(?P<episode>\d+(?:-\d+)?)话",
             r"(?<!\d{4})EP(?P<episode>\d+(?:-\d+)?)",
@@ -413,9 +422,43 @@ class VideoRenamer:
                 
                 # 特别处理中文名称，不进行title()转换
                 if re.search(r'[\u4e00-\u9fff]', show_name):
-                    metadata['show_name'] = show_name.replace('.', ' ').strip()
+                    # 只替换英文点(.)，保留中文点(·)
+                    show_name = re.sub(r'\.', ' ', show_name).strip()
+                    # 移除中文点(·)后面的内容，如"荒古恩仇录·破风篇" -> "荒古恩仇录"
+                    if '·' in show_name:
+                        show_name = show_name.split('·')[0].strip()
                 else:
-                    metadata['show_name'] = show_name.replace('.', ' ').title().strip()
+                    show_name = re.sub(r'\.', ' ', show_name).title().strip()
+                
+                # 专门处理EPxx格式：如果有episode信息，直接从原始文件名提取show_name
+                if metadata.get('episode'):
+                    episode_str = metadata['episode']
+                    filename_parts = metadata['original_filename'].split('.')
+                    new_show_name = []
+                    found_ep = False
+                    
+                    for part in filename_parts:
+                        # 检查是否包含EPxx模式
+                        if re.search(r'(?i)EP' + re.escape(episode_str) + r'[a-zA-Z]*', part):
+                            found_ep = True
+                            break
+                        new_show_name.append(part)
+                    
+                    if found_ep and new_show_name:
+                        # 重新组合show_name
+                        show_name = '.'.join(new_show_name)
+                        # 移除可能的字幕组标记（如[xxx]）
+                        show_name = re.sub(r'^\[[^\]]+\]\s*', '', show_name)
+                        # 处理点分隔的情况
+                        if '.' in show_name:
+                            # 对于包含中文的名称，直接替换点为空格
+                            if re.search(r'[\u4e00-\u9fff]', show_name):
+                                show_name = show_name.replace('.', ' ').strip()
+                            # 对于英文名称，替换点为空格并转为title格式
+                            else:
+                                show_name = show_name.replace('.', ' ').title().strip()
+                
+                metadata['show_name'] = show_name.strip()
         
         # 如果直接从原始文件名中没有匹配到，再尝试从清理后的文件名中匹配
         if not match_found:
@@ -436,9 +479,16 @@ class VideoRenamer:
                         
                         # 特别处理中文名称，不进行title()转换
                         if re.search(r'[\u4e00-\u9fff]', show_name):
-                            metadata['show_name'] = show_name.replace('.', ' ').strip()
+                            show_name = show_name.replace('.', ' ').strip()
                         else:
-                            metadata['show_name'] = show_name.replace('.', ' ').title().strip()
+                            show_name = show_name.replace('.', ' ').title().strip()
+                        
+                        # 移除show_name中EPxx及之后的部分（处理点分隔文件名）
+                        ep_match = re.search(r'(?i)\s+EP\d+\s*', show_name)
+                        if ep_match:
+                            show_name = show_name[:ep_match.start()].strip()
+                            
+                        metadata['show_name'] = show_name
                     break
                 
         # 如果没有匹配到show_name但有cleaned_name，尝试提取show_name
@@ -460,9 +510,9 @@ class VideoRenamer:
         # SxxExx格式是最明确的剧集标识，应该优先识别
         if re.search(r'(?i)(^|[^a-zA-Z])S\d+E\d+($|[^a-zA-Z])', base_name):
             is_tv = True
-        # 检查其他季集信息，包括中文季集格式，即使包含分辨率等信息
-        # 只要有明确的季集标识就应识别为TV，避免将包含分辨率的中文剧集误判为电影
-        elif re.search(r'(?i)(^|[^a-zA-Z])(第\d+季|第\d+集|EP\d+|\d+话)', base_name):
+        # 检查其他季集信息，包括中文季集格式和OVA/SP标识，即使包含分辨率等信息
+        # 只要有明确的季集标识就应识别为TV，避免将包含分辨率的中文剧集或OVA/SP误判为电影
+        elif re.search(r'(?i)(^|[^a-zA-Z])(第\d+季|第\d+集|EP\d+|\d+话|OVA\d+|SP\d+)', base_name):
             is_tv = True
         elif metadata.get('season') and metadata.get('episode'):
             # 检查season和episode是否合理（避免将年份等数字误识别）
@@ -540,10 +590,9 @@ class VideoRenamer:
         # 根据媒体类型处理season和episode的默认值
         media_type = metadata.get('media_type')
         if media_type == 'tv':
-            # 对于电视剧，如果有明确的季集标识（SxxExx或第x季第x集），但只有episode没有season，默认设置season=1
-            # 但对于单独的集号（如EP01、第01集、01话），不应自动设置season=1，保持None
-            has_explicit_season = re.search(r'(?i)(^|[^a-zA-Z])(S\d+|第\d+季)', base_name)
-            if metadata.get('episode') and not metadata.get('season') and has_explicit_season:
+            # 对于电视剧，如果有明确的episode但没有season，默认设置season=1
+            # 无论是否有显式的季号标识（Sxx或第x季），只要是TV类型且有集号，就应该有季号
+            if metadata.get('episode') and not metadata.get('season'):
                 metadata['season'] = '1'
         else:  # movie类型
             # 对于电影，清空season和episode
@@ -554,6 +603,33 @@ class VideoRenamer:
         if metadata.get('media_type') == 'movie':
             metadata['season'] = None
             metadata['episode'] = None
+        
+        # 统一清理show_name：处理点分隔的文件名
+        if metadata.get('show_name') and metadata.get('episode'):
+            # 直接使用original_filename处理，确保能正确提取
+            filename_parts = metadata['original_filename'].split('.')
+            episode_str = metadata.get('episode')
+            new_parts = []
+            found_ep = False
+            
+            for part in filename_parts:
+                # 检查是否包含EPxx模式
+                if re.search(r'(?i)EP' + re.escape(episode_str) + r'[a-zA-Z]*', part):
+                    found_ep = True
+                    break
+                new_parts.append(part)
+            
+            if found_ep and new_parts:
+                # 重新组合show_name
+                show_name = '.'.join(new_parts)
+                # 移除可能的字幕组标记（如[xxx]）
+                show_name = re.sub(r'^\[[^\]]+\]\s*', '', show_name)
+                # 对于英文名称，替换点为空格并转为title格式
+                if not re.search(r'[\u4e00-\u9fff]', show_name):
+                    show_name = show_name.replace('.', ' ').title().strip()
+                else:
+                    show_name = show_name.replace('.', ' ').strip()
+                metadata['show_name'] = show_name
         
         # 最终清理：确保show_name纯净，不包含年份、副标题等无关信息
         if 'show_name' in metadata:
@@ -759,8 +835,11 @@ class VideoRenamer:
         # 特别移除末尾的罗马数字 (防止干扰剧名搜索)
         cleaned = re.sub(r'\s+(VIII|VII|VI|III|II|IX|IV|V|X|I)$', '', cleaned, flags=re.IGNORECASE)
         
-        # 4. 最后清理符号和多余空格
-        cleaned = re.sub(r'[\[\]\.\_\-\&\+\(\)]', ' ', cleaned)
+        # 移除中文点(·)后面的内容，如"荒古恩仇录·破风篇" -> "荒古恩仇录"
+        cleaned = re.sub(r'·.*', '', cleaned)
+        
+        # 4. 最后清理符号和多余空格 - 明确列出要替换的字符，不包含中文点(·)
+        cleaned = re.sub(r'\[|\]|\.|\_|\-|\&|\+|\(|\)', ' ', cleaned)
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
         
         # 针对剧名的额外优化：如果清理后太短或包含太多非剧名信息，做最后保护
@@ -970,6 +1049,7 @@ class VideoRenamer:
             # 准备优化后的搜索词
             prepared_search_term = self._prepare_search_term(search_term)
             logger.info(f"搜索TMDB: 原始搜索词='{search_term}', 优化后搜索词='{prepared_search_term}'")
+            logger.info(f"搜索TMDB: 原始搜索词长度={len(search_term)}, 优化后搜索词长度={len(prepared_search_term)}")
             
             # 搜索匹配的视频信息
             # 首先尝试明确的类型搜索
@@ -1496,7 +1576,23 @@ class VideoRenamer:
             if str(val).isdigit(): return int(val)
             return val # 保持为字符串 (如 115-120)
 
-        season = safe_int(metadata.get('season', 1))
+        # 检查是否是OVA/特别篇，如果是则设置为Season 0
+        is_special = False
+        if original_path and original_path.name:
+            # 检查文件名是否包含特别篇标识
+            special_keywords = ['OVA', 'SP', 'Special', '特别篇', '番外篇', 'OVA01', 'OVA02', 'OVA03', 'OVA04', 'OVA05', 'OVA06', 'OVA07', 'OVA08', 'OVA09', 'OVA10']
+            filename_upper = original_path.name.upper()
+            for keyword in special_keywords:
+                if keyword in filename_upper:
+                    is_special = True
+                    break
+        
+        # 如果是特别篇，设置季数为0，否则使用正常的安全转换
+        if is_special:
+            season = 0
+        else:
+            season = safe_int(metadata.get('season', 1))
+            
         episode = safe_int(metadata.get('episode', 1))
         
         # 补零辅助

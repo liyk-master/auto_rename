@@ -7,6 +7,7 @@ import threading
 import os
 import time
 import requests
+import urllib.parse
 from pathlib import Path
 from abc import ABC, abstractmethod
 from typing import Optional, Callable
@@ -223,6 +224,8 @@ class Aria2Monitor(DownloaderMonitor):
                             
                             logger.debug(f"Aria2: Checking file extension for: {file_path}")
                             if file_path.endswith(self.supported_extensions):
+                                # 解码URL编码的文件名
+                                file_path = urllib.parse.unquote(file_path)
                                 logger.info(f"Detected completed video file from aria2: {file_path}")
                                 logger.debug(f"Aria2: Calling callback for file: {file_path}")
                                 self.callback(file_path, downloader_monitor=self)
@@ -482,6 +485,8 @@ class QBittorrentMonitor(DownloaderMonitor):
                             if any(os.path.normpath(f).lower() == file_path_norm for f in self._processed_files):
                                 continue
                             
+                            # 解码URL编码的文件名
+                            file_path = urllib.parse.unquote(file_path)
                             logger.info(f"qBittorrent: Detected completed video file: {file_path}")
                             # 调用回调处理文件
                             try:
