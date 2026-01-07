@@ -1072,9 +1072,12 @@ class VideoRenamer:
             # 首先尝试明确的类型搜索
             media_type_hint = metadata.get('media_type', metadata.get('type', ''))
             year = metadata.get('year')
-            
+            # 对于分季剧集，年份可能导致误判（如"剑来" S01 是 2024年，S02 是 2025年）
+            # 如果有明确的季号，搜索时不使用年份
+            search_year = None if (metadata.get('season') or metadata.get('episode')) and year else year
+
             # 定义缓存键
-            cache_key = (prepared_search_term, media_type_hint, year)
+            cache_key = (prepared_search_term, media_type_hint, search_year)
             
             # 检查缓存
             if cache_key in self._search_cache:
@@ -1137,13 +1140,13 @@ class VideoRenamer:
                 
                 # 如果有明确的媒体类型，优先使用专用搜索
                 if media_type_hint:
-                    primary_results = self._search_with_language(prepared_search_term, media_type_hint, year, primary_language)
+                    primary_results = self._search_with_language(prepared_search_term, media_type_hint, search_year, primary_language)
                     if primary_results:
                         logger.info(f"专用类型搜索返回 {len(primary_results)} 个结果")
                 
-                # 如果专用搜索没有结果，尝试通用搜索
+                 # 如果专用搜索没有结果，尝试通用搜索
                 if not primary_results:
-                    general_results = self.tmdb_client.search_video_show(prepared_search_term, year, language=primary_language)
+                    general_results = self.tmdb_client.search_video_show(prepared_search_term, search_year, language=primary_language)
                     if isinstance(general_results, dict) and 'results' in general_results:
                         primary_results = general_results['results']
                         logger.info(f"通用搜索返回 {len(primary_results)} 个结果")
@@ -1176,13 +1179,13 @@ class VideoRenamer:
                         if translated_search_term != prepared_search_term:
                             logger.info(f"将搜索词 '{prepared_search_term}' 翻译为 '{translated_search_term}' 进行{secondary_language}搜索")
                             
-                            # 跨语言搜索
+                             # 跨语言搜索
                             secondary_results = []
                             if media_type_hint:
-                                secondary_results = self._search_with_language(translated_search_term, media_type_hint, year, secondary_language)
-                            
+                                 secondary_results = self._search_with_language(translated_search_term, media_type_hint, search_year, secondary_language)
+                             
                             if not secondary_results:
-                                general_secondary_results = self.tmdb_client.search_video_show(translated_search_term, year, language=secondary_language)
+                                general_secondary_results = self.tmdb_client.search_video_show(translated_search_term, search_year, language=secondary_language)
                                 if isinstance(general_secondary_results, dict) and 'results' in general_secondary_results:
                                     secondary_results = general_secondary_results['results']
                             
