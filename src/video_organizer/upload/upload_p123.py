@@ -269,60 +269,63 @@ class P123Uploader:
             return None
     
     def _upload_with_progress(self, file_path: str, parent_id: int, file_name: str) -> Optional[Dict[str, Any]]:
-        """带进度通知的上传（简化版，复用 p123do 逻辑）"""
-        
+        """带进度通知的上传（使用 p123do 内部的 tqdm）"""
+
         file_size = os.path.getsize(file_path)
         total_mb = file_size / (1024 * 1024)
-        start_time = time.time()
-        self._last_update_time = start_time
-        self._last_uploaded_bytes = 0
-        self._last_print_time = start_time
-        
+        # 按1000进制显示，更符合用户认知
+        total_mb_display = file_size / (1000 * 1000)
+
+        # Telegram 相关
+        self.tg_message_id = None
+        self.tg_last_update_time = 0
+
+        # 记录上一次的上传量，用于计算速度
+        last_uploaded = 0
+        last_time = time.time()
+        current_speed = 0  # 当前速度
+
         # 定义进度回调函数
         def progress_callback(current_uploaded: int, total_size: int):
-            if total_size > 0:
-                progress = (current_uploaded / total_size) * 100
-                uploaded_mb = current_uploaded / (1024 * 1024)
-                
-                # 计算瞬时速度
-                current_time = time.time()
-                time_diff = current_time - self._last_update_time
-                bytes_diff = current_uploaded - self._last_uploaded_bytes
-                
-                # 为了避免波动太大，只在时间间隔大于 1.0 秒时或者进度完成时更新速度
-                if time_diff >= 1.0 or current_uploaded == total_size:
-                    speed_mbps = (bytes_diff / (1024 * 1024)) / time_diff if time_diff > 0 else 0
-                    
-                    # 更新基准点
-                    self._last_update_time = current_time
-                    self._last_uploaded_bytes = current_uploaded
-                    
-                    # 只有当进度有显著变化或时间间隔足够时才发送，这在 _send_tg_progress 内部控制
-                    self._send_tg_progress(file_name, progress, uploaded_mb, total_mb, speed_mbps)
-                else:
-                    # 使用当前的速度估计
-                    elapsed_time = current_time - start_time
-                    speed_mbps = (current_uploaded / (1024 * 1024)) / elapsed_time if elapsed_time > 0 else 0
-                
-                # 在命令行打印进度（每1秒或进度完成时打印一次，避免刷屏但保持实时性）
-                if current_time - self._last_print_time >= 1.0 or current_uploaded == total_size:
-                    # 美化的进度显示
-                    progress_bar = "█" * int(progress / 5) + "░" * (20 - int(progress / 5))
-                    print(f"\r{Fore.CYAN}[{time.strftime('%H:%M:%S')}] {Fore.GREEN}上传中{Fore.RESET} {file_name}")
-                    print(f"{Fore.CYAN}[{time.strftime('%H:%M:%S')}] {Fore.YELLOW}[{progress_bar}] {progress:.1f}%{Fore.RESET} "
-                          f"{Fore.MAGENTA}{uploaded_mb:.1f}MB{Fore.RESET} / {total_mb:.1f}MB "
-                          f"{Fore.BLUE}{speed_mbps:.2f} MB/s{Fore.RESET}")
-                    self._last_print_time = current_time
-                elif self.tg_message_id is None:
-                     # 第一次强制发送
-                     self._send_tg_progress(file_name, progress, uploaded_mb, total_mb, 0)
+            nonlocal last_uploaded, last_time, current_speed
 
-        # 发送初始进度
-        self._last_print_time = time.time()
-        self._send_tg_progress(file_name, 0, 0, total_mb, 0)
-        
-        # 调用原始上传函数，传入回调
-        # p123do.upload_file 已经修改为支持 callback 和 max_workers 参数
+            if total_size > 0:
+                # 计算进度（1000进制）
+                uploaded_mb_display = current_uploaded / (1000 * 1000)
+                progress = (current_uploaded / total_size) * 100
+
+                # 计算当前速度用于Telegram（每1秒更新一次）
+                current_time = time.time()
+                time_diff = current_time - last_time
+
+                if time_diff >= 1.0:
+                    bytes_diff = current_uploaded - last_uploaded
+                    speed_mbps = (bytes_diff / (1024 * 1024)) / time_diff if time_diff > 0 else 0
+                    current_speed = speed_mbps
+
+                    # 发送Telegram进度
+                    self._send_tg_progress(
+                        file_name,
+                        progress,
+                        uploaded_mb_display,
+                        total_mb_display,
+                        speed_mbps
+                    )
+
+                    # 更新基准点
+                    last_uploaded = current_uploaded
+                    last_time = current_time
+                elif self.tg_message_id is None:
+                    # 第一次强制发送
+                    self._send_tg_progress(
+                        file_name,
+                        0,
+                        0,
+                        total_mb_display,
+                        0
+                    )
+
+        # 调用原始上传函数，传入回调（使用 p123do 内部的 tqdm）
         result = p123_upload_file(
             client=self.client,
             file_path=file_path,
@@ -332,11 +335,17 @@ class P123Uploader:
             callback=progress_callback,
             max_workers=self.max_workers
         )
-        
-        # 发送完成进度
+
+        # 发送完成Telegram消息
         if result:
-            self._send_tg_progress(file_name, 100, total_mb, total_mb, 0)
-        
+            self._send_tg_progress(
+                file_name,
+                100,
+                total_mb_display,
+                total_mb_display,
+                current_speed
+            )
+
         return result
 
 

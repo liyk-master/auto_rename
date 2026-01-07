@@ -427,9 +427,15 @@ class VideoRenamer:
                 if re.search(r'[\u4e00-\u9fff]', show_name):
                     # 只替换英文点(.)，保留中文点(·)
                     show_name = re.sub(r'\.', ' ', show_name).strip()
-                    # 移除中文点(·)后面的内容，如"荒古恩仇录·破风篇" -> "荒古恩仇录"
+                    # 移除副标题（只移除明确的副标题关键词，保留正式剧名部分）
+                    # 使用与 _clean_filename_for_search 相同的逻辑
                     if '·' in show_name:
-                        show_name = show_name.split('·')[0].strip()
+                        subtitle_keywords = [
+                            r'篇', r'章', r'回', r'卷', r'部', r'季', r'传',
+                            r'特别篇', r'番外篇', r'外传', r'前传', r'后传'
+                        ]
+                        subtitle_pattern = r'·.*?(?:' + '|'.join(subtitle_keywords) + r')(?=$|\s|\.|\-|\(|\[|，|、)'
+                        show_name = re.sub(subtitle_pattern, '', show_name)
                 else:
                     show_name = re.sub(r'\.', ' ', show_name).title().strip()
                 
@@ -717,11 +723,11 @@ class VideoRenamer:
             for modifier in modifiers:
                 show_name = re.sub(modifier, '', show_name, flags=re.IGNORECASE)
             
-            # 6. 移除多余的空格和特殊字符
+            # 6. 移除多余的空格和特殊字符（保留中文点(·)）
             show_name = show_name.strip().rstrip('.')
             show_name = re.sub(r'\s+', ' ', show_name)
-            # 移除非字母数字和中文的字符
-            show_name = re.sub(r'[^\w\s\u4e00-\u9fff]', '', show_name)
+            # 移除非字母数字和中文的字符（包括中文点(·)）
+            show_name = re.sub(r'[^\w\s\u4e00-\u9fff·]', '', show_name)
             
             metadata['show_name'] = show_name
         # 如果没有提取到show_name，使用清理后的文件名作为默认值
@@ -838,8 +844,16 @@ class VideoRenamer:
         # 特别移除末尾的罗马数字 (防止干扰剧名搜索)
         cleaned = re.sub(r'\s+(VIII|VII|VI|III|II|IX|IV|V|X|I)$', '', cleaned, flags=re.IGNORECASE)
         
-        # 移除中文点(·)后面的内容，如"荒古恩仇录·破风篇" -> "荒古恩仇录"
-        cleaned = re.sub(r'·.*', '', cleaned)
+        # 移除副标题（只移除明确的副标题关键词，保留正式剧名部分）
+        # 使用非贪婪匹配 .*? 来匹配副标题前的内容
+        # 使用前瞻断言 (?=...) 确保副标题后面跟着分隔符，但不匹配分隔符本身
+        subtitle_keywords = [
+            r'篇', r'章', r'回', r'卷', r'部', r'季', r'传',
+            r'特别篇', r'番外篇', r'外传', r'前传', r'后传'
+        ]
+        # 副标题后面可以跟：字符串结束、空格、点、连字符、括号、中文标点（使用前瞻断言）
+        subtitle_pattern = r'·.*?(?:' + '|'.join(subtitle_keywords) + r')(?=$|\s|\.|\-|\(|\[|，|、)'
+        cleaned = re.sub(subtitle_pattern, '', cleaned)
         
         # 4. 最后清理符号和多余空格 - 明确列出要替换的字符，不包含中文点(·)
         cleaned = re.sub(r'\[|\]|\.|\_|\-|\&|\+|\(|\)', ' ', cleaned)
@@ -1246,17 +1260,40 @@ class VideoRenamer:
                     title = result.get('name', result.get('title', '')).lower()
                     original_name = result.get('original_name', '').lower()
                     
+                    # 标准化搜索词和标题，移除所有非字母数字和中文的字符（包括中文点(·)）
+                    normalized_search = re.sub(r'[^\w\s\u4e00-\u9fff]', '', search_term_lower)
+                    normalized_search = re.sub(r'\s+', '', normalized_search)
+                    
+                    normalized_title = re.sub(r'[^\w\s\u4e00-\u9fff]', '', title)
+                    normalized_title = re.sub(r'\s+', '', normalized_title)
+                    
+                    normalized_original = re.sub(r'[^\w\s\u4e00-\u9fff]', '', original_name)
+                    normalized_original = re.sub(r'\s+', '', normalized_original)
+                    
+                    # 定义通用数字字符集（用于模糊匹配）
+                    # 包括：阿拉伯数字(0-9)、中文数字(一二三四五六七八九十)、罗马数字(Ⅰ-Ⅹ, ⅰ-ⅹ)
+                    digit_pattern = '[0-9一二三四五六七八九十ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅰⅱⅲⅳⅵⅶⅷⅸⅹⅺⅻⅼⅽⅾⅿ]+'
+                    # 进一步标准化：移除所有数字（用于模糊匹配）
+                    fuzzy_search = re.sub(digit_pattern, '', normalized_search)
+                    fuzzy_title = re.sub(digit_pattern, '', normalized_title)
+                    fuzzy_original = re.sub(digit_pattern, '', normalized_original)
+                    
                     score = 0
-                    # 1. 完全匹配得分极高
-                    if search_term_lower == title or search_term_lower == original_name or \
-                       (search_term_lower == "龍族" and title == "龙族") or \
-                       (search_term_lower == "龙族" and title == "龍族"):
+                    # 1. 模糊匹配：移除所有数字后，搜索词和标题完全匹配
+                    if fuzzy_search == fuzzy_title or fuzzy_search == fuzzy_original:
+                        score = 12000
+                    # 2. 搜索词是标题的前缀（标题更长，更精确）
+                    elif (normalized_title.startswith(normalized_search) and len(normalized_title) > len(normalized_search)) or \
+                         (normalized_original.startswith(normalized_search) and len(normalized_original) > len(normalized_search)):
+                        score = 15000
+                    # 3. 完全匹配得分极高（在标准化后的字符串上）
+                    elif normalized_search == normalized_title or normalized_search == normalized_original:
                         score = 10000
-                    # 2. 搜索词是标题的显著子集
-                    elif search_term_lower in title and len(search_term_lower) > 1:
+                    # 4. 搜索词是标题的显著子集（在标准化后的字符串上）
+                    elif normalized_search in normalized_title and len(normalized_search) > 1:
                         score = 1000
-                    # 3. 标题是搜索词的子集
-                    elif title in search_term_lower and len(title) > 1:
+                    # 5. 标题是搜索词的子集（在标准化后的字符串上）
+                    elif normalized_title in normalized_search and len(normalized_title) > 1:
                         score = 500
                     
                     total_score = score + result.get('popularity', 0)

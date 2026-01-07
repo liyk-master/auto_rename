@@ -366,8 +366,8 @@ def _upload_large_file(
     # 创建线程锁用于进度条更新
     lock = threading.Lock()
     
-    # 使用tqdm创建进度条（禁用速度显示，使用自定义callback计算速度）
-    with tqdm(total=file_size, unit='B', unit_scale=True, desc=f"上传 {target_name}", ncols=80, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt}') as pbar:
+    # 使用tqdm创建进度条（包含速度显示）
+    with tqdm(total=file_size, unit='B', unit_scale=True, desc=f"上传 {target_name}", ncols=100, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
         # 设置已上传的进度
         pbar.update(len_uploaded_parts * slice_size)
         
@@ -398,10 +398,6 @@ def _upload_large_file(
                 try:
                     uploaded_size = future.result()
                     success_count += 1
-                    # 美化的分片成功提示
-                    progress_percent = (success_count / (total_parts - len_uploaded_parts)) * 100
-                    bar = "█" * int(progress_percent / 5) + "░" * (20 - int(progress_percent / 5))
-                    print(f"\r{Fore.GREEN}✓{Fore.RESET} 分片 {slice_no}/{total_parts} 上传成功 {Fore.YELLOW}[{bar}]{Fore.RESET} {progress_percent:.1f}%", end='')
                 except Exception as e:
                     error_count += 1
                     print(f"\n{Fore.RED}✗{Fore.RESET} 分片 {slice_no} 上传失败: {e}")
