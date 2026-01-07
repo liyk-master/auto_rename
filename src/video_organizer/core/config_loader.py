@@ -24,7 +24,8 @@ DEFAULT_CONFIG = {
     },
     'p123': {
         'token': '',
-        'parent_id': 0
+        'parent_id': 0,
+        'max_workers': 2  # 最大并发上传工作线程数
     },
     'naming': {
         'tv_show_format': '{show_name}/Season {season:02d}/{show_name} {season_episode} {quality_tags}',

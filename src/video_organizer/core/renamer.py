@@ -254,8 +254,8 @@ class VideoRenamer:
     
     def _extract_with_regex(self, filename: str) -> Dict:
         """Extract metadata using regular expressions."""
-        # 预处理：将全角括号替换为标准方括号
-        base_name = filename.replace('【', '[').replace('】', ']')
+        # 预处理：将全角括号替换为标准方括号，将+号替换为空格
+        base_name = filename.replace('【', '[').replace('】', ']').replace('+', ' ')
         
         metadata = {
             'original_filename': filename,
@@ -327,6 +327,9 @@ class VideoRenamer:
             r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$).*?)\s*-\s*(?P<episode>\d+(?:-\d+)?)\s*(?:\[|\(|$)",
             # 匹配 Show Name EP09 / Ep09 / Show.Name.EP09 (严格限制show_name不能只含数字，支持点分隔)
             r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$).*?)(?=[.\s]*(?:EP|Ep|第)[.\s]*\d)[.\s]*(?:EP|Ep|第)[.\s]*(?P<episode>\d+(?:-\d+)?)[.\s]*(?:集)?[.\s]*(?:\[|\(|$)",
+
+            # 修复：匹配 "Spy x Family 2 - 05" 格式 (季号在集号前面，用空格分隔)
+            r"^(?P<show_name>(?!^\d+$).+?)\s+(?P<season>\d+)\s*-\s*(?P<episode>\d{2})(?:\s|\.|$)",
             
             # --- 常用 BT 资源/动漫格式匹配 ---
             # 匹配 [VCB-Studio] Show Name [12] 或 [denisplay] Detective Conan Movie 12 - Full Score of Fear (2008) [20th] 等格式
@@ -800,7 +803,7 @@ class VideoRenamer:
         
         # 2. 预处理：移除括号内的技术参数和发布组
         # 质量标记正则表达式
-        quality_patterns = r'HD|FHD|UHD|4K|1080p|720p|480p|360p|240p|2160p|2160|HDR|SDR|HDR10|Dolby\s*Vision|x264|x265|h264|h265|HEVC|AVC|MPEG4|10bit|AAC|DTS|DDP|TrueHD|Atmos|FLAC|AC3|DTS-HD|OPUS|BD|BDRip|BluRay|DVD|DVDRip|WEB|WEBRip|WEB-DL|REPACK|PROPER|INTERNAL|CHS|ENG|双语|字幕|中字|英字|JPN|简日内嵌|繁体|简体|日语版|国语版|粤语版|MP4|MKV|AVI|GB|BIG5|CHT|CHS|TC|SC|JAP|CN|JP|Dub|JP\s*Dub|TV|Web'
+        quality_patterns = r'HD|FHD|UHD|4K|1080p|720p|480p|360p|240p|2160p|2160|HDR|SDR|HDR10|Dolby\s*Vision|DV|dv|Dv|x264|x265|h264|h265|HEVC|AVC|MPEG4|10bit|AAC|DTS|DDP|TrueHD|Atmos|FLAC|AC3|DTS-HD|OPUS|BD|BDRip|BluRay|DVD|DVDRip|WEB|WEBRip|WEB-DL|REPACK|PROPER|INTERNAL|CHS|ENG|双语|字幕|中字|英字|JPN|简日内嵌|繁体|简体|日语版|国语版|粤语版|MP4|MKV|AVI|GB|BIG5|CHT|CHS|TC|SC|JAP|CN|JP|Dub|JP\s*Dub|TV|Web'
         
         # 移除包含质量标记的方括号/圆括号块
         # 使用正则表达式匹配括号及其中内容，如果内容包含 quality 关键字则移除
@@ -1192,7 +1195,8 @@ class VideoRenamer:
                         results = all_results
                 
                 # 保存到缓存
-                self._search_cache[cache_key] = results
+                if results:
+                    self._search_cache[cache_key] = results
             
             # 确保results是列表类型
             if not isinstance(results, list):
@@ -1495,14 +1499,24 @@ class VideoRenamer:
                 sub_category = '综艺'
             elif any(genre in genre_names for genre in ['animation', 'animated', '动画']):
                 # 动画类型进一步细分
-                if original_language in ['zh', 'cn'] or any(country in chinese_countries for country in origin_countries):
-                    sub_category = '国漫'
-                elif original_language in ['ja'] or any(country in ['JP'] for country in origin_countries):
+                # 首先检查是否是日漫
+                if original_language in ['ja', 'ja-jp'] or any(country in ['JP', '日本'] for country in origin_countries):
                     sub_category = '日番'
-                elif original_language in ['en'] or any(country in english_countries for country in origin_countries):
+                # 然后检查是否是国漫
+                elif original_language in ['zh', 'cn', 'zh-cn', 'zh-tw', 'zh-hk'] or any(country in chinese_countries for country in origin_countries):
+                    sub_category = '国漫'
+                # 接着检查是否是欧美动漫
+                elif original_language in ['en', 'en-us', 'en-gb'] or any(country in english_countries for country in origin_countries):
                     sub_category = '欧美动漫'
                 else:
-                    sub_category = '其他动漫'
+                    # 额外检查：通过标题中的日文假名识别日漫
+                    title = metadata.get('show_name', '') or metadata.get('original_show_name', '')
+                    if re.search(r'[\u3040-\u30FF]', title):  # 检查是否包含日文假名
+                        sub_category = '日番'
+                    elif re.search(r'[\u4E00-\u9FFF]', title):  # 检查是否包含中文汉字
+                        sub_category = '国漫'
+                    else:
+                        sub_category = '其他动漫'
             elif any(genre in genre_names for genre in ['kids', 'children', 'child', '儿童', 'family']):
                 sub_category = '儿童'
             else:
@@ -1579,11 +1593,22 @@ class VideoRenamer:
         # 检查是否是OVA/特别篇，如果是则设置为Season 0
         is_special = False
         if original_path and original_path.name:
-            # 检查文件名是否包含特别篇标识
-            special_keywords = ['OVA', 'SP', 'Special', '特别篇', '番外篇', 'OVA01', 'OVA02', 'OVA03', 'OVA04', 'OVA05', 'OVA06', 'OVA07', 'OVA08', 'OVA09', 'OVA10']
+            # 检查文件名是否包含特别篇标识（使用正则表达式精确匹配，避免部分匹配）
+            special_patterns = [
+                r'\bOVA\b',  # 匹配独立的OVA
+                r'\bOVA0?1\b', r'\bOVA0?2\b', r'\bOVA0?3\b', r'\bOVA0?4\b', r'\bOVA0?5\b',
+                r'\bOVA0?6\b', r'\bOVA0?7\b', r'\bOVA0?8\b', r'\bOVA0?9\b', r'\bOVA10\b',
+                r'(?<!\w)SP(?!\w)',  # 匹配独立的SP，排除SPY等词
+                r'(?<=\[)Special(?=\])',  # [Special] 格式
+                r'\bSpecial\s*(?:Episode|EP|Ep)\b',  # Special Episode 格式
+                r'\bSpecial\s*\d+\b',  # Special 01 格式
+                r'\bSpecial\b(?=\s*\.\w+$)',  # Special.mkv 格式（在文件名末尾）
+                r'特别篇',  # 中文关键词
+                r'番外篇',  # 中文关键词
+            ]
             filename_upper = original_path.name.upper()
-            for keyword in special_keywords:
-                if keyword in filename_upper:
+            for pattern in special_patterns:
+                if re.search(pattern, filename_upper, re.IGNORECASE):
                     is_special = True
                     break
         

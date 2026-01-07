@@ -72,6 +72,7 @@ class VideoFileHandler:
         raw_p123_token = self.p123_config.get('token', '')
         self.p123_token = str(raw_p123_token).split('#')[0].split(';')[0].strip()
         self.p123_parent_id = int(self.p123_config.get('parent_id', 0))
+        self.p123_max_workers = int(self.p123_config.get('max_workers', 2))  # 默认2个线程
         
         # 初始化 Telegram 配置
         self.telegram_config = telegram_config or {}
@@ -97,7 +98,8 @@ class VideoFileHandler:
                 self.p123_uploader = P123Uploader(
                     self.p123_token,
                     self.p123_parent_id,
-                    telegram_config=self.telegram_config
+                    telegram_config=self.telegram_config,
+                    max_workers=self.p123_max_workers
                 )
                 self.logger.info("123云盘上传器初始化成功")
             except Exception as e:
@@ -1010,4 +1012,5 @@ class VideoFileHandler:
             # 一般不需要自动清理，除非确定它已经是僵尸了。这里暂时不自动清理 processing_files
         except Exception as e:
             self.logger.error(f"清理旧记录时出错: {e}")
+
 

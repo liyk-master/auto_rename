@@ -8,6 +8,10 @@ import time
 import requests
 from pathlib import Path
 from typing import Optional, Dict, Any
+from colorama import Fore, init
+
+# 初始化 colorama
+init(autoreset=True)
 
 # 导入 p123 客户端
 try:
@@ -23,7 +27,7 @@ from .p123do import upload_file as p123_upload_file, calculate_md5, get_file_siz
 class P123Uploader:
     """123云盘上传器（支持文件夹管理和TG通知）"""
     
-    def __init__(self, token: str, parent_id: int = 0, telegram_config: Optional[Dict[str, Any]] = None):
+    def __init__(self, token: str, parent_id: int = 0, telegram_config: Optional[Dict[str, Any]] = None, max_workers: int = 2):
         """
         初始化 123 云盘上传器
         
@@ -31,6 +35,7 @@ class P123Uploader:
             token: 123云盘 API Token
             parent_id: 根目录文件夹ID
             telegram_config: Telegram 配置
+            max_workers: 最大并发上传工作线程数，默认2
         """
         if not P123Client:
             raise ImportError("p123client 未安装，无法使用 123 云盘上传功能")
@@ -38,6 +43,7 @@ class P123Uploader:
         self.token = token
         self.root_parent_id = parent_id
         self.telegram_config = telegram_config or {}
+        self.max_workers = max_workers  # 保存并发线程数配置
         self.client = P123Client(token)
         
         # TG 通知相关
@@ -270,6 +276,7 @@ class P123Uploader:
         start_time = time.time()
         self._last_update_time = start_time
         self._last_uploaded_bytes = 0
+        self._last_print_time = start_time
         
         # 定义进度回调函数
         def progress_callback(current_uploaded: int, total_size: int):
@@ -280,13 +287,11 @@ class P123Uploader:
                 # 计算瞬时速度
                 current_time = time.time()
                 time_diff = current_time - self._last_update_time
+                bytes_diff = current_uploaded - self._last_uploaded_bytes
                 
-                # 为了避免波动太大，只在时间间隔大于 0.5 秒时或者进度完成时更新速度
+                # 为了避免波动太大，只在时间间隔大于 1.0 秒时或者进度完成时更新速度
                 if time_diff >= 1.0 or current_uploaded == total_size:
-                    bytes_diff = current_uploaded - self._last_uploaded_bytes
-                    speed_mbps = 0
-                    if time_diff > 0:
-                        speed_mbps = (bytes_diff / (1024 * 1024)) / time_diff
+                    speed_mbps = (bytes_diff / (1024 * 1024)) / time_diff if time_diff > 0 else 0
                     
                     # 更新基准点
                     self._last_update_time = current_time
@@ -294,34 +299,38 @@ class P123Uploader:
                     
                     # 只有当进度有显著变化或时间间隔足够时才发送，这在 _send_tg_progress 内部控制
                     self._send_tg_progress(file_name, progress, uploaded_mb, total_mb, speed_mbps)
-                    
-                    # 在命令行打印进度（每5%打印一次，避免刷屏）
-                    # 使用 sys.stdout.write 和 \r 可以实现单行刷新
-                    # 但为了兼容性，也可以直接 print
-                    if hasattr(self, '_last_print_progress'):
-                        if progress - self._last_print_progress >= 5 or progress >= 100:
-                            print(f"[{time.strftime('%H:%M:%S')}] 进度: {progress:.1f}% ({uploaded_mb:.1f}MB / {total_mb:.1f}MB) - {speed_mbps:.2f} MB/s")
-                            self._last_print_progress = progress
-                    else:
-                        self._last_print_progress = progress
-                        print(f"[{time.strftime('%H:%M:%S')}] 进度: {progress:.1f}% ({uploaded_mb:.1f}MB / {total_mb:.1f}MB) - {speed_mbps:.2f} MB/s")
+                else:
+                    # 使用当前的速度估计
+                    elapsed_time = current_time - start_time
+                    speed_mbps = (current_uploaded / (1024 * 1024)) / elapsed_time if elapsed_time > 0 else 0
+                
+                # 在命令行打印进度（每1秒或进度完成时打印一次，避免刷屏但保持实时性）
+                if current_time - self._last_print_time >= 1.0 or current_uploaded == total_size:
+                    # 美化的进度显示
+                    progress_bar = "█" * int(progress / 5) + "░" * (20 - int(progress / 5))
+                    print(f"\r{Fore.CYAN}[{time.strftime('%H:%M:%S')}] {Fore.GREEN}上传中{Fore.RESET} {file_name}")
+                    print(f"{Fore.CYAN}[{time.strftime('%H:%M:%S')}] {Fore.YELLOW}[{progress_bar}] {progress:.1f}%{Fore.RESET} "
+                          f"{Fore.MAGENTA}{uploaded_mb:.1f}MB{Fore.RESET} / {total_mb:.1f}MB "
+                          f"{Fore.BLUE}{speed_mbps:.2f} MB/s{Fore.RESET}")
+                    self._last_print_time = current_time
                 elif self.tg_message_id is None:
                      # 第一次强制发送
                      self._send_tg_progress(file_name, progress, uploaded_mb, total_mb, 0)
 
         # 发送初始进度
-        self._last_print_progress = 0
+        self._last_print_time = time.time()
         self._send_tg_progress(file_name, 0, 0, total_mb, 0)
         
         # 调用原始上传函数，传入回调
-        # p123do.upload_file 已经修改为支持 callback 参数
+        # p123do.upload_file 已经修改为支持 callback 和 max_workers 参数
         result = p123_upload_file(
             client=self.client,
             file_path=file_path,
             parent_id=parent_id,
             new_name=file_name,
             max_retries=3,
-            callback=progress_callback
+            callback=progress_callback,
+            max_workers=self.max_workers
         )
         
         # 发送完成进度
@@ -329,3 +338,8 @@ class P123Uploader:
             self._send_tg_progress(file_name, 100, total_mb, total_mb, 0)
         
         return result
+
+
+
+
+

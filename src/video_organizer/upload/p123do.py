@@ -9,57 +9,11 @@ import sys
 import re
 import requests  # 引入 requests
 from tqdm import tqdm  # 引入进度条库
-
-# 以前的全局配置加载代码已移除，现在由外部传入配置
-# CONFIG = load_config()
-# TOKEN = CONFIG.get("token")
-
-def calculate_md5(file_path, block_size=65536):
-    """
-    计算给定文件的MD5哈希值。
-    
-    Args:
-        file_path (str): 文件的完整路径。
-        block_size (int): 读取文件时的块大小，以字节为单位。
-                          为了高效处理大文件，此函数会分块读取。
-                          默认值 65536 (64KB) 是一个合理的选择。
-    
-    Returns:
-        str or None: 文件的MD5哈希值（以十六进制字符串形式），
-                     如果文件不存在或发生错误，则返回 None。
-    """
-    md5_hash = hashlib.md5()
-    try:
-        with open(file_path, "rb") as f:
-            for block in iter(lambda: f.read(block_size), b""):
-                md5_hash.update(block)
-        return md5_hash.hexdigest()
-    except FileNotFoundError:
-        print(f"错误: 文件 '{file_path}' 不存在。")
-        return None
-    except IOError as e:
-        print(f"错误: 读取文件 '{file_path}' 时发生IO错误: {e}")
-        return None
-
-def get_file_size(file_path):
-    """
-    获取给定文件的大小。
-    
-    Args:
-        file_path (str): 文件的完整路径。
-    
-    Returns:
-        int or None: 文件的大小（以字节为单位），如果文件不存在，则返回 None。
-    """
-    try:
-        return os.path.getsize(file_path)
-    except FileNotFoundError:
-        print(f"错误: 文件 '{file_path}' 不存在。")
-        return None
-    except Exception as e:
-        print(f"错误: 获取文件 '{file_path}' 大小时发生未知错误: {e}")
-        return None
-
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Queue
+import time  # 引入时间模块用于重试延迟
+import random  # 引入随机模块用于退避抖动
 import os
 import hashlib
 import time
@@ -67,6 +21,10 @@ from pathlib import Path
 from datetime import datetime
 from typing import NoReturn, Optional, Dict, Any
 from functools import wraps
+from colorama import Fore, init
+
+# 初始化 colorama
+init(autoreset=True)
 
 def retry(max_retries=3, delay=5):
     """重试装饰器"""
@@ -95,13 +53,18 @@ def calculate_md5(file_path: str, chunk_size=4096) -> str:
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
 
+def get_file_size(file_path: str) -> int:
+    """获取文件大小（字节）"""
+    return Path(file_path).stat().st_size
+
 def upload_file(
     client: Any,
     file_path: str,
     parent_id: int,
     new_name: Optional[str] = None,
     max_retries: int = 3,
-    callback=None
+    callback=None,
+    max_workers: int = 2
 ) -> Optional[Dict[str, Any]]:
     """
     上传文件到123云盘（参考p123do.py upload修改）
@@ -111,6 +74,8 @@ def upload_file(
     :param parent_id: 目标文件夹ID
     :param new_name: 上传后的文件名（可选）
     :param max_retries: 最大重试次数（此处主要用于内部重试，函数整体重试逻辑如下）
+    :param callback: 进度回调函数
+    :param max_workers: 最大并发上传工作线程数，默认2
     :return: 上传成功返回文件信息字典，失败返回None
     """
     file_path = Path(file_path)
@@ -120,8 +85,19 @@ def upload_file(
     
     file_size = file_path.stat().st_size
     
-    print(f"[INFO] 开始计算文件MD5: {file_path}")
+    # 记录MD5计算开始时间
+    md5_start_time = time.time()
+    
+    print(f"\n{Fore.CYAN}📁{Fore.RESET} {Fore.YELLOW}开始计算文件MD5{Fore.RESET}: {Fore.MAGENTA}{file_path.name}{Fore.RESET}")
     file_md5 = calculate_md5(file_path)
+    
+    # 记录MD5计算结束时间
+    md5_end_time = time.time()
+    md5_time = md5_end_time - md5_start_time
+    print(f"{Fore.GREEN}✓{Fore.RESET} MD5计算完成: {Fore.YELLOW}{md5_time:.2f} 秒{Fore.RESET}")
+    
+    # 记录实际上传开始时间（排除MD5计算时间）
+    upload_start_time = time.time()
     
     # 尝试秒传/初始化上传
     try:
@@ -139,15 +115,36 @@ def upload_file(
              raise Exception(f"上传请求失败: {resp.get('message')}")
         
         if resp.get("data", {}).get("Reuse"):
-            print(f"[SUCCESS] 秒传成功: {target_name}")
+            print(f"\n{Fore.GREEN}⚡{Fore.RESET} {Fore.CYAN}秒传成功{Fore.RESET}: {Fore.YELLOW}{target_name}{Fore.RESET}")
             data = resp["data"]["Info"]
+            
+            # 记录上传结束时间
+            end_time = time.time()
+            upload_time = end_time - upload_start_time  # 使用upload_start_time
+            
+            # 计算平均速度（使用实际上传数据量和实际上传时间）
+            avg_speed = file_size / upload_time if upload_time > 0 else 0
+            
+            # 格式化输出统计信息
+            print(f"\n{Fore.CYAN}{'='*50}{Fore.RESET}")
+            print(f"{Fore.GREEN}✓{Fore.RESET} {Fore.CYAN}秒传成功{Fore.RESET}: {Fore.YELLOW}{target_name}{Fore.RESET}")
+            print(f"{Fore.CYAN}{'='*50}{Fore.RESET}")
+            print(f"{Fore.CYAN}📊 上传统计信息{Fore.RESET}")
+            print(f"  {Fore.CYAN}文件大小:{Fore.RESET} {Fore.MAGENTA}{file_size / (1024 * 1024):.2f} MB{Fore.RESET}")
+            print(f"  {Fore.CYAN}MD5耗时:{Fore.RESET} {Fore.YELLOW}{md5_time:.2f} 秒{Fore.RESET}")
+            print(f"  {Fore.CYAN}上传耗时:{Fore.RESET} {Fore.YELLOW}{upload_time:.2f} 秒{Fore.RESET}")
+            print(f"  {Fore.CYAN}平均速度:{Fore.RESET} {Fore.GREEN}{avg_speed / (1024 * 1024):.2f} MB/s{Fore.RESET}")
+            print(f"{Fore.CYAN}{'='*50}{Fore.RESET}\n")
+            
             return {
                 "name": target_name,
                 "size": file_size,
                 "etag": data["Etag"],
                 "keyflag": data["S3KeyFlag"],
                 "fileid": str(data["FileId"]),
-                "modify_time": int(datetime.now().timestamp())
+                "modify_time": int(datetime.now().timestamp()),
+                "upload_time": upload_time,
+                "avg_speed": avg_speed
             }
     except Exception as e:
         print(f"[ERROR] 秒传/初始化失败: {str(e)}")
@@ -180,12 +177,31 @@ def upload_file(
         slice_size = int(upload_data.get("SliceSize", 200 * 1024 * 1024))
         
         if file_size > slice_size:
-            print(f"[INFO] 开始分块上传: {target_name} ({file_size/1024/1024:.2f}MB)")
-            return _upload_large_file(client, file_path, upload_data, target_name, file_size, slice_size, callback, len_uploaded_parts)
+            print(f"\n{Fore.CYAN}🚀{Fore.RESET} {Fore.YELLOW}开始分块上传{Fore.RESET}: {Fore.MAGENTA}{target_name}{Fore.RESET} ({Fore.CYAN}{file_size/1024/1024:.2f}MB{Fore.RESET})")
+            result = _upload_large_file(client, file_path, upload_data, target_name, file_size, slice_size, callback, len_uploaded_parts, max_workers)
         else:
-            print(f"[INFO] 开始直接上传: {target_name}")
-            return _upload_small_file(client, file_path, upload_data, target_name, callback)
+            print(f"\n{Fore.CYAN}🚀{Fore.RESET} {Fore.YELLOW}开始直接上传{Fore.RESET}: {Fore.MAGENTA}{target_name}{Fore.RESET}")
+            result = _upload_small_file(client, file_path, upload_data, target_name, callback)
             
+        # 记录上传结束时间
+        end_time = time.time()
+        upload_time = end_time - upload_start_time  # 使用upload_start_time，排除MD5计算时间
+        
+        # 计算平均速度（使用实际上传数据量和实际上传时间，排除MD5计算时间）
+        avg_speed = file_size / upload_time if upload_time > 0 else 0
+        
+        # 格式化输出统计信息
+        print(f"\n{Fore.CYAN}{'='*50}{Fore.RESET}")
+        print(f"{Fore.GREEN}✓{Fore.RESET} {Fore.CYAN}上传成功{Fore.RESET}: {Fore.YELLOW}{target_name}{Fore.RESET}")
+        print(f"{Fore.CYAN}{'='*50}{Fore.RESET}")
+        print(f"{Fore.CYAN}📊 上传统计信息{Fore.RESET}")
+        print(f"  {Fore.CYAN}文件大小:{Fore.RESET} {Fore.MAGENTA}{file_size / (1024 * 1024):.2f} MB{Fore.RESET}")
+        print(f"  {Fore.CYAN}MD5耗时:{Fore.RESET} {Fore.YELLOW}{md5_time:.2f} 秒{Fore.RESET}")
+        print(f"  {Fore.CYAN}上传耗时:{Fore.RESET} {Fore.YELLOW}{upload_time:.2f} 秒{Fore.RESET}")
+        print(f"  {Fore.CYAN}平均速度:{Fore.RESET} {Fore.GREEN}{avg_speed / (1024 * 1024):.2f} MB/s{Fore.RESET}")
+        print(f"{Fore.CYAN}{'='*50}{Fore.RESET}\n")
+        
+        return result
     except Exception as e:
         print(f"[ERROR] 上传过程出错: {str(e)}")
         return None
@@ -208,6 +224,117 @@ UPLOAD_HEADERS = {
     'sec-ch-ua-platform': '"Windows"'
 }
 
+def _upload_single_chunk(
+    client: Any,
+    file_path: Path,
+    upload_data: Dict[str, Any],
+    slice_no: int,
+    chunk_data: bytes,
+    pbar: tqdm,
+    lock: threading.Lock,
+    callback=None
+) -> int:
+    """上传单个分片（线程安全）"""
+    max_retries = 8  # 增加重试次数
+    initial_backoff = 1  # 初始退避时间（秒）
+    upload_success = False
+    current_upload_url_resp = None
+    upload_session = None
+    
+    try:
+        # 创建会话以复用连接，提升性能
+        upload_session = requests.Session()
+        
+        for retry_count in range(max_retries):
+            try:
+                # 准备分片信息
+                upload_data["partNumberStart"] = slice_no
+                upload_data["partNumberEnd"] = slice_no + 1
+                
+                # 获取上传URL
+                if retry_count == 0 or current_upload_url_resp is None:
+                    try:
+                        current_upload_url_resp = client.upload_prepare(upload_data)
+                        if current_upload_url_resp.get("code") != 0:
+                            raise Exception(f"获取分片 {slice_no} 上传URL失败: {current_upload_url_resp.get('message')}")
+                    except Exception as e:
+                        error_msg = f"[ERROR] 准备分片 {slice_no} 失败: {e}"
+                        print(error_msg)
+                        raise
+                
+                # 获取当前分片的上传URL
+                upload_url = current_upload_url_resp["data"]["presignedUrls"][str(slice_no)]
+                
+                # 准备 Headers
+                headers = UPLOAD_HEADERS.copy()
+                # 添加 Content-Length 以避免额外的网络请求
+                headers['Content-Length'] = str(len(chunk_data))
+                
+                # 尝试上传
+                response = upload_session.put(
+                    upload_url,
+                    data=chunk_data,
+                    headers=headers,
+                    timeout=(180, 900),  # (连接超时, 读取超时) - 进一步增加读取超时到900秒
+                    stream=False
+                )
+                
+                # 检查状态码
+                response.raise_for_status()
+                
+                # 验证上传是否成功
+                if response.status_code == 200:
+                    upload_success = True
+                    
+                    # 更新进度条（线程安全）
+                    with lock:
+                        pbar.update(len(chunk_data))
+                        if callback:
+                            try:
+                                callback(pbar.n, pbar.total)
+                            except Exception:
+                                pass
+                    
+                    # 及时释放内存
+                    del chunk_data
+                    return slice_size
+                else:
+                    raise Exception(f"上传返回非200状态码: {response.status_code}")
+                
+            except requests.exceptions.Timeout as e:
+                # 超时异常特殊处理
+                error_msg = f"[ERROR] 分片 {slice_no} 上传超时: {e}"
+                print(f"{Fore.RED}⏱️{Fore.RESET} {Fore.YELLOW}分片 {slice_no} 上传超时{Fore.RESET}: {e}")
+                
+            except requests.exceptions.ConnectionError as e:
+                # 网络连接异常特殊处理
+                error_msg = f"[ERROR] 分片 {slice_no} 网络连接失败: {e}"
+                print(f"{Fore.RED}🔌{Fore.RESET} {Fore.YELLOW}分片 {slice_no} 网络连接失败{Fore.RESET}: {e}")
+                
+            except Exception as upload_err:
+                # 其他异常
+                error_msg = str(upload_err)
+                print(f"{Fore.YELLOW}⚠️{Fore.RESET} 分片 {slice_no} 上传失败 ({retry_count + 1}/{max_retries}): {error_msg}")
+            
+            if retry_count < max_retries - 1:
+                # 指数退避 + 随机抖动，避免多个线程同时重试
+                backoff_time = initial_backoff * (2 ** retry_count) + random.uniform(0, 1)
+                print(f"{Fore.CYAN}⏳{Fore.RESET} 分片 {slice_no} 将在 {Fore.YELLOW}{backoff_time:.1f}{Fore.RESET} 秒后重试")
+                time.sleep(backoff_time)
+            else:
+                # 最后一次重试失败
+                final_error_msg = f"分片 {slice_no} 上传失败，已达到最大重试次数"
+                print(f"{Fore.RED}✗{Fore.RESET} {Fore.YELLOW}{final_error_msg}{Fore.RESET}")
+                raise Exception(final_error_msg)
+    
+    finally:
+        # 关闭会话，释放资源
+        if upload_session:
+            upload_session.close()
+    
+    return 0
+
+
 def _upload_large_file(
     client: Any,
     file_path: Path,
@@ -216,123 +343,74 @@ def _upload_large_file(
     file_size: int,
     slice_size: int,
     callback=None,
-    len_uploaded_parts: int = 0
+    len_uploaded_parts: int = 0,
+    max_workers: int = 2
 ) -> Dict[str, Any]:
-    """分块上传大文件（带重试机制 + 进度条）"""
+    """分块上传大文件（多线程并发 + 重试机制 + 进度条）"""
     total_parts = (file_size + slice_size - 1) // slice_size
-    
     upload_request_kwargs = {
         "method": "PUT",
         "headers": {"authorization": ""},
         "timeout": 300,
     }
-
-    # 使用tqdm创建进度条
-    with tqdm(total=file_size, unit='B', unit_scale=True, desc=f"上传 {target_name}", ncols=80) as pbar:
-        current_uploaded = 0
-        with open(file_path, "rb") as f:
-            slice_no = len_uploaded_parts + 1
-            for chunk in iter(lambda: f.read(slice_size), b""):
-                num_to_upload = len(chunk)
-
-                # 准备分片信息
-                upload_data["partNumberStart"] = slice_no
-                upload_data["partNumberEnd"] = slice_no + 1
-                
-                # 获取上传URL
+    
+    # 动态调整并发数：根据总大小和分块数动态确定并发数
+    # 对于超大文件，避免内存占用过高
+    optimal_workers = min(
+        max_workers,  # 不超过用户指定的最大并发数
+        total_parts,  # 不超过总分块数
+        max(2, os.cpu_count() + 2)  # 至少2个，最多CPU核心数+2
+    )
+    print(f"{Fore.CYAN}ℹ️{Fore.RESET} 使用 {Fore.YELLOW}{optimal_workers}{Fore.RESET} 个线程并发上传 {Fore.YELLOW}{total_parts}{Fore.RESET} 个分片")
+    
+    # 创建线程锁用于进度条更新
+    lock = threading.Lock()
+    
+    # 使用tqdm创建进度条（禁用速度显示，使用自定义callback计算速度）
+    with tqdm(total=file_size, unit='B', unit_scale=True, desc=f"上传 {target_name}", ncols=80, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt}') as pbar:
+        # 设置已上传的进度
+        pbar.update(len_uploaded_parts * slice_size)
+        
+        # 使用线程池并发上传 - 真正的懒加载分片（仅在需要时读取）
+        with ThreadPoolExecutor(max_workers=optimal_workers) as executor:
+            futures = []
+            
+            # 提交所有分片任务（只提交元数据，不立即读取数据）
+            for slice_no in range(len_uploaded_parts + 1, total_parts + 1):
+                future = executor.submit(
+                    _upload_single_chunk_lazy,  # 使用懒加载版本的上传函数
+                    client,
+                    file_path,
+                    upload_data.copy(),  # 复制upload_data避免线程间冲突
+                    slice_no,
+                    slice_size,  # 传递分片大小
+                    pbar,
+                    lock,
+                    callback
+                )
+                futures.append((future, slice_no))
+            
+            # 等待所有任务完成
+            success_count = 0
+            error_count = 0
+            
+            for future, slice_no in futures:
                 try:
-                    upload_url_resp = client.upload_prepare(upload_data)
-                    if upload_url_resp.get("code") != 0:
-                        raise Exception(f"获取分片 {slice_no} 上传URL失败: {upload_url_resp.get('message')}")
+                    uploaded_size = future.result()
+                    success_count += 1
+                    # 美化的分片成功提示
+                    progress_percent = (success_count / (total_parts - len_uploaded_parts)) * 100
+                    bar = "█" * int(progress_percent / 5) + "░" * (20 - int(progress_percent / 5))
+                    print(f"\r{Fore.GREEN}✓{Fore.RESET} 分片 {slice_no}/{total_parts} 上传成功 {Fore.YELLOW}[{bar}]{Fore.RESET} {progress_percent:.1f}%", end='')
                 except Exception as e:
-                    pbar.write(f"[ERROR] 准备分片 {slice_no} 失败: {e}")
-                    raise
-
-                # 上传分片，失败时重试
-                max_retries = 6
-                retry_count = 0
-                upload_success = False
-                current_upload_url_resp = upload_url_resp
-                
-                while retry_count < max_retries and not upload_success:
-                    try:
-                        # 重试前，获取最新的已上传分块信息
-                        if retry_count > 0:
-                            try:
-                                upload_list_resp = client.upload_list({
-                                    "bucket": upload_data["Bucket"],
-                                    "key": upload_data["Key"],
-                                    "storageNode": upload_data["StorageNode"],
-                                    "uploadId": upload_data["UploadId"],
-                                })
-                                if upload_list_resp.get("code") == 0:
-                                    # 安全获取Parts字段，避免KeyError和TypeError
-                                    parts = upload_list_resp["data"].get("Parts")
-                                    if parts is not None:
-                                        len_uploaded_parts = len(parts)
-                                        print(f"[INFO] 重试前已上传分块: {parts}")
-                                        print(f"[INFO] 重试前已上传分块数: {len_uploaded_parts}")
-                                        # 更新当前分片号，跳过已上传的分块
-                                        slice_no = len_uploaded_parts + 1
-                                    else:
-                                        print(f"[INFO] 重试前暂无已上传分块")
-                            except Exception as list_err:
-                                print(f"[WARNING] 获取已上传分块信息失败: {list_err}")
-                        
-                        # 在每次重试时重新获取当前分片的URL
-                        # 如果是首次上传或之前没有重新获取过URL，则使用之前的current_upload_url_resp
-                        # 否则使用重新获取的URL
-                        if retry_count > 0:
-                            try:
-                                # 确保只重新获取当前失败分片的URL
-                                upload_data["partNumberStart"] = slice_no
-                                upload_data["partNumberEnd"] = slice_no + 1
-                                
-                                # 直接重新获取当前分片的URL
-                                current_upload_url_resp = client.upload_prepare(upload_data)
-                                if current_upload_url_resp.get("code") != 0:
-                                    raise Exception(f"重新获取上传URL失败: {current_upload_url_resp.get('message')}")
-                                print(f"[INFO] 成功重新获取分片 {slice_no} URL")
-                            except Exception as url_err:
-                                print(f"[ERROR] 重新获取上传URL失败: {url_err}")
-                                if "tokens number has exceeded the limit" in str(url_err):
-                                    print(f"[WARNING] 触发API频率限制，等待 30 秒后重试...")
-                                    time.sleep(30)
-                        
-                        # 获取当前分片的上传URL
-                        upload_url = current_upload_url_resp["data"]["presignedUrls"][str(slice_no)]
-                        
-                        # 准备 Headers
-                        headers = UPLOAD_HEADERS.copy()
-                        # headers['Content-Length'] = str(num_to_upload) # requests会自动计算
-                        
-                        # 尝试上传
-                        response = requests.put(
-                            upload_url,
-                            data=chunk,
-                            headers=headers,
-                            timeout=300
-                        )
-                        response.raise_for_status() # 检查状态码
-                        upload_success = True
-                        del chunk # 显式释放内存
-                    except Exception as upload_err:
-                        retry_count += 1
-                        error_msg = str(upload_err)
-                        
-                        if retry_count >= max_retries:
-                            print(f"[ERROR] 分片 {slice_no} 失败，达到最大重试次数")
-                            raise
-
-                slice_no += 1
-                pbar.update(num_to_upload)
-                current_uploaded += num_to_upload
-                if callback:
-                    try:
-                        callback(current_uploaded, file_size)
-                    except Exception:
-                        pass
-
+                    error_count += 1
+                    print(f"\n{Fore.RED}✗{Fore.RESET} 分片 {slice_no} 上传失败: {e}")
+                    # 取消所有未完成的任务
+                    for f, _ in futures:
+                        if not f.done():
+                            f.cancel()
+                    raise Exception(f"上传失败: 已上传 {success_count} 个分片，失败 {error_count} 个分片")
+    
     # 完成上传
     upload_data["isMultipart"] = True
     
@@ -408,7 +486,7 @@ def _upload_small_file(
                 current_resp["data"]["presignedUrls"]["1"],
                 data=file_data,
                 headers=headers,
-                timeout=300
+                timeout=600  # 增加超时时间到600秒
             )
             response.raise_for_status()
             upload_success = True
@@ -451,3 +529,126 @@ def _upload_small_file(
         "fileid": str(data.get("FileId", "")),
         "modify_time": int(datetime.now().timestamp())
     }
+
+# 添加懒加载版本的分片上传函数
+def _upload_single_chunk_lazy(
+    client: Any,
+    file_path: Path,
+    upload_data: Dict[str, Any],
+    slice_no: int,
+    slice_size: int,
+    pbar: tqdm,
+    lock: threading.Lock,
+    callback=None
+) -> int:
+    """上传单个分片（懒加载版本，仅在需要时读取文件数据）"""
+    max_retries = 8  # 增加重试次数
+    initial_backoff = 1  # 初始退避时间（秒）
+    upload_success = False
+    current_upload_url_resp = None
+    upload_session = None
+    
+    try:
+        # 创建会话以复用连接，提升性能
+        upload_session = requests.Session()
+        
+        for retry_count in range(max_retries):
+            try:
+                # 计算当前分片的偏移量
+                offset = (slice_no - 1) * slice_size
+                
+                # 懒加载：仅在需要上传时读取文件数据
+                with open(file_path, "rb") as f:
+                    f.seek(offset)
+                    chunk_data = f.read(slice_size)
+                    
+                if not chunk_data:
+                    raise Exception(f"分片 {slice_no} 数据为空")
+                
+                # 准备分片信息
+                upload_data["partNumberStart"] = slice_no
+                upload_data["partNumberEnd"] = slice_no + 1
+                
+                # 获取上传URL
+                if retry_count == 0 or current_upload_url_resp is None:
+                    try:
+                        current_upload_url_resp = client.upload_prepare(upload_data)
+                        if current_upload_url_resp.get("code") != 0:
+                            raise Exception(f"获取分片 {slice_no} 上传URL失败: {current_upload_url_resp.get('message')}")
+                    except Exception as e:
+                        error_msg = f"[ERROR] 准备分片 {slice_no} 失败: {e}"
+                        print(error_msg)
+                        raise
+                
+                # 获取当前分片的上传URL
+                upload_url = current_upload_url_resp["data"]["presignedUrls"][str(slice_no)]
+                # print(f"[INFO] 分片 {slice_no} 上传URL: {upload_url}")
+                
+                # 准备 Headers
+                headers = UPLOAD_HEADERS.copy()
+                # 添加 Content-Length 以避免额外的网络请求
+                headers['Content-Length'] = str(len(chunk_data))
+                
+                # 尝试上传
+                response = upload_session.put(
+                    upload_url,
+                    data=chunk_data,
+                    headers=headers,
+                    timeout=(180, 900),  # (连接超时, 读取超时) - 进一步增加读取超时到900秒
+                    stream=False
+                )
+                
+                # 检查状态码
+                response.raise_for_status()
+                
+                # 验证上传是否成功
+                if response.status_code == 200:
+                    upload_success = True
+                    
+                    # 更新进度条（线程安全）
+                    with lock:
+                        pbar.update(len(chunk_data))
+                        if callback:
+                            try:
+                                callback(pbar.n, pbar.total)
+                            except Exception:
+                                pass
+                    
+                    # 及时释放内存
+                    del chunk_data
+                    return slice_size
+                else:
+                    raise Exception(f"上传返回非200状态码: {response.status_code}")
+                
+            except requests.exceptions.Timeout as e:
+                # 超时异常特殊处理
+                error_msg = f"[ERROR] 分片 {slice_no} 上传超时: {e}"
+                print(error_msg)
+                
+            except requests.exceptions.ConnectionError as e:
+                # 网络连接异常特殊处理
+                error_msg = f"[ERROR] 分片 {slice_no} 网络连接失败: {e}"
+                print(error_msg)
+                
+            except Exception as upload_err:
+                # 其他异常
+                error_msg = str(upload_err)
+                print(f"[WARNING] 分片 {slice_no} 上传失败 ({retry_count + 1}/{max_retries}): {error_msg}")
+            
+            if retry_count < max_retries - 1:
+                # 指数退避 + 随机抖动，避免多个线程同时重试
+                backoff_time = initial_backoff * (2 ** retry_count) + random.uniform(0, 1)
+                print(f"[INFO] 分片 {slice_no} 将在 {backoff_time:.1f} 秒后重试")
+                time.sleep(backoff_time)
+            else:
+                # 最后一次重试失败
+                final_error_msg = f"分片 {slice_no} 上传失败，已达到最大重试次数"
+                print(f"[ERROR] {final_error_msg}")
+                raise Exception(final_error_msg)
+    
+    finally:
+        # 关闭会话，释放资源
+        if upload_session:
+            upload_session.close()
+    
+    return 0

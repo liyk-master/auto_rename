@@ -2,8 +2,21 @@
 requests>=2.28.0  # 用于HTTP请求，与TMDB API交互
 watchdog>=3.0.0  # 用于文件系统监控
 configparser>=5.3.0  # 用于配置文件处理
+colorama>=0.4.6  # 用于终端彩色输出
 
 # 开发依赖
 pytest>=7.0.0  # 用于运行测试
 mock>=4.0.0  # 用于测试时模拟对象
 pytest-cov>=4.0.0  # 用于测试覆盖率报告
+
+p123client
+jinja2
+tqdm
+httpx[http2]
+
+# 打包工具
+pyinstaller>=6.0.0
+nuitka>=1.9.0
+cx-freeze>=6.15.0
+setuptools>=70.0.0
+wheel>=0.43.0
