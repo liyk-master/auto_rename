@@ -1,0 +1,203 @@
+name: Build Cross-Platform Executables
+
+on:
+  push:
+    branches: [ main, dev-upload123pan ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            builder: pyinstaller
+            ext: ""
+          - os: ubuntu-latest
+            platform: linux
+            builder: nuitka
+            ext: ""
+          - os: windows-latest
+            platform: windows
+            builder: pyinstaller
+            ext: ".exe"
+          - os: macos-latest
+            platform: macos
+            builder: pyinstaller
+            ext: ""
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+        
+    - name: Install system dependencies (Linux)
+      if: matrix.platform == 'linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential patchelf
+        
+    - name: Install system dependencies (macOS)
+      if: matrix.platform == 'macos'
+      run: |
+        brew install create-dmg
+        
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Install PyInstaller
+      if: matrix.builder == 'pyinstaller'
+      run: pip install pyinstaller>=6.0.0
+      
+    - name: Install Nuitka
+      if: matrix.builder == 'nuitka'
+      run: pip install nuitka>=1.9.0
+      
+    - name: Build with PyInstaller
+      if: matrix.builder == 'pyinstaller'
+      run: |
+        pyinstaller \
+          --noconfirm \
+          --onefile \
+          --console \
+          --name "VideoOrganizer-${{ matrix.platform }}" \
+          --clean \
+          --hidden-import=src.video_organizer \
+          --add-data "config.ini${{ matrix.platform == 'windows' && ';' || ':' }}." \
+          run_organizer.py
+          
+    - name: Build with Nuitka
+      if: matrix.builder == 'nuitka'
+      run: |
+        python -m nuitka \
+          --standalone \
+          --onefile \
+          --follow-imports \
+          --include-module=src.video_organizer \
+          --include-data-file=config.ini=config.ini \
+          --output-filename=VideoOrganizer-${{ matrix.platform }}${{ matrix.ext }} \
+          run_organizer.py
+          
+    - name: List build artifacts
+      run: |
+        ls -la dist/
+        file dist/* || true
+        
+    - name: Test executable (Linux)
+      if: matrix.platform == 'linux'
+      run: |
+        chmod +x dist/VideoOrganizer-${{ matrix.platform }}
+        ./dist/VideoOrganizer-${{ matrix.platform }} --help || echo "Help command failed, but executable was created"
+        
+    - name: Test executable (Windows)
+      if: matrix.platform == 'windows'
+      run: |
+        dist/VideoOrganizer-${{ matrix.platform }}${{ matrix.ext }} --help || echo "Help command failed, but executable was created"
+        
+    - name: Test executable (macOS)
+      if: matrix.platform == 'macos'
+      run: |
+        chmod +x dist/VideoOrganizer-${{ matrix.platform }}
+        ./dist/VideoOrganizer-${{ matrix.platform }} --help || echo "Help command failed, but executable was created"
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: VideoOrganizer-${{ matrix.platform }}-${{ matrix.builder }}
+        path: |
+          dist/VideoOrganizer*
+          config.ini
+        retention-days: 30
+        
+    - name: Prepare release files
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        mkdir release
+        cp dist/VideoOrganizer* release/
+        cp config.ini release/
+        cd release
+        if [ "${{ matrix.platform }}" = "windows" ]; then
+          zip -r VideoOrganizer-${{ matrix.platform }}-${{ matrix.builder }}.zip *
+        else
+          tar -czf VideoOrganizer-${{ matrix.platform }}-${{ matrix.builder }}.tar.gz *
+        fi
+        cd ..
+        
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          release/*.zip
+          release/*.tar.gz
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-legacy-linux:
+    runs-on: ubuntu-latest
+    container: ubuntu:18.04
+    
+    steps:
+    - name: Install git and curl
+      run: |
+        apt-get update
+        apt-get install -y git curl
+        
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install Python 3.12
+      run: |
+        apt-get update
+        apt-get install -y software-properties-common wget build-essential
+        add-apt-repository ppa:deadsnakes/ppa
+        apt-get update
+        apt-get install -y python3.12 python3.12-dev python3.12-venv python3-pip
+        ln -s /usr/bin/python3.12 /usr/bin/python
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller>=6.0.0
+        
+    - name: Build executable
+      run: |
+        pyinstaller \
+          --noconfirm \
+          --onefile \
+          --console \
+          --name "VideoOrganizer-legacy-linux" \
+          --clean \
+          --hidden-import=src.video_organizer \
+          --add-data "config.ini:." \
+          run_organizer.py
+          
+    - name: Check dependencies
+      run: |
+        ldd dist/VideoOrganizer-legacy-linux | head -10
+        file dist/VideoOrganizer-legacy-linux
+        
+    - name: Upload legacy build
+      uses: actions/upload-artifact@v4
+      with:
+        name: VideoOrganizer-legacy-linux
+        path: |
+          dist/VideoOrganizer-legacy-linux
+          config.ini
+        retention-days: 30

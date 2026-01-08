@@ -1,21 +1,14 @@
-version: '3.8'
-
-# 视频文件自动重命名和组织工具 - Docker Compose配置
-# 用途：构建可执行文件
+version: '3'
 
 services:
-  # 构建可执行文件的容器
   builder:
-    # 从本地构建镜像
     build:
       context: .
-    
-    # 容器名称
+      dockerfile: Dockerfile
+
     container_name: video-organizer-builder
-    
-    # 挂载输出目录到宿主机
+
     volumes:
       - ./dist:/app/dist
-    
-    # 工作目录
+
     working_dir: /app

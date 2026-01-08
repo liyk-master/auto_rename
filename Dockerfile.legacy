@@ -1,0 +1,50 @@
+# Dockerfile - 兼容老版本Linux
+FROM ubuntu:18.04
+
+# 避免交互式提示
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 安装Python 3.12和依赖
+RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    wget \
+    git \
+    build-essential \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建python3.12的软链接
+RUN ln -s /usr/bin/python3.12 /usr/bin/python
+
+# 设置工作目录
+WORKDIR /app
+
+# 复制所有文件
+COPY . .
+
+# 安装依赖
+RUN python -m pip install --upgrade pip && \
+    pip install pyinstaller && \
+    pip install -r requirements.txt
+
+# 构建可执行文件
+RUN pyinstaller \
+    --noconfirm \
+    --onefile \
+    --console \
+    --name "VideoOrganizer" \
+    --clean \
+    --hidden-import=src.video_organizer \
+    --add-data "config.ini:." \
+    run_organizer.py
+
+# 显示构建结果和依赖信息
+RUN ls -lh dist/ && \
+    ldd dist/VideoOrganizer | head -10
+
+CMD ["echo", "可执行文件已构建完成，位于 dist/VideoOrganizer"]

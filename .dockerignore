@@ -1,0 +1,42 @@
+# .dockerignore - 排除不需要的文件，优化构建
+
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env
+.venv
+env/
+venv/
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# 构建产物
+build/
+dist/
+*.spec
+*.o
+
+# 测试
+tests/
+.coverage
+.pytest_cache
+
+# 文档
+*.md
+docs/
+
+# 其他
+*.log
+.DS_Store
+Thumbs.db

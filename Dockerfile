@@ -1,47 +1,43 @@
-# Dockerfile - 使用 build.sh 进行打包
-FROM python:3.12-bookworm
+# Dockerfile - 使用 PyInstaller + Alpine musl libc，最大化兼容性
+FROM python:3.9-alpine
 
 # 安装系统依赖
-RUN apt-get update && apt-get install -y \
-    build-essential \
+RUN apk add --no-cache \
+    build-base \
     wget \
-    unzip \
     patchelf \
-    git \
-    # 字体和渲染支持
-    libfontconfig1 \
-    libfreetype6 \
-    # 音频支持
-    libasound2 \
-    libpulse0 \
-    && rm -rf /var/lib/apt/lists/*
-
-# 设置环境变量
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    git
 
 # 设置工作目录
 WORKDIR /app
 
-# 复制依赖文件并安装
-COPY requirements.txt .
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+# 复制所有文件
+COPY . .
 
-# 复制源代码
-COPY src/ ./src/
+# 转换换行符
+RUN sed -i 's/\r$//' build.sh && \
+    chmod +x build.sh
 
-# 复制配置文件模板
-COPY config.ini .
-COPY run_organizer.py .
+# 安装依赖
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir pyinstaller && \
+    pip install --no-cache-dir -r requirements.txt
 
-# 复制打包脚本
-COPY build.sh .
+# 直接运行 PyInstaller（使用 -B 模式避免交互）
+RUN pyinstaller -B \
+    --noconfirm \
+    --onefile \
+    --console \
+    --name "VideoOrganizer" \
+    --clean \
+    --hidden-import=src.video_organizer \
+    --add-data "config.ini:." \
+    run_organizer.py
 
-# 设置执行权限
-RUN chmod +x build.sh
+# 显示构建结果
+RUN ls -lh dist/ && \
+    echo "" && \
+    echo "构建完成，可执行文件: dist/VideoOrganizer"
 
-# 使用 build.sh 进行打包
-CMD ["./build.sh"]
+# 容器构建完成后自动退出
+CMD ["echo", "构建容器已完成，检查 dist/ 目录"]
