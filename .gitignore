@@ -69,7 +69,8 @@ integrate_*.py
 optimize_*.py
 update_*.py
 package.bat
-# build.sh  # 允许build.sh用于GitHub Actions
+build.sh
+build_legacy.sh
 
 # Test files
 test_*.py
