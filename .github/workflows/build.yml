@@ -18,71 +18,75 @@ jobs:
             platform: linux
             builder: pyinstaller
             ext: ""
+            python-version: '3.9'
           - os: ubuntu-20.04
             platform: linux
             builder: nuitka
             ext: ""
+            python-version: '3.9'
           - os: windows-latest
             platform: windows
             builder: pyinstaller
             ext: ".exe"
+            python-version: '3.9'
           - os: macos-latest
             platform: macos
             builder: pyinstaller
             ext: ""
+            python-version: '3.9'
 
     runs-on: ${{ matrix.os }}
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
-    - name: Set up Python 3.12
+
+    - name: Set up Python 3.9
       uses: actions/setup-python@v4
       with:
-        python-version: '3.12'
-        
+        python-version: ${{ matrix.python-version }}
+
     - name: Install system dependencies (Linux)
       if: matrix.platform == 'linux'
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential patchelf
-        
+
     - name: Install system dependencies (macOS)
       if: matrix.platform == 'macos'
       run: |
         brew install create-dmg
-        
+
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        
+
     - name: Install PyInstaller
       if: matrix.builder == 'pyinstaller'
-      run: pip install pyinstaller>=6.0.0
-      
+      run: pip install pyinstaller>=5.0.0
+
     - name: Install Nuitka
       if: matrix.builder == 'nuitka'
-      run: pip install nuitka>=1.9.0
-      
+      run: pip install nuitka>=1.0.0
+
     - name: Build with PyInstaller
       shell: bash
       if: matrix.builder == 'pyinstaller'
       run: |
         pyinstaller --noconfirm --onefile --console --name "VideoOrganizer-ubuntu20-${{ matrix.platform }}" --clean --hidden-import=src.video_organizer run_organizer.py
-          
+
     - name: Build with Nuitka
       shell: bash
       if: matrix.builder == 'nuitka'
       run: |
         python -m nuitka --standalone --onefile --follow-imports --include-module=src.video_organizer --output-filename=VideoOrganizer-ubuntu20-${{ matrix.platform }}${{ matrix.ext }} run_organizer.py
-          
+
     - name: List build artifacts
       run: |
         ls -la dist/
         file dist/* || true
-        
+
     - name: Test executable (Linux)
       if: matrix.platform == 'linux'
       shell: bash
@@ -100,7 +104,7 @@ jobs:
       shell: bash
       run: |
         chmod +x dist/VideoOrganizer-ubuntu20-${{ matrix.platform }} && ./dist/VideoOrganizer-ubuntu20-${{ matrix.platform }} --help || echo "Help command failed, but executable was created"
-        
+
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
@@ -108,7 +112,7 @@ jobs:
         path: |
           dist/VideoOrganizer*
         retention-days: 30
-        
+
     - name: Prepare release files
       if: startsWith(github.ref, 'refs/tags/')
       run: |
@@ -136,62 +140,39 @@ jobs:
 
   build-ubuntu18-docker:
     runs-on: ubuntu-latest
+    container: ubuntu:18.04
+
     steps:
+    - name: Install system dependencies
+      run: |
+        apt-get update && apt-get install -y \
+            python3.9 python3.9-dev python3.9-venv python3-pip \
+            build-essential git && \
+            ln -sf /usr/bin/python3.9 /usr/bin/python && \
+            rm -rf /var/lib/apt/lists/*
+
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Build Ubuntu 18.04 compatible image
+    - name: Install Python dependencies
       run: |
-        docker build -t video-organizer-ubuntu18 -f - . << 'EOF'
-        FROM ubuntu:18.04
-        ENV DEBIAN_FRONTEND=noninteractive
-        RUN apt-get update && apt-get install -y \
-            software-properties-common wget build-essential git && \
-            add-apt-repository ppa:deadsnakes/ppa && \
-            apt-get update && apt-get install -y \
-            python3.12 python3.12-dev python3.12-venv python3-pip && \
-            ln -s /usr/bin/python3.12 /usr/bin/python && \
-            rm -rf /var/lib/apt/lists/*
-        WORKDIR /app
-        COPY . .
-        RUN python -m pip install --upgrade pip && \
-            pip install pyinstaller>=6.0.0 && \
-            pip install -r requirements.txt
-        RUN pyinstaller --noconfirm --onefile --console --name "VideoOrganizer-ubuntu18-linux" --clean --hidden-import=src.video_organizer run_organizer.py
-        RUN ldd dist/VideoOrganizer-ubuntu18-linux | head -10 && file dist/VideoOrganizer-ubuntu18-linux
-        EOF
+        python -m pip install --upgrade pip
+        pip install pyinstaller>=5.0.0
+        pip install -r requirements.txt
 
-    - name: Extract executable from container
-      run: |
-        docker run --rm -v $(pwd):/output video-organizer-ubuntu18 cp /app/dist/VideoOrganizer-ubuntu18-linux /output/
-
-    - name: Verify extracted file
+    - name: Build with PyInstaller
       shell: bash
       run: |
-        ls -lh VideoOrganizer-ubuntu18-linux
-        file VideoOrganizer-ubuntu18-linux
-        ldd VideoOrganizer-ubuntu18-linux | head -10
+        pyinstaller --noconfirm --onefile --console --name "VideoOrganizer-ubuntu18-linux" --clean --hidden-import=src.video_organizer run_organizer.py
+
+    - name: Check dependencies
+      shell: bash
+      run: |
+        ldd dist/VideoOrganizer-ubuntu18-linux | head -10 && file dist/VideoOrganizer-ubuntu18-linux
 
     - name: Upload Ubuntu 18.04 build
       uses: actions/upload-artifact@v4
       with:
         name: VideoOrganizer-ubuntu18-linux
-        path: VideoOrganizer-ubuntu18-linux
-        retention-days: 30
-
-    - name: Prepare Ubuntu 18.04 release
-      if: startsWith(github.ref, 'refs/tags/')
-      run: |
-        tar -czf VideoOrganizer-ubuntu18-linux.tar.gz VideoOrganizer-ubuntu18-linux README.md BUILD.md 2>/dev/null || tar -czf VideoOrganizer-ubuntu18-linux.tar.gz VideoOrganizer-ubuntu18-linux
-
-    - name: Add Ubuntu 18.04 to Release
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          VideoOrganizer-ubuntu18-linux.tar.gz
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        path: dist/VideoOrganizer-ubuntu18-linux
         retention-days: 30
