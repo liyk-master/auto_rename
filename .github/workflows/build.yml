@@ -144,54 +144,6 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-legacy-linux:
-    runs-on: ubuntu-latest
-    container: ubuntu:18.04
-    
-    steps:
-    - name: Install git and curl
-      run: |
-        apt-get update
-        apt-get install -y git curl
-        
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Install Python 3.12
-      run: |
-        apt-get update
-        apt-get install -y software-properties-common wget build-essential
-        add-apt-repository ppa:deadsnakes/ppa
-        apt-get update
-        apt-get install -y python3.12 python3.12-dev python3.12-venv python3-pip
-        ln -s /usr/bin/python3.12 /usr/bin/python
-        
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pyinstaller>=6.0.0
-        
-    - name: Build executable
-      run: |
-        pyinstaller \
-          --noconfirm \
-          --onefile \
-          --console \
-          --name "VideoOrganizer-ubuntu18-linux" \
-          --clean \
-          --hidden-import=src.video_organizer \
-          run_organizer.py
-          
-    - name: Check dependencies
-      run: |
-        ldd dist/VideoOrganizer-ubuntu18-linux | head -10
-        file dist/VideoOrganizer-ubuntu18-linux
-
-    - name: Upload legacy build
-      uses: actions/upload-artifact@v4
-      with:
-        name: VideoOrganizer-ubuntu18-linux
-        path: |
-          dist/VideoOrganizer-ubuntu18-linux
+  # 由于GitHub Actions环境限制，无法在Ubuntu 18.04容器中构建
+  # 请在有Ubuntu 18.04的机器上本地构建legacy版本
         retention-days: 30
