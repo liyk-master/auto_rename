@@ -277,6 +277,10 @@ class VideoRenamer:
         
         # 提取文件基本信息
         name_only, ext = os.path.splitext(base_name)
+        # 如果扩展名看起来不像视频扩展名（例如是从 [YTS.LT] 提取的 .lt]），则设为空
+        video_extensions = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.srt', '.sub', '.idx']
+        if ext.lower() not in video_extensions:
+            ext = ''
         metadata['extension'] = ext.lower()
         
         # 提取关键词
@@ -309,16 +313,21 @@ class VideoRenamer:
         metadata['cleaned_name'] = cleaned_name
         
         # Common patterns
+        # Special pattern for French/foreign movie formats with . and - separators
+        # Like: Je.Navais.Que.Le.Neant.-.Shoah.Par.Lanzmann.2025.1080p.BluRay.x264.AAC5.1-[YTS.LT]
         patterns = [
+            # 0. Special pattern for dot-and-hyphen separated movie titles with quality tags
+            r"^(?P<show_name>[\w\s\.\-]+?)\s*[\(\[]?\d{4}[\)\]]?\s*(?:\.[\w\-]+)+(?:\-[\w\.\[\]]+)?$",
             # Movie-specific patterns - 电影专用匹配模式
             # 匹配带发布组、年份、技术信息和语言标签的电影格式
             r"^\[(?P<release_group>[^\]]+)\]\s*(?P<show_name>[^\(]+?)\s*\((?P<year>\d{4})\)\s*(?:\([^\)]+\))+\s*(?:(?P<language>[A-Z]+)\s*)?\[[^\]]+\]",
             # 匹配带发布组和年份的电影格式
             r"^\[(?P<release_group>[^\]]+)\]\s*(?P<show_name>[^\(]+?)\s*\((?P<year>\d{4})\)\s*(?:\([^\)]+\))+",
-            # 匹配点分隔的电影格式 (731.Operation.Cherry.Blossoms.at.Night.2025.2160p.WEB-DL.H265.DTS.mkv)
-            r"^(?P<show_name>[\w\s\.]+?)\.(?P<year>\d{4})\.(?P<quality>[\w\-\.]+)",
-            # 匹配简化的点分隔电影格式 (电影名称.年份)
-            r"^(?P<show_name>[\w\s\.]+?)\.(?P<year>\d{4})\.",
+            # 2.5 匹配点分隔的电影格式 (731.Operation.Cherry.Blossoms.at.Night.2025.2160p.WEB-DL.H265.DTS.mkv)
+            # 兼容使用 . 和 - 作为分隔符的文件名，如 Je.Navais.Que.Le.Neant.-.Shoah.Par.Lanzmann.2025.1080p.BluRay.x264.AAC5.1-[YTS.LT]
+            r"^(?P<show_name>[\w\s\.\-]+?)[.\-](?P<year>\d{4})[.\-][^\-]+(?:\-[^\-]+)*$",
+            # 2.6 匹配简化的点分隔电影格式 (电影名称.年份)
+            r"^(?P<show_name>[\w\s\.\-]+?)[.\-](?P<year>\d{4})[.\-]",
             # 1. Show Name Season 01 Episode 01
             r"^(?P<show_name>.*?)[. ]?S(?P<season>\d+)E(?P<episode>\d+)",
             # 1.5. 匹配季节-only 格式（如 Downton.Abbey.S06.1080p.BluRay.x264...）
@@ -446,7 +455,7 @@ class VideoRenamer:
                 
                 metadata['show_name'] = show_name.strip()
                 show_name = show_name.strip().rstrip('.')
-                # 移除多余的空格
+                # 移除多余的空格（包含双空格）
                 show_name = re.sub(r'\s+', ' ', show_name)
                 
                 # 特别处理中文名称，不进行title()转换
@@ -777,6 +786,17 @@ class VideoRenamer:
         # 最后的备用方案：使用文件名的基本部分
         else:
             metadata['show_name'] = os.path.splitext(base_name)[0]
+        
+        # 最终清理：确保show_name没有多余空格和尾部残留
+        if metadata.get('show_name'):
+            show_name = metadata['show_name']
+            # 移除双空格
+            show_name = re.sub(r'\s+', ' ', show_name)
+            # 移除尾部残留的质量标签和数字（如 px2645, 1 等）
+            show_name = re.sub(r'\s+[a-z]+\d+\s*$', '', show_name, flags=re.IGNORECASE)
+            show_name = re.sub(r'\s+\d+\s*$', '', show_name)
+            show_name = show_name.strip()
+            metadata['show_name'] = show_name
                         
         return metadata
     
@@ -840,9 +860,32 @@ class VideoRenamer:
         
         # 2. 预处理：移除括号内的技术参数和发布组
         # 质量标记正则表达式
-        quality_patterns = r'HD|FHD|UHD|4K|1080p|720p|480p|360p|240p|2160p|2160|HDR|SDR|HDR10|Dolby\s*Vision|DV|dv|Dv|x264|x265|h264|h265|HEVC|AVC|MPEG4|10bit|AAC|DTS|DDP|TrueHD|Atmos|FLAC|AC3|DTS-HD|OPUS|BD|BDRip|BluRay|DVD|DVDRip|WEB|WEBRip|WEB-DL|REPACK|PROPER|INTERNAL|CHS|ENG|双语|字幕|中字|英字|JPN|简日内嵌|繁体|简体|日语版|国语版|粤语版|MP4|MKV|AVI|GB|BIG5|CHT|CHS|TC|SC|JAP|CN|JP|Dub|JP\s*Dub|TV|Web'
+        quality_patterns = r'HD|FHD|UHD|4K|1080p|720p|480p|360p|240p|2160p|2160|HDR|SDR|HDR10|Dolby\s*Vision|DV|dv|Dv|x264|x265|h264|h265|HEVC|AVC|MPEG4|10bit|AAC|DTS|DDP|TrueHD|Atmos|FLAC|AC3|DTS-HD|OPUS|BD|BDRip|BluRay|DVD|DVDRip|WEB|WEBRip|WEB-DL|REPACK|PROPER|INTERNAL|CHS|ENG|双语|字幕|中字|英字|简日内嵌|繁体|简体|日语版|国语版|粤语版|MP4|MKV|AVI|GB|BIG5|CHT|CHS|TC|SC|JAP|CN|JP|Dub|JP\s*Dub|TV|Web|AAC5|5\.1|7\.1|DTS'
         
-        # 移除包含质量标记的方括号/圆括号块
+        # 3. 移除发布组信息（方括号或末尾格式）
+        # 匹配 [发布组] 或 -[发布组] 格式
+        cleaned = re.sub(r'\[YTS\.?LT?\]', '', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\-?\[[^\]]+\]', '', cleaned)
+        cleaned = re.sub(r'\-?[A-Z]{2,6}$', '', cleaned)  # 末尾的发布组如 -YTS
+        
+        # 4. 移除质量标签和年份
+        # 移除年份 (2025) 或 [2025] 或 .2025.
+        cleaned = re.sub(r'[\[\(]?\d{4}[\]\)]?', '', cleaned)
+        cleaned = re.sub(r'[.\-]\d{4}[.\-]', '', cleaned)
+        cleaned = re.sub(r'\s+\d{4}\s*$', '', cleaned)
+        
+        # 移除质量标签（按点号或横杠分隔）
+        quality_tags = ['1080p', '720p', '480p', '360p', '2160p', '4k', 'uhd', 'fhd', 
+                       'bluray', 'bdrip', 'web-dl', 'webrip', 'dvdrip', 'bd', 'dvd', 'web',
+                       'x264', 'x265', 'h264', 'h265', 'hevc', 'xvid', 'divx',
+                       'dts', 'ac3', 'ddp', 'aac', 'dts-hd', 'truehd', 'atmos', 'flac',
+                       'repack', 'proper', 'internal', '5.1', '7.1']
+        for tag in quality_tags:
+            cleaned = re.sub(r'[.\-]' + re.escape(tag) + r'[.\-]?', '', cleaned, flags=re.IGNORECASE)
+            # 也处理不带分隔符的质量标签
+            cleaned = re.sub(r'\s+' + re.escape(tag) + r'$', '', cleaned, flags=re.IGNORECASE)
+        
+        # 5. 移除方括号和圆括号内的内容（包含技术参数的块）
         # 使用正则表达式匹配括号及其中内容，如果内容包含 quality 关键字则移除
         def remove_tag_blocks(match):
             content = match.group(1)
@@ -867,7 +910,7 @@ class VideoRenamer:
         cleaned = re.sub(r'\[([^\]]+)\]', remove_tag_blocks, cleaned)
         cleaned = re.sub(r'\(([^\)]+)\)', remove_tag_blocks, cleaned)
         
-        # 3. 移除常见的修饰符和季集信息 (Season 2, Episode 11 等)
+        # 6. 移除常见的修饰符和季集信息 (Season 2, Episode 11 等)
         cleaned = re.sub(r'Season\s*\d+', '', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'第\d+季', '', cleaned)
         # 只移除形如 -01 或 -123 的纯集号格式（连字符+数字），保留 S06 格式
@@ -887,9 +930,20 @@ class VideoRenamer:
         subtitle_pattern = r'·.*?(?:' + '|'.join(subtitle_keywords) + r')(?=$|\s|\.|\-|\(|\[|，|、)'
         cleaned = re.sub(subtitle_pattern, '', cleaned)
         
-        # 4. 最后清理符号和多余空格 - 明确列出要替换的字符，不包含中文点(·)
-        cleaned = re.sub(r'\[|\]|\.|\_|\-|\&|\+|\(|\)', ' ', cleaned)
+        # 7. 最后清理符号和多余空格
+        # 移除各种特殊字符
+        cleaned = re.sub(r'\[|\]|\.|\_|\&|\+|\(|\)', ' ', cleaned)
+        # 处理单独的连字符（两侧无字母数字）替换为空格
+        cleaned = re.sub(r'(?<!\w)-(?!\w)', ' ', cleaned)
+        # 清理尾部残留的横杠和数字
+        cleaned = re.sub(r'[\s\-]+\d*\s*$', '', cleaned)
+        cleaned = re.sub(r'^\s*[\-]+\s*', '', cleaned)
+        # 移除多余的空格（包含双空格）
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        
+        # 8. 最终检查：如果还有残留的数字或质量标签，进一步清理
+        # 移除末尾的数字（可能是编码版本号等）
+        cleaned = re.sub(r'\s+\d+$', '', cleaned)
         
         # 针对剧名的额外优化：如果清理后太短或包含太多非剧名信息，做最后保护
         if not cleaned:
