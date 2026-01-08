@@ -76,7 +76,6 @@ jobs:
           --name "VideoOrganizer-${{ matrix.platform }}" \
           --clean \
           --hidden-import=src.video_organizer \
-          --add-data "config.ini${{ matrix.platform == 'windows' && ';' || ':' }}." \
           run_organizer.py
           
     - name: Build with Nuitka
@@ -87,7 +86,6 @@ jobs:
           --onefile \
           --follow-imports \
           --include-module=src.video_organizer \
-          --include-data-file=config.ini=config.ini \
           --output-filename=VideoOrganizer-${{ matrix.platform }}${{ matrix.ext }} \
           run_organizer.py
           
@@ -119,7 +117,6 @@ jobs:
         name: VideoOrganizer-${{ matrix.platform }}-${{ matrix.builder }}
         path: |
           dist/VideoOrganizer*
-          config.ini
         retention-days: 30
         
     - name: Prepare release files
@@ -127,7 +124,6 @@ jobs:
       run: |
         mkdir release
         cp dist/VideoOrganizer* release/
-        cp config.ini release/
         cd release
         if [ "${{ matrix.platform }}" = "windows" ]; then
           zip -r VideoOrganizer-${{ matrix.platform }}-${{ matrix.builder }}.zip *
@@ -185,7 +181,6 @@ jobs:
           --name "VideoOrganizer-legacy-linux" \
           --clean \
           --hidden-import=src.video_organizer \
-          --add-data "config.ini:." \
           run_organizer.py
           
     - name: Check dependencies
@@ -199,5 +194,4 @@ jobs:
         name: VideoOrganizer-legacy-linux
         path: |
           dist/VideoOrganizer-legacy-linux
-          config.ini
         retention-days: 30
