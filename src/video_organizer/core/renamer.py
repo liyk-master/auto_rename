@@ -170,6 +170,17 @@ class VideoRenamer:
             # 6. TMDB 丰富
             if metadata.get('show_name'):
                 try:
+                    # Before calling TMDB, clean show_name of release group info
+                    show_name = metadata['show_name']
+                    # Remove release group in brackets at the beginning
+                    show_name = re.sub(r'^\[[^\]]+\]\s*', '', show_name)
+                    # Remove release group without brackets at the beginning (including space-separated)
+                    show_name = re.sub(r'^[A-Z]{2,6}(?:[._]|\s)\s*', '', show_name)
+                    # Remove common release group tags
+                    for tag in ['AHTV', 'CCTV', 'BTV', 'HunanTV', 'JSTV', 'ZJTV', 'GM-Team', 'Team', 'Group', 'Raws', 'Studio']:
+                        show_name = re.sub(r'^\s*' + re.escape(tag) + r'\s*', '', show_name, flags=re.IGNORECASE)
+                    metadata['show_name'] = show_name.strip()
+                    
                     metadata = self._enrich_with_tmdb(metadata)
                 except Exception as e:
                     logger.error(f"TMDB元数据丰富失败: {e}")
@@ -382,6 +393,17 @@ class VideoRenamer:
         release_group_match = re.search(release_group_pattern, base_name)
         if release_group_match:
             metadata['release_group'] = release_group_match.group(1)
+        
+        # 提取不带方括号的发布组格式（如 AHTV.Judge.of.Song.Dynasty...）
+        # 匹配连续大写字母组后跟点号或空格
+        release_group_no_bracket_pattern = r'^([A-Z]{2,6})[._]'
+        release_group_no_bracket_match = re.search(release_group_no_bracket_pattern, base_name)
+        if release_group_no_bracket_match and not metadata.get('release_group'):
+            # 只在方括号格式未匹配时才使用这种格式
+            potential_group = release_group_no_bracket_match.group(1)
+            # 排除纯TV/MOVIE等关键词
+            if potential_group.lower() not in ['tv', 'movie', 'film', 'bluray', 'web', 'hd', 'dts', 'aac']:
+                metadata['release_group'] = potential_group
 
         # 先移除此处的媒体类型相关代码，将在后面统一处理
 
@@ -400,11 +422,13 @@ class VideoRenamer:
                 show_name = metadata['show_name']
                 # 1. 移除首部的发布组方括号，如 [Dynamis One]
                 show_name = re.sub(r'^\[[^\]]+\]\s*', '', show_name)
+                # 2. 移除首部的无括号发布组格式（如 AHTV.Judge, AHTV Judge, VCB-Studio）
+                show_name = re.sub(r'^[A-Z]{2,6}(?:[._]|\s)\s*', '', show_name)
                 # 2. 移除括号内的年份 (2022) - 无论位置如何
                 show_name = re.sub(r'\s*\(\d{4}(?:-\d{4})?\)\s*', ' ', show_name)
                 # 3. 移除方括号内的标签，如 [国漫]、[中文配音] 等
                 # 先移除特定的常见标签
-                common_tags = ['国漫', '日漫', '美漫', '新番', 'GM-Team', 'Team', 'Group', 'Raws', 'Studio', '中文配音', '中配', '配音', '繁中', '简中', 'CHT', 'CHS']
+                common_tags = ['国漫', '日漫', '美漫', '新番', 'GM-Team', 'Team', 'Group', 'Raws', 'Studio', '中文配音', '中配', '配音', '繁中', '简中', 'CHT', 'CHS', 'AHTV', 'CCTV', 'BTV', 'HunanTV', 'JSTV', 'ZJTV']
                 for tag in common_tags:
                     show_name = re.sub(r'\[\s*' + re.escape(tag) + r'\s*\]', '', show_name, flags=re.IGNORECASE)
                 # 4. 移除剩余的所有方括号内容（用于搜索时更干净）
@@ -578,9 +602,11 @@ class VideoRenamer:
             # 如果season或episode等于年份，很可能是电影
             if metadata.get('season') == metadata.get('year') or metadata.get('episode') == metadata.get('year'):
                 is_movie = True
-            # 如果文件名中包含年份，且没有明确的剧集格式，倾向于判定为电影
+            # 如果文件名中包含年份，且没有明确的剧集格式，需要进一步判断
+            # 不要立即默认为电影，而是标记为不确定，让TMDB查询来决定
             elif not re.search(r'(?i)(^|[^a-zA-Z])S\d+E\d+($|[^a-zA-Z])|第\d+季|第\d+集|EP\d+', base_name):
-                is_movie = True
+                # 有年份但无集信息，暂时不确定类型，设置为None让后续TMDB查询决定
+                is_movie = None  # 不确定
         # 3. 如果文件名看起来像电影格式（包含分辨率、编码等信息），判定为电影
         elif re.search(r'(?i)(2160p|4k|uhd|fhd|1080p|720p|480p|360p|240p)\s*(?:\[|\()?\d{4}(?:\]|\))?', base_name):
             is_movie = True
@@ -589,8 +615,11 @@ class VideoRenamer:
         # 优先考虑明确的剧集格式，即使同时满足电影格式也应识别为TV
         if is_tv:
             metadata['media_type'] = 'tv'
-        elif is_movie:
+        elif is_movie is True:
             metadata['media_type'] = 'movie'
+        elif is_movie is None:
+            # 不确定类型，设置为None，让TMDB查询决定
+            metadata['media_type'] = None
         else:
             # 默认情况，根据是否有季集信息判断
             if metadata.get('season') or metadata.get('episode'):
@@ -1150,8 +1179,17 @@ class VideoRenamer:
                     primary_results = self._search_with_language(prepared_search_term, media_type_hint, search_year, primary_language)
                     if primary_results:
                         logger.info(f"专用类型搜索返回 {len(primary_results)} 个结果")
+                elif media_type_hint is None:
+                    # 媒体类型不确定，同时搜索电影和电视剧
+                    logger.info("媒体类型不确定，同时搜索电影和电视剧...")
+                    tv_results = self._search_with_language(prepared_search_term, 'tv', search_year, primary_language)
+                    movie_results = self._search_with_language(prepared_search_term, 'movie', search_year, primary_language)
+                    
+                    # 合并结果，优先使用电视剧结果
+                    primary_results = tv_results + movie_results
+                    logger.info(f"TV搜索返回 {len(tv_results)} 个结果, Movie搜索返回 {len(movie_results)} 个结果, 合并后 {len(primary_results)} 个结果")
                 
-                 # 如果专用搜索没有结果，尝试通用搜索
+                # 如果专用搜索没有结果，尝试通用搜索
                 if not primary_results:
                     general_results = self.tmdb_client.search_video_show(prepared_search_term, search_year, language=primary_language)
                     if isinstance(general_results, dict) and 'results' in general_results:
@@ -1186,11 +1224,16 @@ class VideoRenamer:
                         if translated_search_term != prepared_search_term:
                             logger.info(f"将搜索词 '{prepared_search_term}' 翻译为 '{translated_search_term}' 进行{secondary_language}搜索")
                             
-                             # 跨语言搜索
+                            # 跨语言搜索
                             secondary_results = []
                             if media_type_hint:
-                                 secondary_results = self._search_with_language(translated_search_term, media_type_hint, search_year, secondary_language)
-                             
+                                secondary_results = self._search_with_language(translated_search_term, media_type_hint, search_year, secondary_language)
+                            elif media_type_hint is None:
+                                # 媒体类型不确定，同时搜索电影和电视剧
+                                tv_results = self._search_with_language(translated_search_term, 'tv', search_year, secondary_language)
+                                movie_results = self._search_with_language(translated_search_term, 'movie', search_year, secondary_language)
+                                secondary_results = tv_results + movie_results
+                            
                             if not secondary_results:
                                 general_secondary_results = self.tmdb_client.search_video_show(translated_search_term, search_year, language=secondary_language)
                                 if isinstance(general_secondary_results, dict) and 'results' in general_secondary_results:
