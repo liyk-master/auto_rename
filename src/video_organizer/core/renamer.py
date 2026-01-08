@@ -310,6 +310,8 @@ class VideoRenamer:
             r"^(?P<show_name>[\w\s\.]+?)\.(?P<year>\d{4})\.",
             # 1. Show Name Season 01 Episode 01
             r"^(?P<show_name>.*?)[. ]?S(?P<season>\d+)E(?P<episode>\d+)",
+            # 1.5. 匹配季节-only 格式（如 Downton.Abbey.S06.1080p.BluRay.x264...）
+            r"^(?P<show_name>[A-Za-z][A-Za-z0-9\s\.]*?)[. ]S(?P<season>\d+)(?:\.|$)",
             # 2. Season patterns (English & Chinese)
             r"(?P<show_name>.*?)\s*Season\s*(?P<season>\d+)",
             r"(?P<show_name>.*?)\s*(?P<season>\d+)(?:st|nd|rd|th)\s*Season",
@@ -839,7 +841,8 @@ class VideoRenamer:
         # 3. 移除常见的修饰符和季集信息 (Season 2, Episode 11 等)
         cleaned = re.sub(r'Season\s*\d+', '', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'第\d+季', '', cleaned)
-        cleaned = re.sub(r'-\s*\d+\s*', ' ', cleaned) # 移除集号
+        # 只移除形如 -01 或 -123 的纯集号格式（连字符+数字），保留 S06 格式
+        cleaned = re.sub(r'-\s*(\d{1,3})\s*(?=[.\s]|$)', r' \1 ', cleaned)
         
         # 特别移除末尾的罗马数字 (防止干扰剧名搜索)
         cleaned = re.sub(r'\s+(VIII|VII|VI|III|II|IX|IV|V|X|I)$', '', cleaned, flags=re.IGNORECASE)
@@ -880,7 +883,11 @@ class VideoRenamer:
             prepared = re.sub(r'\d+集', '', prepared)
             prepared = prepared.strip()
         else:
-            prepared = prepared.title()
+            # 对于英文搜索词，只移除 SxxExx 格式，保留 Sxx 格式用于电视剧识别
+            prepared = re.sub(r'S\d+E\d+', '', prepared, flags=re.IGNORECASE)
+            # 保留 CamelCase 格式（如 BluRay），只对纯小写单词首字母大写
+            prepared = re.sub(r'\b[a-z]', lambda m: m.group(0).upper(), prepared)
+            prepared = re.sub(r'\s+', ' ', prepared).strip()
             
         return prepared.strip()
         
