@@ -14,11 +14,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-20.04
             platform: linux
             builder: pyinstaller
             ext: ""
-          - os: ubuntu-latest
+          - os: ubuntu-20.04
             platform: linux
             builder: nuitka
             ext: ""
@@ -73,7 +73,7 @@ jobs:
           --noconfirm \
           --onefile \
           --console \
-          --name "VideoOrganizer-${{ matrix.platform }}" \
+          --name "VideoOrganizer-ubuntu20-${{ matrix.platform }}" \
           --clean \
           --hidden-import=src.video_organizer \
           run_organizer.py
@@ -86,7 +86,7 @@ jobs:
           --onefile \
           --follow-imports \
           --include-module=src.video_organizer \
-          --output-filename=VideoOrganizer-${{ matrix.platform }}${{ matrix.ext }} \
+          --output-filename=VideoOrganizer-ubuntu20-${{ matrix.platform }}${{ matrix.ext }} \
           run_organizer.py
           
     - name: List build artifacts
@@ -97,24 +97,24 @@ jobs:
     - name: Test executable (Linux)
       if: matrix.platform == 'linux'
       run: |
-        chmod +x dist/VideoOrganizer-${{ matrix.platform }}
-        ./dist/VideoOrganizer-${{ matrix.platform }} --help || echo "Help command failed, but executable was created"
+        chmod +x dist/VideoOrganizer-ubuntu20-${{ matrix.platform }}
+        ./dist/VideoOrganizer-ubuntu20-${{ matrix.platform }} --help || echo "Help command failed, but executable was created"
         
     - name: Test executable (Windows)
       if: matrix.platform == 'windows'
       run: |
-        dist/VideoOrganizer-${{ matrix.platform }}${{ matrix.ext }} --help || echo "Help command failed, but executable was created"
-        
+        dist/VideoOrganizer-ubuntu20-${{ matrix.platform }}${{ matrix.ext }} --help || echo "Help command failed, but executable was created"
+
     - name: Test executable (macOS)
       if: matrix.platform == 'macos'
       run: |
-        chmod +x dist/VideoOrganizer-${{ matrix.platform }}
-        ./dist/VideoOrganizer-${{ matrix.platform }} --help || echo "Help command failed, but executable was created"
+        chmod +x dist/VideoOrganizer-ubuntu20-${{ matrix.platform }}
+        ./dist/VideoOrganizer-ubuntu20-${{ matrix.platform }} --help || echo "Help command failed, but executable was created"
         
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: VideoOrganizer-${{ matrix.platform }}-${{ matrix.builder }}
+        name: VideoOrganizer-ubuntu20-${{ matrix.platform }}-${{ matrix.builder }}
         path: |
           dist/VideoOrganizer*
         retention-days: 30
@@ -126,9 +126,9 @@ jobs:
         cp dist/VideoOrganizer* release/
         cd release
         if [ "${{ matrix.platform }}" = "windows" ]; then
-          zip -r VideoOrganizer-${{ matrix.platform }}-${{ matrix.builder }}.zip *
+          zip -r VideoOrganizer-ubuntu20-${{ matrix.platform }}-${{ matrix.builder }}.zip *
         else
-          tar -czf VideoOrganizer-${{ matrix.platform }}-${{ matrix.builder }}.tar.gz *
+          tar -czf VideoOrganizer-ubuntu20-${{ matrix.platform }}-${{ matrix.builder }}.tar.gz *
         fi
         cd ..
         
@@ -178,20 +178,20 @@ jobs:
           --noconfirm \
           --onefile \
           --console \
-          --name "VideoOrganizer-legacy-linux" \
+          --name "VideoOrganizer-ubuntu18-linux" \
           --clean \
           --hidden-import=src.video_organizer \
           run_organizer.py
           
     - name: Check dependencies
       run: |
-        ldd dist/VideoOrganizer-legacy-linux | head -10
-        file dist/VideoOrganizer-legacy-linux
-        
+        ldd dist/VideoOrganizer-ubuntu18-linux | head -10
+        file dist/VideoOrganizer-ubuntu18-linux
+
     - name: Upload legacy build
       uses: actions/upload-artifact@v4
       with:
-        name: VideoOrganizer-legacy-linux
+        name: VideoOrganizer-ubuntu18-linux
         path: |
-          dist/VideoOrganizer-legacy-linux
+          dist/VideoOrganizer-ubuntu18-linux
         retention-days: 30

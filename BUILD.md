@@ -10,13 +10,13 @@
 
 ## 构建矩阵
 
-| 平台 | 构建工具 | 输出文件 |
-|------|----------|----------|
-| Linux | PyInstaller | `VideoOrganizer-linux` |
-| Linux | Nuitka | `VideoOrganizer-linux` |
-| Windows | PyInstaller | `VideoOrganizer-windows.exe` |
-| macOS | PyInstaller | `VideoOrganizer-macos` |
-| Linux (Legacy) | PyInstaller | `VideoOrganizer-legacy-linux` |
+| 平台 | 构建工具 | 输出文件 | 兼容性 |
+|------|----------|----------|---------|
+| Linux (Ubuntu 20.04) | PyInstaller | `VideoOrganizer-ubuntu20-linux` | Ubuntu 20.04+, glibc 2.31+ |
+| Linux (Ubuntu 20.04) | Nuitka | `VideoOrganizer-ubuntu20-linux` | Ubuntu 20.04+, glibc 2.31+ |
+| Windows | PyInstaller | `VideoOrganizer-ubuntu20-windows.exe` | Windows 10+ |
+| macOS | PyInstaller | `VideoOrganizer-ubuntu20-macos` | macOS 10.15+ |
+| Linux (Ubuntu 18.04) | PyInstaller | `VideoOrganizer-ubuntu18-linux` | Ubuntu 18.04+, glibc 2.27+ |
 
 ## 下载构建产物
 
@@ -48,6 +48,21 @@ pyinstaller --onefile --windowed run_organizer.py
 
 ## 兼容性说明
 
-- **标准版本**: 适用于现代 Linux 发行版
-- **Legacy 版本**: 基于 Ubuntu 18.04，兼容老系统
-- **Nuitka 版本**: 性能更好，体积更小
+### Linux版本选择
+- **VideoOrganizer-ubuntu20-linux**: 适用于Ubuntu 20.04及以上，需要glibc 2.31+
+- **VideoOrganizer-ubuntu18-linux**: 适用于Ubuntu 18.04及以上，需要glibc 2.27+
+
+### 检查你的glibc版本
+```bash
+ldd --version
+# 第一行显示: ldd (Ubuntu GLIBC 2.xx) ...
+```
+
+### 版本兼容性
+- 如果你的系统是 Ubuntu 20.04+ → 使用 ubuntu20 版本
+- 如果你的系统是 Ubuntu 18.04 → 使用 ubuntu18 版本
+- 如果你的系统是 Ubuntu 16.04 或更老 → 可能无法运行
+
+### Nuitka vs PyInstaller
+- **Nuitka**: 性能更好，启动更快，体积略大
+- **PyInstaller**: 兼容性更好，更稳定
