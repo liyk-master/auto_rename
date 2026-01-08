@@ -83,6 +83,7 @@ jobs:
         python -m nuitka --standalone --onefile --follow-imports --include-module=src.video_organizer --output-filename=VideoOrganizer-ubuntu20-${{ matrix.platform }}${{ matrix.ext }} run_organizer.py
 
     - name: List build artifacts
+      shell: bash
       run: |
         ls -la dist/
         file dist/* || true
