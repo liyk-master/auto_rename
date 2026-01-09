@@ -65,6 +65,10 @@ DEFAULT_CONFIG = {
         'model': 'GLM-4.5-Flash',
         'enabled': False
     },
+    'llm_fallback': {
+        'enabled': False,
+        'max_concurrent': 2
+    },
     'downloaders': []
 }
 

@@ -5,6 +5,7 @@ Module for extracting metadata from video files and generating new names.
 import os
 import re
 import logging
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
@@ -26,12 +27,680 @@ class VideoRenamer:
         "simple": "{title}{quality_tags_suffix}{release_group_suffix}"
     }
     
+    # 默认字幕组与内容类型映射
+    # content_type: anime=动漫, drama=电视剧, movie=电影
+    DEFAULT_RELEASE_GROUP_MAPPING = {
+        # ====== 国漫字幕组（明确映射到 drama）======
+        # 这些字幕组主要做国产动漫/电视剧，优先使用 drama 以便通过 TMDB 信息判断子分类
+        'VARYG': 'drama',
+        'Mortal': 'drama',
+        'Linn': 'drama',
+        '锅巴': 'drama',
+        '未定': 'drama',
+        '动漫花园': 'drama',
+        'GM-Team': 'drama',
+        'GM Team': 'drama',
+
+        # ====== 动漫字幕组 ======
+        'VCB-Studio': 'anime',
+        'vcb-studio': 'anime',
+        'Vcbstudio': 'anime',
+        'Nekomoe kissaten': 'anime',
+        'Nekomoe': 'anime',
+        '喵萌奶茶屋': 'anime',
+        '喵萌': 'anime',
+        '动漫国字幕组': 'anime',
+        '动漫国': 'anime',
+        'Lilith-Raws': 'anime',
+        'Lilith': 'anime',
+        'LowPower-Raws': 'anime',
+        'LowPower': 'anime',
+        'EMR': 'anime',
+        'Moozzi2': 'anime',
+        'Reinforce': 'anime',
+        'Airota': 'anime',
+        'Kona': 'anime',
+        'Yousei-raws': 'anime',
+        'Yousei': 'anime',
+        'ANK-Raws': 'anime',
+        'ANK': 'anime',
+        'Sakurato': 'anime',
+        'Fumi-Raws': 'anime',
+        'Fumi': 'anime',
+        'Mingy': 'anime',
+        'MING': 'anime',
+        'ANi': 'anime',
+        'ANi-Raws': 'anime',
+        'Pas de Pop': 'anime',
+        'Pop': 'anime',
+        'SubsPlease': 'anime',
+        'Erai-raws': 'anime',
+        'HorribleRips': 'anime',
+        'Crackle': 'anime',
+        'Kodomount': 'anime',
+        'Mizuki': 'anime',
+        'Asakura': 'anime',
+        'NAG': 'anime',
+        'J播种': 'anime',
+        'DMG': 'anime',
+        'CASO': 'anime',
+        'SumiSora': 'anime',
+        'Sumi': 'anime',
+        'FLsnow': 'anime',
+        'FL': 'anime',
+        'XKsub': 'anime',
+        'XK': 'anime',
+        'Zeyao': 'anime',
+        'NC-Raws': 'anime',
+        'NC': 'anime',
+        '百冬练习生': 'anime',
+        'MISO': 'anime',
+        'Bean': 'anime',
+        'BeanSub': 'anime',
+        'FZSD': 'anime',
+        'SweetSub': 'anime',
+        'Sweet': 'anime',
+        'A-F': 'anime',
+        'SDMN': 'anime',
+        'Web-Raws': 'anime',
+        'UHA-Wings': 'anime',
+        'Wings': 'anime',
+        'NPU': 'anime',
+        'KTXP': 'anime',
+        'MCE翻译组': 'anime',
+        '极光字幕': 'anime',
+        '动音漫影': 'anime',
+        '星辰国漫': 'anime',
+        '幻樱字幕': 'anime',
+        '华盟字幕': 'anime',
+        '雪飘': 'anime',
+        '澄空学园': 'anime',
+        '天月': 'anime',
+        '悠哈璃羽': 'anime',
+        '璃羽': 'anime',
+        'LoliHouse': 'anime',
+        'Loli': 'anime',
+        'Sakura': 'anime',
+        '诸神字幕': 'anime',
+        '诸神': 'anime',
+        'Kamigami': 'anime',
+        '千羽': 'anime',
+        '梦蓝': 'anime',
+        '风之圣殿': 'anime',
+        'Haolin': 'anime',
+        '好林': 'anime',
+        '枫林社': 'anime',
+        '喵森': 'anime',
+        'Moe': 'anime',
+        'Moe-Raws': 'anime',
+        '爱咕噜': 'anime',
+        '爱咕噜字幕': 'anime',
+        '迪迪': 'anime',
+        '迪迪字幕': 'anime',
+        'Luminous': 'anime',
+        'Luminous字幕': 'anime',
+        'Kaleido': 'anime',
+        'Kaleido字幕': 'anime',
+        'Octopus': 'anime',
+        'Octopus字幕': 'anime',
+        '橘花': 'anime',
+        '橘花字幕': 'anime',
+        '星梦': 'anime',
+        '星梦字幕': 'anime',
+        '白羽': 'anime',
+        '白羽字幕': 'anime',
+        '天道': 'anime',
+        '天道字幕': 'anime',
+        '轻之国度': 'anime',
+        '轻国': 'anime',
+        '异域': 'anime',
+        '异域字幕': 'anime',
+        '小p优优': 'anime',
+        '小p': 'anime',
+        '吹雪': 'anime',
+        '吹雪字幕': 'anime',
+        '丸子': 'anime',
+        '丸子字幕': 'anime',
+        '小程序': 'anime',
+        '小程序字幕': 'anime',
+        '初音': 'anime',
+        '初音字幕': 'anime',
+        '晓星': 'anime',
+        '晓星字幕': 'anime',
+        '千夏': 'anime',
+        '千夏字幕': 'anime',
+        '萌月': 'anime',
+        '萌月字幕': 'anime',
+        '肉粽': 'anime',
+        '肉粽字幕': 'anime',
+        '星空': 'anime',
+        '星空字幕': 'anime',
+        '乐园': 'anime',
+        '乐园字幕': 'anime',
+        '动漫花园': 'anime',
+        '腾讯动漫': 'anime',
+        'SAGI': 'anime',
+        'Raku': 'anime',
+        'Zero-Raws': 'anime',
+        'Dazuraw': 'anime',
+        'KODAW': 'anime',
+        '沦波': 'anime',
+        '八王子': 'anime',
+        'Leopard-Raws': 'anime',
+        'IrizaRaws': 'anime',
+        'Kiss-Sub': 'anime',
+        'M-T': 'anime',
+        'WOLF': 'anime',
+        'WMSUB': 'anime',
+        'Studio GreenTea': 'anime',
+        'GreenTea': 'anime',
+        'orion origin': 'anime',
+        'Orion Origin': 'anime',
+        'FLsnow': 'anime',
+        'FLSNOW': 'anime',
+        'MagicStar': 'drama',
+        'AI-Raws': 'anime',
+        'AIRaws': 'anime',
+        '雪飘工作室': 'anime',
+        '雪飘': 'anime',
+        'Xing': 'anime',
+        'Yami-Sub': 'anime',
+        'Zero动漫': 'anime',
+        'BlueStar': 'anime',
+        'Chotab': 'anime',
+        'Creepy': 'anime',
+        'FANS': 'anime',
+        'FREEDOM': 'anime',
+        'GHOST': 'anime',
+        'Lank': 'anime',
+        'LBC': 'anime',
+        'LOST': 'anime',
+        'LPD': 'anime',
+        'OPUS': 'anime',
+        'RIP': 'anime',
+        'SDR': 'anime',
+        'SEE': 'anime',
+        'SIN': 'anime',
+        'SMD': 'anime',
+        'SND': 'anime',
+        'SOL': 'anime',
+        'SP': 'anime',
+        'SUB': 'anime',
+        'SUN': 'anime',
+        'SUP': 'anime',
+        'SVD': 'anime',
+        'TCC': 'anime',
+        'THR': 'anime',
+        'TK': 'anime',
+        'TLC': 'anime',
+        'TMH': 'anime',
+        'TNG': 'anime',
+        'TOK': 'anime',
+        'UB': 'anime',
+        'UE': 'anime',
+        'UI': 'anime',
+        'UL': 'anime',
+        'UP': 'anime',
+        'VA': 'anime',
+        'VEC': 'anime',
+        'VI': 'anime',
+        'VIC': 'anime',
+        'VRR': 'anime',
+        'WAL': 'anime',
+        'WCD': 'anime',
+        'WDS': 'anime',
+        'WEC': 'anime',
+        'WHD': 'anime',
+        'WHITE': 'anime',
+        'WLF': 'anime',
+        'WMM': 'anime',
+        'WNF': 'anime',
+        'WOP': 'anime',
+        'WRA': 'anime',
+        'WSC': 'anime',
+        'WSP': 'anime',
+        'WTK': 'anime',
+        'XX': 'anime',
+        'XA': 'anime',
+        'XD': 'anime',
+        'XE': 'anime',
+        'XF': 'anime',
+        'XH': 'anime',
+        'XI': 'anime',
+        'XJ': 'anime',
+        'XM': 'anime',
+        'XN': 'anime',
+        'XO': 'anime',
+        'XPX': 'anime',
+        'XQ': 'anime',
+        'XRC': 'anime',
+        'XT': 'anime',
+        'XV': 'anime',
+        'YB': 'anime',
+        'YD': 'anime',
+        'YE': 'anime',
+        'YFB': 'anime',
+        'YH': 'anime',
+        'YI': 'anime',
+        'YJ': 'anime',
+        'YK': 'anime',
+        'YL': 'anime',
+        'YM': 'anime',
+        'YN': 'anime',
+        'YO': 'anime',
+        'YP': 'anime',
+        'YQ': 'anime',
+        'YR': 'anime',
+        'YS': 'anime',
+        'YSH': 'anime',
+        'YT': 'anime',
+        'YTC': 'anime',
+        'YU': 'anime',
+        'YUE': 'anime',
+        'YW': 'anime',
+        'YY': 'anime',
+        'ZA': 'anime',
+        'ZB': 'anime',
+        'ZC': 'anime',
+        'ZD': 'anime',
+        'ZE': 'anime',
+        'ZF': 'anime',
+        'ZG': 'anime',
+        'ZH': 'anime',
+        'ZI': 'anime',
+        'ZJ': 'anime',
+        'ZK': 'anime',
+        'ZL': 'anime',
+        'ZM': 'anime',
+        'ZN': 'anime',
+        'ZO': 'anime',
+        'ZR': 'anime',
+        'ZS': 'anime',
+        'ZSH': 'anime',
+        'ZT': 'anime',
+        'ZTV': 'anime',
+        'ZY': 'anime',
+        'ZZ': 'anime',
+        'Doomdos': 'anime',
+        '动漫花园': 'anime',
+        '腾讯动漫': 'anime',
+        'Acer': 'anime',
+        'Kfps': 'anime',
+        'Aurogon': 'anime',
+        'GPA': 'anime',
+        'HRC': 'anime',
+        'HRS': 'anime',
+        'HYS': 'anime',
+        'K6': 'anime',
+        'KD': 'anime',
+        'KEX': 'anime',
+        'KHB': 'anime',
+        'KID': 'anime',
+        'KMR': 'anime',
+        'KRC': 'anime',
+        'LCW': 'anime',
+        'LDL': 'anime',
+        'LHC': 'anime',
+        'LRC': 'anime',
+        'LRS': 'anime',
+        'LSP': 'anime',
+        'LTH': 'anime',
+        'LWC': 'anime',
+        'LZR': 'anime',
+        'MDR': 'anime',
+        'MHT': 'anime',
+        'MPS': 'anime',
+        'MSR': 'anime',
+        'MST': 'anime',
+        'MTH': 'anime',
+        'MTK': 'anime',
+        'MUM': 'anime',
+        'NAN': 'anime',
+        'NAX': 'anime',
+        'NBS': 'anime',
+        'NCT': 'anime',
+        'ND': 'anime',
+        'NF': 'anime',
+        'NH': 'anime',
+        'NK': 'anime',
+        'NL': 'anime',
+        'NOW': 'anime',
+        'NR': 'anime',
+        'NSD': 'anime',
+        'NV': 'anime',
+        'OBS': 'anime',
+        'OFA': 'anime',
+        'OPF': 'anime',
+        'ORA': 'anime',
+        'ORB': 'anime',
+        'ORZ': 'anime',
+        'OSR': 'anime',
+        'OTC': 'anime',
+        'OTW': 'anime',
+        'PBF': 'anime',
+        'PBL': 'anime',
+        'PBT': 'anime',
+        'PDV': 'anime',
+        'PNA': 'anime',
+        'PNR': 'anime',
+        'POL': 'anime',
+        'POS': 'anime',
+        'PPA': 'anime',
+        'PPK': 'anime',
+        'PRE': 'anime',
+        'PRG': 'anime',
+        'PRO': 'anime',
+        'PRR': 'anime',
+        'PSY': 'anime',
+        'PTA': 'anime',
+        'PTB': 'anime',
+        'PTC': 'anime',
+        'PTN': 'anime',
+        'PTT': 'anime',
+        'PUM': 'anime',
+        'QD': 'anime',
+        'QIE': 'anime',
+        'QM': 'anime',
+        'QMS': 'anime',
+        'QMT': 'anime',
+        'QMX': 'anime',
+        'RAV': 'anime',
+        'RBY': 'anime',
+        'RCC': 'anime',
+        'RCM': 'anime',
+        'RCS': 'anime',
+        'RDD': 'anime',
+        'RDF': 'anime',
+        'RDM': 'anime',
+        'REF': 'anime',
+        'REM': 'anime',
+        'REX': 'anime',
+        'RFF': 'anime',
+        'RFT': 'anime',
+        'RHI': 'anime',
+        'RHT': 'anime',
+        'ROI': 'anime',
+        'ROX': 'anime',
+        'RSD': 'anime',
+        'RTH': 'anime',
+        'RTT': 'anime',
+        'SBC': 'anime',
+        'SBD': 'anime',
+        'SBK': 'anime',
+        'SCO': 'anime',
+        'SCP': 'anime',
+        'SDR': 'anime',
+        'SEG': 'anime',
+        'SFT': 'anime',
+        'SHK': 'anime',
+        'SHP': 'anime',
+        'SHT': 'anime',
+        'SIC': 'anime',
+        'SLC': 'anime',
+        'SLK': 'anime',
+        'SLO': 'anime',
+        'SLR': 'anime',
+        'SMD': 'anime',
+        'SMI': 'anime',
+        'SMS': 'anime',
+        'SND': 'anime',
+        'SOP': 'anime',
+        'SOS': 'anime',
+        'SPC': 'anime',
+        'SPK': 'anime',
+        'SRD': 'anime',
+        'SRR': 'anime',
+        'SSC': 'anime',
+        'SSH': 'anime',
+        'SSR': 'anime',
+        'STA': 'anime',
+        'STB': 'anime',
+        'STC': 'anime',
+        'STD': 'anime',
+        'STE': 'anime',
+        'STH': 'anime',
+        'STL': 'anime',
+        'STN': 'anime',
+        'STP': 'anime',
+        'STR': 'anime',
+        'STS': 'anime',
+        'STW': 'anime',
+        'TAI': 'anime',
+        'TAM': 'anime',
+        'TBL': 'anime',
+        'TBZ': 'anime',
+        'TCD': 'anime',
+        'TCE': 'anime',
+        'TCO': 'anime',
+        'TDD': 'anime',
+        'TDE': 'anime',
+        'TDM': 'anime',
+        'TDS': 'anime',
+        'TEC': 'anime',
+        'TKC': 'anime',
+        'TNC': 'anime',
+        'TNX': 'anime',
+        'TOC': 'anime',
+        'TPA': 'anime',
+        'TPD': 'anime',
+        'TRI': 'anime',
+        'TRL': 'anime',
+        'TSA': 'anime',
+        'TSC': 'anime',
+        'TSE': 'anime',
+        'TSF': 'anime',
+        'TSK': 'anime',
+        'TTC': 'anime',
+        'TTE': 'anime',
+        'TTO': 'anime',
+        'TVC': 'anime',
+        'TVE': 'anime',
+        'TVR': 'anime',
+        'TX': 'anime',
+        'TY': 'anime',
+        'TZ': 'anime',
+        'UB': 'anime',
+        'UC': 'anime',
+        'UD': 'anime',
+        'UG': 'anime',
+        'UH': 'anime',
+        'UM': 'anime',
+        'UN': 'anime',
+        'UR': 'anime',
+        'UT': 'anime',
+        'VA': 'anime',
+        'VC': 'anime',
+        'VD': 'anime',
+        'VE': 'anime',
+        'VH': 'anime',
+        'VJ': 'anime',
+        'VK': 'anime',
+        'VL': 'anime',
+        'VM': 'anime',
+        'VN': 'anime',
+        'VO': 'anime',
+        'VS': 'anime',
+        'VT': 'anime',
+        'VV': 'anime',
+        'VW': 'anime',
+        'VX': 'anime',
+        'WA': 'anime',
+        'WB': 'anime',
+        'WD': 'anime',
+        'WE': 'anime',
+        'WF': 'anime',
+        'WG': 'anime',
+        'WK': 'anime',
+        'WL': 'anime',
+        'WM': 'anime',
+        'WN': 'anime',
+        'WO': 'anime',
+        'WP': 'anime',
+        'WQ': 'anime',
+        'WR': 'anime',
+        'WS': 'anime',
+        'WT': 'anime',
+        'WV': 'anime',
+        'WW': 'anime',
+        'WY': 'anime',
+        'XA': 'anime',
+        'XB': 'anime',
+        'XC': 'anime',
+        'XD': 'anime',
+        'XE': 'anime',
+        'XF': 'anime',
+        'XG': 'anime',
+        'XH': 'anime',
+        'XI': 'anime',
+        'XJ': 'anime',
+        'XK': 'anime',
+        'XL': 'anime',
+        'XM': 'anime',
+        'XN': 'anime',
+        'XO': 'anime',
+        'XP': 'anime',
+        'XQ': 'anime',
+        'XR': 'anime',
+        'XS': 'anime',
+        'XT': 'anime',
+        'XU': 'anime',
+        'XV': 'anime',
+        'XW': 'anime',
+        'XX': 'anime',
+        'XY': 'anime',
+        'XZ': 'anime',
+        'YA': 'anime',
+        'YB': 'anime',
+        'YC': 'anime',
+        'YD': 'anime',
+        'YE': 'anime',
+        'YF': 'anime',
+        'YG': 'anime',
+        'YH': 'anime',
+        'YI': 'anime',
+        'YJ': 'anime',
+        'YK': 'anime',
+        'YL': 'anime',
+        'YM': 'anime',
+        'YN': 'anime',
+        'YO': 'anime',
+        'YP': 'anime',
+        'YQ': 'anime',
+        'YR': 'anime',
+        'YS': 'anime',
+        'YT': 'anime',
+        'YU': 'anime',
+        'YV': 'anime',
+        'YW': 'anime',
+        'YX': 'anime',
+        'YY': 'anime',
+        'YZ': 'anime',
+        'ZA': 'anime',
+        'ZB': 'anime',
+        'ZC': 'anime',
+        'ZD': 'anime',
+        'ZE': 'anime',
+        'ZF': 'anime',
+        'ZG': 'anime',
+        'ZH': 'anime',
+        'ZI': 'anime',
+        'ZJ': 'anime',
+        'ZK': 'anime',
+        'ZL': 'anime',
+        'ZM': 'anime',
+        'ZN': 'anime',
+        'ZO': 'anime',
+        'ZP': 'anime',
+        'ZQ': 'anime',
+        'ZR': 'anime',
+        'ZS': 'anime',
+        'ZT': 'anime',
+        'ZU': 'anime',
+        'ZV': 'anime',
+        'ZW': 'anime',
+        'ZX': 'anime',
+        'ZY': 'anime',
+        'ZZ': 'anime',
+        
+        # ====== 电视剧/综艺字幕组 ======
+        '神舌字幕组': 'drama',
+        '神舌': 'drama',
+        '人人影视': 'drama',
+        '人人': 'drama',
+        'FIX字幕侠': 'drama',
+        'FIX': 'drama',
+        '追新番': 'drama',
+        '迅影网': 'drama',
+        'Sub Haddad': 'drama',
+        '土耳其语字幕': 'drama',
+        '凤凰天使': 'drama',
+        '凤凰天使字幕组': 'drama',
+        '韩迷字幕组': 'drama',
+        '韩迷': 'drama',
+        '幻想乐园': 'drama',
+        '悠乐': 'drama',
+        '橘子海外剧': 'drama',
+        'Dream字幕组': 'drama',
+        'Dream': 'drama',
+        '擦枪字幕': 'drama',
+        '擦枪': 'drama',
+        '射手字幕': 'drama',
+        '射手': 'drama',
+        '翻托邦字幕组': 'drama',
+        '翻托邦': 'drama',
+        '远鉴字幕组': 'drama',
+        '远鉴': 'drama',
+        '小玩剧字幕组': 'drama',
+        '小玩剧': 'drama',
+        '圣城字幕组': 'drama',
+        '圣城': 'drama',
+        'TDMSub': 'drama',
+        '百事特字幕': 'drama',
+        '百事特': 'drama',
+        '百科园字幕组': 'drama',
+        'YYeTs字幕组': 'drama',
+        '韩剧tv': 'drama',
+        '欧乐': 'drama',
+        '看韩剧': 'drama',
+        '韩剧热线': 'drama',
+        '韩流': 'drama',
+        '韩家园': 'drama',
+        '字幕港': 'drama',
+        '日菁字幕': 'drama',
+        '日菁': 'drama',
+        '东京字幕': 'drama',
+        '猪猪字幕': 'drama',
+        '弯弯字幕': 'drama',
+        '弯弯': 'drama',
+        '台剧字幕': 'drama',
+        'TVB': 'drama',
+        '粤语字幕': 'drama',
+        '飞屋字幕': 'drama',
+        '飞屋': 'drama',
+        '满汉全席': 'drama',
+        '破晓字幕': 'drama',
+        '破晓': 'drama',
+        'YYT': 'drama',
+        '听字幕': 'drama',
+        'R3字幕': 'drama',
+        'KRL字幕': 'drama',
+    }
+    
     def __init__(self, tmdb_api_key: str, ai_service_url: Optional[str] = None, watch_path: Optional[Path] = None, naming_rules: Optional[Dict] = None, llm_config: Optional[Dict] = None, config: Optional[Dict] = None):
         self.tmdb_client = TMDBClient(tmdb_api_key) if tmdb_api_key else None
         self.ai_service_url = ai_service_url
         self.watch_path = watch_path
         self.naming_rules = naming_rules or self.DEFAULT_NAMING_RULES
         self.config = config  # 保存完整配置对象
+        
+        # 加载字幕组映射配置
+        self._release_group_mapping = dict(self.DEFAULT_RELEASE_GROUP_MAPPING)
+        if config and isinstance(config, dict):
+            custom_mapping = config.get('release_group_mapping', {})
+            if custom_mapping:
+                # 合并配置，覆盖默认映射
+                self._release_group_mapping.update(custom_mapping)
+                logger.info(f"加载了 {len(custom_mapping)} 个自定义字幕组映射")
         
         # 初始化 LLM 翻译器
         self.llm_translator = None
@@ -76,6 +745,21 @@ class VideoRenamer:
                 model=llm_model
             )
             logger.info("VideoRenamer: LLM 翻译器初始化成功")
+        
+        # LLM 并发控制信号量（最多同时 2 个 LLM 调用）
+        self._llm_semaphore = threading.Semaphore(2)
+        
+        # 是否启用 LLM 兜底识别（从配置读取）
+        self._llm_fallback_enabled = False
+        llm_fallback_config = {}
+        if config and isinstance(config, dict):
+            llm_fallback_config = config.get('llm_fallback', {})
+        if llm_fallback_config.get('enabled', False):
+            self._llm_fallback_enabled = True
+            max_concurrent = llm_fallback_config.get('max_concurrent', 2)
+            if max_concurrent > 0:
+                self._llm_semaphore = threading.Semaphore(max_concurrent)
+            logger.info(f"VideoRenamer: LLM 兜底识别已启用 (max_concurrent={max_concurrent})")
         
     def extract_metadata(self, file_path: Union[str, Path], media_type_hint: Optional[str] = None) -> Dict:
         """
@@ -265,8 +949,8 @@ class VideoRenamer:
     
     def _extract_with_regex(self, filename: str) -> Dict:
         """Extract metadata using regular expressions."""
-        # 预处理：将全角括号替换为标准方括号，将+号替换为空格
-        base_name = filename.replace('【', '[').replace('】', ']').replace('+', ' ')
+        # 预处理：将全角括号替换为标准方括号，将+号替换为空格，将中文冒号替换为英文
+        base_name = filename.replace('【', '[').replace('】', ']').replace('+', ' ').replace('：', ':')
         
         metadata = {
             'original_filename': filename,
@@ -295,7 +979,6 @@ class VideoRenamer:
         # 提取年份信息
         year_patterns = [
             r'\((\d{4})(?:-\d{4})?\)',
-            r'\[(\d{4})(?:-\d{4})?\]',
             r'\.(\d{4})(?:-\d{4})?\.',
             r'\.(\d{4})(?:-\d{4})?\s',
             r'(?<!\d)(19\d{2}|20\d{2})(?!\d|[xXpP])', # 匹配 19xx 或 20xx，且排除 1920x1080
@@ -316,6 +999,31 @@ class VideoRenamer:
         # Special pattern for French/foreign movie formats with . and - separators
         # Like: Je.Navais.Que.Le.Neant.-.Shoah.Par.Lanzmann.2025.1080p.BluRay.x264.AAC5.1-[YTS.LT]
         patterns = [
+            # 0.9 Special pattern for [Group][Type][ShowName][EnglishName][Year][Episode][Tags].mp4 (GM-Team style)
+            # Like: [GM-Team][国漫][遮天][Shrouding the Heavens][2023][142][AVC][GB][1080P].mp4
+            r"^\[[^\]]+\]\s*\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\[[^\]]+\]\[(?P<year>\d{4})\]\[(?P<episode>\d{1,4})\]",
+            # 0. Special pattern for bracket-format anime: [Group][ShowName][48][GB][1080P][x264_AAC].mp4
+            r"^\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
+            # 0.1 Special pattern for bracket-format anime with season: [Group][ShowName][S2][12][...]
+            r"^\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\s*\[S(?P<season>\d+)\]\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
+            # 0.2 Special pattern for anime with episode title: [Group][Detective Conan_30th_1hSP][1187][Episode Title][...].mp4
+            r"^\[[^\]]+\]\s*\[(?P<show_name>[\w\s]+?)(?:_\d+(?:th|nd|rd|st)?(?:_?\d+h(?:SP)?)?)?\]\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
+            # 0.3 Special pattern for anime with full episode info: [Group][Show_30th_1hSP][1187][Episode Title][BIG5][2160P][20260103].mp4
+            r"^\[[^\]]+\]\s*\[(?P<show_name>[\w\s]+?)(?:_\d+(?:th|nd|rd|st)?(?:_?\d+h(?:SP)?)?)?\]\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]\s*\[Episode\s+[^\]]+\]",
+            # 0.4 Special pattern for [Group] Show Name [集号] format (no extra brackets around show name)
+            r"^\[(?P<release_group>[^\]]+)\]\s*(?P<show_name>[^\[]+?)\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
+            # 0.5 Special pattern for [Group][Show][Omnibus_03(36.5)][1080p].mkv format
+            r"^\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\s*\[Omnibus[_\s]*\d+(?:\(\d+(?:\.\d+)?\))?\]",
+            # 0.5.1 Fallback for Omnibus format without episode capture
+            r"^\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\s*\[Omnibus",
+            # 0.6 Special pattern for [Group][Chinese/English Show][1080p].mp4 format
+            r"^\[[^\]]+\]\s*\[(?:[^\]]+/)?(?P<show_name>[^\]]+)\]\s*\[",
+            # 0.6 Special pattern for [Group] Show Name [集号][其他标签] 格式
+            r"^\[(?P<release_group>[^\]]+)\]\s*(?P<show_name>[^\[]+?)\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]\s*\[",
+            # 0.7 Special pattern for Show.Name.EPxx.quality-Group.mkv format
+            r"^(?P<show_name>[^\-]+?)\.EP(?P<episode>\d{1,4})(?:[.\s]+[^\-]+)*\-(?P<release_group>[^\.]+)$",
+            # 0.8 Special pattern for Show.Name.EPxx.quality-Group.mkv format (alternative)
+            r"^(?P<show_name>.+?)\.EP(?P<episode>\d{1,4}).*\-(?P<release_group>[A-Za-z]+)$",
             # 0. Special pattern for dot-and-hyphen separated movie titles with quality tags
             r"^(?P<show_name>[\w\s\.\-]+?)\s*[\(\[]?\d{4}[\)\]]?\s*(?:\.[\w\-]+)+(?:\-[\w\.\[\]]+)?$",
             # Movie-specific patterns - 电影专用匹配模式
@@ -375,6 +1083,8 @@ class VideoRenamer:
             r"(?<!\d{4})第(?P<episode>\d+(?:-\d+)?)话",
             r"(?<!\d{4})EP(?P<episode>\d+(?:-\d+)?)",
             r"(?<!\d{4})\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
+            # 匹配 #01 或 #1 格式 (如 [AI-Raws] 魔神英雄伝ワタル2 #01)
+            r"(?P<show_name>.*?)\s*#(?P<episode>\d{1,4})(?:$|\s|\.|\[|\()",
         ]
         
         match_found = False
@@ -402,6 +1112,12 @@ class VideoRenamer:
         release_group_match = re.search(release_group_pattern, base_name)
         if release_group_match:
             metadata['release_group'] = release_group_match.group(1)
+        
+        # 提取末尾的发布组格式（如 -MagicStar）
+        release_group_trailing_pattern = r'\-([A-Za-z]+)\.(?:mkv|mp4|avi|flv|mov|wmv)$'
+        release_group_trailing_match = re.search(release_group_trailing_pattern, base_name)
+        if release_group_trailing_match and not metadata.get('release_group'):
+            metadata['release_group'] = release_group_trailing_match.group(1)
         
         # 提取不带方括号的发布组格式（如 AHTV.Judge.of.Song.Dynasty...）
         # 匹配连续大写字母组后跟点号或空格
@@ -452,6 +1168,9 @@ class VideoRenamer:
                 
                 # 6. 额外清理：如果剧名末尾残存了连集信息（如 Pocket Monsters 115），剔除它
                 show_name = re.sub(r'\s+\d+(?:-\d+)?$', '', show_name)
+                
+                # 7. 移除周年纪念/特别篇标记（如 _30th_1hSP, _25th_Anniversary 等）
+                show_name = re.sub(r'_\d+(?:th|nd|rd|st)?(?:_?\d+h(?:SP)?)?\s*$', '', show_name, flags=re.IGNORECASE)
                 
                 metadata['show_name'] = show_name.strip()
                 show_name = show_name.strip().rstrip('.')
@@ -538,13 +1257,47 @@ class VideoRenamer:
         # 如果没有匹配到show_name但有cleaned_name，尝试提取show_name
         if not metadata.get('show_name') and cleaned_name:
             # 从清理后的名称中提取可能的剧集信息，然后获取show_name
-            season_episode_pattern = r'(S\d+E\d+|第\d+季第\d+集|第\d+集)'
+            season_episode_pattern = r'(S\d+E\d+|第\d+季第\d+集。第\d+集)'
             match = re.search(season_episode_pattern, cleaned_name, re.IGNORECASE)
             if match:
                 # 提取show_name为剧集信息前的部分
                 show_name = cleaned_name[:match.start()].strip()
                 if show_name:
                     metadata['show_name'] = show_name
+        
+        # LLM 兜底识别：如果正则匹配失败且启用了 LLM 兜底
+        if not metadata.get('show_name') and self._llm_fallback_enabled and self.llm_translator:
+            logger.info(f"正则匹配失败，尝试 LLM 兜底识别: {base_name}")
+
+            # 使用信号量限制并发
+            acquired = self._llm_semaphore.acquire(timeout=10)
+            if acquired:
+                try:
+                    llm_result = self.llm_translator.parse_filename(base_name)
+                    if llm_result:
+                        logger.info(f"LLM 兜底识别成功: {llm_result}")
+
+                        # 使用LLM返回的show_name
+                        if llm_result.get('show_name'):
+                            metadata['show_name'] = llm_result['show_name']
+                        if llm_result.get('season'):
+                            metadata['season'] = llm_result['season']
+                        if llm_result.get('episode'):
+                            metadata['episode'] = llm_result['episode']
+                        if llm_result.get('year'):
+                            metadata['year'] = llm_result['year']
+                        if llm_result.get('release_group'):
+                            metadata['release_group'] = llm_result['release_group']
+                        if llm_result.get('media_type'):
+                            metadata['media_type'] = llm_result['media_type']
+                        if llm_result.get('original_language'):
+                            metadata['original_language'] = llm_result['original_language']
+                except Exception as e:
+                    logger.error(f"LLM 兜底识别失败: {e}")
+                finally:
+                    self._llm_semaphore.release()
+            else:
+                logger.warning("LLM 兜底识别超时（并发数已达上限），跳过")
         
         # 媒体类型检测逻辑改进：
         # 1. 优先检测明显的剧集格式
@@ -863,13 +1616,11 @@ class VideoRenamer:
         quality_patterns = r'HD|FHD|UHD|4K|1080p|720p|480p|360p|240p|2160p|2160|HDR|SDR|HDR10|Dolby\s*Vision|DV|dv|Dv|x264|x265|h264|h265|HEVC|AVC|MPEG4|10bit|AAC|DTS|DDP|TrueHD|Atmos|FLAC|AC3|DTS-HD|OPUS|BD|BDRip|BluRay|DVD|DVDRip|WEB|WEBRip|WEB-DL|REPACK|PROPER|INTERNAL|CHS|ENG|双语|字幕|中字|英字|简日内嵌|繁体|简体|日语版|国语版|粤语版|MP4|MKV|AVI|GB|BIG5|CHT|CHS|TC|SC|JAP|CN|JP|Dub|JP\s*Dub|TV|Web|AAC5|5\.1|7\.1|DTS'
         
         # 3. 移除发布组信息（方括号或末尾格式）
-        # 匹配 [发布组] 或 -[发布组] 格式
         cleaned = re.sub(r'\[YTS\.?LT?\]', '', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'\-?\[[^\]]+\]', '', cleaned)
-        cleaned = re.sub(r'\-?[A-Z]{2,6}$', '', cleaned)  # 末尾的发布组如 -YTS
+        cleaned = re.sub(r'\-?[A-Z]{2,6}$', '', cleaned)
         
         # 4. 移除质量标签和年份
-        # 移除年份 (2025) 或 [2025] 或 .2025.
         cleaned = re.sub(r'[\[\(]?\d{4}[\]\)]?', '', cleaned)
         cleaned = re.sub(r'[.\-]\d{4}[.\-]', '', cleaned)
         cleaned = re.sub(r'\s+\d{4}\s*$', '', cleaned)
@@ -879,75 +1630,55 @@ class VideoRenamer:
                        'bluray', 'bdrip', 'web-dl', 'webrip', 'dvdrip', 'bd', 'dvd', 'web',
                        'x264', 'x265', 'h264', 'h265', 'hevc', 'xvid', 'divx',
                        'dts', 'ac3', 'ddp', 'aac', 'dts-hd', 'truehd', 'atmos', 'flac',
-                       'repack', 'proper', 'internal', '5.1', '7.1']
+                       'repack', 'proper', 'internal', '5.1', '7.1', 'GB', 'JP', 'CHS', 'JPSC']
         for tag in quality_tags:
             cleaned = re.sub(r'[.\-]' + re.escape(tag) + r'[.\-]?', '', cleaned, flags=re.IGNORECASE)
-            # 也处理不带分隔符的质量标签
             cleaned = re.sub(r'\s+' + re.escape(tag) + r'$', '', cleaned, flags=re.IGNORECASE)
         
-        # 5. 移除方括号和圆括号内的内容（包含技术参数的块）
-        # 使用正则表达式匹配括号及其中内容，如果内容包含 quality 关键字则移除
-        def remove_tag_blocks(match):
-            content = match.group(1)
-            # 如果是纯数字或年份，或者集号范围，移除
-            if content.isdigit() or re.match(r'^(19|20)\d{2}$', content) or re.match(r'^\d+(?:-\d+)?$', content):
-                return ""
-            # 如果包含技术关键词，移除
-            if re.search(quality_patterns, content, re.IGNORECASE):
-                logger.debug(f"移除质量/技术标记块: [{content}] (匹配规则)")
-                return ""
-            # 如果包含常用的 Hash 校验码 (8位 16进制)
-            if re.match(r'^[0-9A-Fa-f]{8}$', content):
-                return ""
-            # 如果包含发布组关键词
-            group_keywords = ['raws', 'team', 'sub', 'studio', 'group', '字幕组', '组', 'raw', 'ACG', 'Dynamis', 'FYSub', 'Lilith-Raws', 'LowPower-Raws', 'EMR']
-            if any(kw.lower() in content.lower() for kw in group_keywords):
-                return ""
-            
-            logger.debug(f"保留未知标记块: [{content}]")
-            return match.group(0) # 保留其他块 (如剧名块)
-
-        cleaned = re.sub(r'\[([^\]]+)\]', remove_tag_blocks, cleaned)
-        cleaned = re.sub(r'\(([^\)]+)\)', remove_tag_blocks, cleaned)
+        # 5. 移除所有方括号内容（包含技术参数的块、发布组、集号等）
+        # 先移除方括号内容，保留剧名部分
+        # 匹配 [集号] 格式 (纯数字)
+        cleaned = re.sub(r'\[\d+(?:-\d+)?\]', '', cleaned)
+        # 匹配 [S01] 季号格式
+        cleaned = re.sub(r'\[S\d+\]', '', cleaned, flags=re.IGNORECASE)
+        # 匹配 [OVAxx] 格式
+        cleaned = re.sub(r'\[OVA\d+\]', '', cleaned, flags=re.IGNORECASE)
+        # 匹配其他方括号内容（保留可能包含剧名的块）
+        cleaned = re.sub(r'\[([^\]]+)\]', lambda m: m.group(1) if m.group(1).replace('_', ' ').replace(' ', '').isalnum() and len(m.group(1)) > 3 else '', cleaned)
         
         # 6. 移除常见的修饰符和季集信息 (Season 2, Episode 11 等)
         cleaned = re.sub(r'Season\s*\d+', '', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'第\d+季', '', cleaned)
-        # 只移除形如 -01 或 -123 的纯集号格式（连字符+数字），保留 S06 格式
         cleaned = re.sub(r'-\s*(\d{1,3})\s*(?=[.\s]|$)', r' \1 ', cleaned)
         
-        # 特别移除末尾的罗马数字 (防止干扰剧名搜索)
+        # 特别移除末尾的罗马数字
         cleaned = re.sub(r'\s+(VIII|VII|VI|III|II|IX|IV|V|X|I)$', '', cleaned, flags=re.IGNORECASE)
         
-        # 移除副标题（只移除明确的副标题关键词，保留正式剧名部分）
-        # 使用非贪婪匹配 .*? 来匹配副标题前的内容
-        # 使用前瞻断言 (?=...) 确保副标题后面跟着分隔符，但不匹配分隔符本身
+        # 移除副标题
         subtitle_keywords = [
             r'篇', r'章', r'回', r'卷', r'部', r'季', r'传',
             r'特别篇', r'番外篇', r'外传', r'前传', r'后传'
         ]
-        # 副标题后面可以跟：字符串结束、空格、点、连字符、括号、中文标点（使用前瞻断言）
         subtitle_pattern = r'·.*?(?:' + '|'.join(subtitle_keywords) + r')(?=$|\s|\.|\-|\(|\[|，|、)'
         cleaned = re.sub(subtitle_pattern, '', cleaned)
         
         # 7. 最后清理符号和多余空格
         # 移除各种特殊字符
         cleaned = re.sub(r'\[|\]|\.|\_|\&|\+|\(|\)', ' ', cleaned)
-        # 处理单独的连字符（两侧无字母数字）替换为空格
+        # 处理单独的连字符替换为空格
         cleaned = re.sub(r'(?<!\w)-(?!\w)', ' ', cleaned)
         # 清理尾部残留的横杠和数字
         cleaned = re.sub(r'[\s\-]+\d*\s*$', '', cleaned)
         cleaned = re.sub(r'^\s*[\-]+\s*', '', cleaned)
-        # 移除多余的空格（包含双空格）
+        # 移除多余的空格
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
         
-        # 8. 最终检查：如果还有残留的数字或质量标签，进一步清理
-        # 移除末尾的数字（可能是编码版本号等）
+        # 8. 最终检查：移除末尾的数字
         cleaned = re.sub(r'\s+\d+$', '', cleaned)
         
-        # 针对剧名的额外优化：如果清理后太短或包含太多非剧名信息，做最后保护
+        # 针对剧名的额外优化：如果清理后太短，做最后保护
         if not cleaned:
-             cleaned = filename # 退回到原始文件名处理
+             cleaned = filename
         
         return cleaned
         
@@ -958,6 +1689,9 @@ class VideoRenamer:
         # 移除版本描述词 (日语版, 国语版 等)
         version_patterns = r'日语版|国语版|粤语版|中字|字幕|双语|内嵌'
         prepared = re.sub(version_patterns, '', prepared)
+        
+        # 将下划线替换为空格 (Jujutsu_Kaisen -> Jujutsu Kaisen)
+        prepared = prepared.replace('_', ' ')
         
         if re.search(r'[\u4e00-\u9fff]', prepared):
             prepared = re.sub(r'S\d+E\d+', '', prepared, flags=re.IGNORECASE)
@@ -973,96 +1707,7 @@ class VideoRenamer:
             prepared = re.sub(r'\s+', ' ', prepared).strip()
             
         return prepared.strip()
-        
-    def _translate_text(self, text: str, target_language: str = 'en-US') -> str:
-        """
-        将文本翻译为目标语言，支持多种语言互译
-        
-        Args:
-            text (str): 要翻译的文本
-            target_language (str): 目标语言，默认为英文(en-US)
-            
-        Returns:
-            str: 翻译后的文本
-        """
-        # 统一翻译字典，支持多种语言互译
-        translation_dict = {
-            # 中文到英文
-            "怪奇物语": "Stranger Things",
-            "权力的游戏": "Game of Thrones",
-            "鱿鱼游戏": "Squid Game",
-            "流浪地球": "The Wandering Earth",
-            "山海情": "Minning Town",
-            "奔跑吧兄弟": "Running Man",
-            "小猪佩奇": "Peppa Pig",
-            "海贼王": "One Piece",
-            "斗罗大陆": "Soul Land",
-            "舌尖上的中国": "A Bite of China",
-            "星期三": "Wednesday",
-            "龙族": "Dragon Raja",
-            "龍族": "Dragon Raja",
-            "间谍过家家": "Spy x Family",
-            "宝可梦": "Pokémon",
-            "宝可梦 地平线": "Pokémon Horizons",
-            
-            # 英文到中文
-            "Stranger Things": "怪奇物语",
-            "Game of Thrones": "权力的游戏",
-            "Squid Game": "鱿鱼游戏",
-            "The Wandering Earth": "流浪地球",
-            "Minning Town": "山海情",
-            "Running Man": "奔跑吧兄弟",
-            "Peppa Pig": "小猪佩奇",
-            "One Piece": "海贼王",
-            "Soul Land": "斗罗大陆",
-            "A Bite of China": "舌尖上的中国",
-            "Wednesday": "星期三",
-            "Dragon Raja": "龙族",
-            "Spy x Family": "间谍过家家",
-            "Spy Family": "间谍过家家",
-            "Pokémon": "宝可梦",
-            "Pokémon Horizons": "宝可梦 地平线"
-        }
-        
-        # 尝试直接翻译
-        if text in translation_dict:
-            translated = translation_dict[text]
-            logger.info(f"使用翻译字典将 '{text}' 翻译为 '{translated}'")
-            return translated
-        
-        # AI 翻译兜底
-        if self.llm_translator:
-            try:
-                translated = self.llm_translator.translate_video_name(text, target_language=target_language)
-                if translated and translated != text:
-                    logger.info(f"使用 AI 翻译将 '{text}' 翻译为 '{target_language}' 的 '{translated}'")
-                    return translated
-            except Exception as e:
-                logger.error(f"AI 翻译失败: {e}")
-        
-        # 尝试拆分翻译
-        words = text.split()
-        translated_words = []
-        for word in words:
-            translated_words.append(translation_dict.get(word, word))
-        
-        translated = " ".join(translated_words)
-        if translated != text:
-            logger.info(f"使用拆分翻译将 '{text}' 翻译为 '{translated}'")
-        return translated
-    
-    def _translate_to_english(self, text: str) -> str:
-        """
-        将文本翻译为英文（向后兼容方法）
-        
-        Args:
-            text (str): 要翻译的文本
-            
-        Returns:
-            str: 翻译后的英文文本
-        """
-        return self._translate_text(text, target_language='en-US')
-    
+
     def _search_with_language(self, search_term: str, media_type_hint: str, year: str, language: str) -> List[Dict]:
         """
         基于语言的搜索辅助方法
@@ -1078,12 +1723,9 @@ class VideoRenamer:
         """
         results = []
         try:
-            # 如果搜索语言是英文，且搜索词包含中文，先翻译为英文
+            # 直接使用搜索词，不翻译
             final_search_term = search_term
-            if language == 'en-US' and re.search(r'[\u4e00-\u9fff]', search_term):
-                final_search_term = self._translate_to_english(search_term)
-                logger.info(f"将中文搜索词 '{search_term}' 翻译为英文 '{final_search_term}' 进行搜索")
-            
+
             # 安全地处理年份参数，避免无效年份导致搜索失败
             year_param = None
             if year:
@@ -1092,7 +1734,7 @@ class VideoRenamer:
                 except (ValueError, TypeError):
                     logger.warning(f"无效的年份值: '{year}'，将不使用年份过滤条件进行搜索")
                     year_param = None
-            
+
             # 搜索方法选择
             if media_type_hint == 'tv':
                 search_method = self.tmdb_client.search_tv
@@ -1100,7 +1742,7 @@ class VideoRenamer:
                 search_method = self.tmdb_client.search_movie
             else:
                 return results
-            
+
             # 1. 第一次搜索：使用年份参数
             search_results = search_method(
                 final_search_term, 
@@ -1157,7 +1799,7 @@ class VideoRenamer:
             prepared_search_term = self._prepare_search_term(search_term)
             logger.info(f"搜索TMDB: 原始搜索词='{search_term}', 优化后搜索词='{prepared_search_term}'")
             logger.info(f"搜索TMDB: 原始搜索词长度={len(search_term)}, 优化后搜索词长度={len(prepared_search_term)}")
-            
+
             # 搜索匹配的视频信息
             # 首先尝试明确的类型搜索
             media_type_hint = metadata.get('media_type', metadata.get('type', ''))
@@ -1270,46 +1912,36 @@ class VideoRenamer:
                     # 只有当第一次搜索结果少于3个或者没有明确匹配时，才进行跨语言搜索
                     if len(all_results) < 3:
                         logger.info(f"第一次搜索结果较少({len(all_results)}个)，进行跨语言搜索")
-                        
-                        # 翻译搜索词
-                        translated_search_term = self._translate_text(prepared_search_term, target_language=secondary_language)
-                        
-                        # 如果翻译结果与原词不同，进行跨语言搜索
-                        if translated_search_term != prepared_search_term:
-                            logger.info(f"将搜索词 '{prepared_search_term}' 翻译为 '{translated_search_term}' 进行{secondary_language}搜索")
-                            
-                            # 跨语言搜索
-                            secondary_results = []
-                            if media_type_hint:
-                                secondary_results = self._search_with_language(translated_search_term, media_type_hint, search_year, secondary_language)
-                            elif media_type_hint is None:
-                                # 媒体类型不确定，同时搜索电影和电视剧
-                                tv_results = self._search_with_language(translated_search_term, 'tv', search_year, secondary_language)
-                                movie_results = self._search_with_language(translated_search_term, 'movie', search_year, secondary_language)
-                                secondary_results = tv_results + movie_results
-                            
-                            if not secondary_results:
-                                general_secondary_results = self.tmdb_client.search_video_show(translated_search_term, search_year, language=secondary_language)
-                                if isinstance(general_secondary_results, dict) and 'results' in general_secondary_results:
-                                    secondary_results = general_secondary_results['results']
-                            
-                            # 检查跨语言搜索结果
-                            if secondary_results:
-                                exact_match_found, exact_match_result = has_exact_match(secondary_results, translated_search_term)
-                                if exact_match_result:
-                                    logger.info(f"在跨语言搜索中找到完全匹配: {exact_match_result.get('name', exact_match_result.get('title'))}")
-                                    results = [exact_match_result]
-                                else:
-                                    # 合并跨语言搜索结果
-                                    for result in secondary_results:
-                                        if result.get('id') not in unique_ids:
-                                            all_results.append(result)
-                                            unique_ids.add(result.get('id'))
-                                    results = all_results
+
+                        # 直接使用跨语言搜索，不翻译
+                        secondary_results = []
+                        if media_type_hint:
+                            secondary_results = self._search_with_language(prepared_search_term, media_type_hint, search_year, secondary_language)
+                        elif media_type_hint is None:
+                            # 媒体类型不确定，同时搜索电影和电视剧
+                            tv_results = self._search_with_language(prepared_search_term, 'tv', search_year, secondary_language)
+                            movie_results = self._search_with_language(prepared_search_term, 'movie', search_year, secondary_language)
+                            secondary_results = tv_results + movie_results
+
+                        if not secondary_results:
+                            general_secondary_results = self.tmdb_client.search_video_show(prepared_search_term, search_year, language=secondary_language)
+                            if isinstance(general_secondary_results, dict) and 'results' in general_secondary_results:
+                                secondary_results = general_secondary_results['results']
+
+                        # 检查跨语言搜索结果
+                        if secondary_results:
+                            exact_match_found, exact_match_result = has_exact_match(secondary_results, prepared_search_term)
+                            if exact_match_result:
+                                logger.info(f"在跨语言搜索中找到完全匹配: {exact_match_result.get('name', exact_match_result.get('title'))}")
+                                results = [exact_match_result]
                             else:
+                                # 合并跨语言搜索结果
+                                for result in secondary_results:
+                                    if result.get('id') not in unique_ids:
+                                        all_results.append(result)
+                                        unique_ids.add(result.get('id'))
                                 results = all_results
                         else:
-                            logger.info(f"翻译结果与原词相同，跳过跨语言搜索")
                             results = all_results
                     else:
                         logger.info(f"第一次搜索结果充足({len(all_results)}个)，跳过跨语言搜索")
@@ -1322,14 +1954,40 @@ class VideoRenamer:
             # 确保results是列表类型
             if not isinstance(results, list):
                 results = []
-            
+
             if not results:
                 logger.warning(f"没有找到匹配 '{search_term}' 的结果")
-                # 确保返回的metadata包含必要字段
-                metadata.setdefault('quality_tags', original_quality_tags)
-                metadata.setdefault('year', '')
-                metadata.setdefault('tmdb_id', '')
-                return metadata
+
+                # 备选策略：尝试使用 cleaned_name 搜索
+                cleaned_name = metadata.get('cleaned_name', '')
+                if cleaned_name and cleaned_name != search_term:
+                    logger.info(f"尝试使用 cleaned_name '{cleaned_name}' 作为备选搜索词")
+                    alt_results = self._search_with_language(
+                        cleaned_name, media_type_hint, search_year, primary_language
+                    ) or self._search_with_language(
+                        cleaned_name, media_type_hint, search_year, secondary_language
+                    )
+
+                    if alt_results:
+                        # 检查备选搜索是否有完全匹配
+                        alt_prepared = self._prepare_search_term(cleaned_name)
+                        alt_prepared_is_chinese = bool(re.search(r'[\u4e00-\u9fff]', alt_prepared))
+                        alt_primary = 'zh-CN' if alt_prepared_is_chinese else 'en-US'
+
+                        alt_exact_found, alt_exact = has_exact_match(alt_results, alt_prepared)
+                        if alt_exact_found:
+                            logger.info(f"备选搜索找到完全匹配: {alt_exact.get('name', alt_exact.get('title'))}")
+                            results = [alt_exact]
+                        elif alt_results:
+                            results = alt_results[:5]  # 取前5个结果
+                            logger.info(f"备选搜索返回 {len(results)} 个结果")
+
+                if not results:
+                    # 确保返回的metadata包含必要字段
+                    metadata.setdefault('quality_tags', original_quality_tags)
+                    metadata.setdefault('year', '')
+                    metadata.setdefault('tmdb_id', '')
+                    return metadata
             
             # 寻找最匹配的结果
             best_match = None
@@ -1410,6 +2068,8 @@ class VideoRenamer:
                 sorted_results = sorted(target_results, key=calculate_score, reverse=True)
                 best_match = sorted_results[0]
                 logger.info(f"找到最匹配的结果: {best_match.get('name', best_match.get('title'))}")
+                # 保存 genre_ids 用于判断动画类型（搜索结果中有，详情API中文版可能丢失动画标签）
+                metadata['genre_ids'] = best_match.get('genre_ids', [])
             
             # 3. 确保结果有效
             if not best_match:
@@ -1465,6 +2125,9 @@ class VideoRenamer:
                 metadata['number_of_seasons'] = details.get('number_of_seasons', 0)
                 metadata['number_of_episodes'] = details.get('number_of_episodes', 0)
                 metadata['tmdb_id'] = best_match['id']
+
+                # 打印调试信息
+                logger.info(f"TMDB元数据: language={metadata.get('original_language')}, country={metadata.get('origin_country')}, genres={metadata.get('genres')}")
                     
                 # 提取年份 - 确保年份被正确设置
                 if details.get('first_air_date'):
@@ -1610,19 +2273,29 @@ class VideoRenamer:
         Returns:
             str: 分类目录路径
         """
-        # 确定基础分类（电视剧/电影/其他）
-        media_type = metadata.get('media_type')
-        if media_type == 'movie':
-            base_category = 'Movies'
-        elif media_type == 'tv':
-            base_category = 'TV Shows'
-        else:
-            base_category = 'Other'
+        # 获取字幕组信息
+        release_group = metadata.get('release_group', '')
+        
+        # 1. 首先检查是否有字幕组映射
+        forced_content_type = None
+        if release_group:
+            # 精确匹配
+            if release_group in self._release_group_mapping:
+                forced_content_type = self._release_group_mapping[release_group]
+                logger.info(f"字幕组 '{release_group}' 映射到类型: {forced_content_type}")
+            else:
+                # 模糊匹配（检查字幕组名称是否包含映射关键词）
+                for group_name, content_type in self._release_group_mapping.items():
+                    if group_name in release_group or release_group in group_name:
+                        forced_content_type = content_type
+                        logger.info(f"字幕组 '{release_group}' 模糊匹配到 '{group_name}'，映射到类型: {content_type}")
+                        break
         
         # 获取语言和地区信息
         original_language = metadata.get('original_language', '').lower()
         origin_countries = metadata.get('origin_country', [])
         genres = metadata.get('genres', [])
+        genre_names = [genre.lower() for genre in genres]
         
         # 扩展的国家/地区识别列表
         chinese_countries = ['CN', 'HK', 'TW']
@@ -1632,60 +2305,79 @@ class VideoRenamer:
         # 子分类逻辑
         sub_category = ''
         
-        if base_category == 'TV Shows':
-            # 电视剧子分类
-            genre_names = [genre.lower() for genre in genres]
-            
-            # 1. 特殊类型分类
-            if any(genre in genre_names for genre in ['documentary', '纪录片']):
-                sub_category = '纪录片'
-            elif any(genre in genre_names for genre in ['reality', 'variety', '综艺', 'game show']):
-                sub_category = '综艺'
-            elif any(genre in genre_names for genre in ['animation', 'animated', '动画']):
-                # 动画类型进一步细分
-                # 首先检查是否是日漫
-                if original_language in ['ja', 'ja-jp'] or any(country in ['JP', '日本'] for country in origin_countries):
+        # 2. 字幕组强制类型优先处理
+        if forced_content_type == 'anime':
+            # 强制动漫分类
+            if original_language in ['ja', 'ja-jp'] or any(country in ['JP', '日本'] for country in origin_countries):
+                sub_category = '日番'
+            elif original_language in ['zh', 'cn', 'zh-cn', 'zh-tw', 'zh-hk'] or any(country in chinese_countries for country in origin_countries):
+                sub_category = '国漫'
+            elif original_language in ['en', 'en-us', 'en-gb'] or any(country in english_countries for country in origin_countries):
+                sub_category = '欧美动漫'
+            else:
+                title = metadata.get('show_name', '') or metadata.get('original_show_name', '')
+                if re.search(r'[\u3040-\u30FF]', title):
                     sub_category = '日番'
-                # 然后检查是否是国漫
-                elif original_language in ['zh', 'cn', 'zh-cn', 'zh-tw', 'zh-hk'] or any(country in chinese_countries for country in origin_countries):
+                elif re.search(r'[\u4E00-\u9FFF]', title):
                     sub_category = '国漫'
-                # 接着检查是否是欧美动漫
+                else:
+                    sub_category = '其他动漫'
+            base_category = 'TV Shows'
+            
+        elif forced_content_type == 'drama':
+            # 强制电视剧分类，但优先检查是否为动画（国漫/日漫等）
+            # TMDB动画类型ID: 16
+            genre_ids = metadata.get('genre_ids', [])
+            is_animation = 16 in genre_ids or any(genre in genre_names for genre in ['animation', 'animated', '动画'])
+            is_chinese_lang = original_language in ['zh', 'cn', 'zh-cn', 'zh-tw', 'zh-hk']
+            is_japanese_lang = original_language in ['ja', 'ja-jp']
+            show_name = metadata.get('show_name', '') or ''
+            is_chinese_title = bool(re.search(r'[\u4E00-\u9FFF]', show_name))
+
+            logger.info(f"分类判断: is_animation={is_animation}, genre_ids={genre_ids}, is_chinese_lang={is_chinese_lang}, is_japanese_lang={is_japanese_lang}")
+
+            if is_animation:
+                # 按动漫分类处理
+                # 优先级：国漫 > 日番 > 欧美动漫 > 其他
+                if is_chinese_lang or any(country in chinese_countries for country in origin_countries):
+                    sub_category = '国漫'
+                elif is_chinese_title:
+                    sub_category = '国漫'
+                elif is_japanese_lang or any(country in ['JP', '日本'] for country in origin_countries):
+                    sub_category = '日番'
                 elif original_language in ['en', 'en-us', 'en-gb'] or any(country in english_countries for country in origin_countries):
                     sub_category = '欧美动漫'
                 else:
-                    # 额外检查：通过标题中的日文假名识别日漫
-                    title = metadata.get('show_name', '') or metadata.get('original_show_name', '')
-                    if re.search(r'[\u3040-\u30FF]', title):  # 检查是否包含日文假名
-                        sub_category = '日番'
-                    elif re.search(r'[\u4E00-\u9FFF]', title):  # 检查是否包含中文汉字
-                        sub_category = '国漫'
-                    else:
-                        sub_category = '其他动漫'
-            elif any(genre in genre_names for genre in ['kids', 'children', 'child', '儿童', 'family']):
-                sub_category = '儿童'
+                    sub_category = '其他动漫'
+                base_category = 'TV Shows'
+            elif is_chinese_lang or is_chinese_title or any(country in chinese_countries for country in origin_countries):
+                # 中文内容优先判断为国漫/国产剧
+                sub_category = '国漫'
+                base_category = 'TV Shows'
+            elif is_japanese_lang or any(country in ['JP', '日本'] for country in origin_countries):
+                # 日文内容为日番
+                sub_category = '日番'
+                base_category = 'TV Shows'
             else:
-                # 2. 普通电视剧分类
-                if original_language in ['zh', 'cn'] or any(country in chinese_countries for country in origin_countries):
-                    sub_category = '国产剧'
-                elif original_language in ['en'] or any(country in english_countries for country in origin_countries):
+                # 非中文/日文，按电视剧分类
+                if original_language in ['en'] or any(country in english_countries for country in origin_countries):
                     sub_category = '欧美剧'
-                elif original_language in ['ja', 'ko', 'th', 'hi'] or any(country in asian_countries for country in origin_countries):
+                elif original_language in ['ko', 'th', 'hi'] or any(country in asian_countries for country in origin_countries):
                     sub_category = '日韩剧'
                 else:
-                    # 3. 如果语言和地区无法确定，检查原始名称
                     original_show_name = metadata.get('original_show_name', '')
                     if original_show_name and re.search(r'[\u4e00-\u9fff]', original_show_name):
                         sub_category = '国产剧'
                     else:
                         sub_category = '未分类'
-        else:
-            # 电影子分类
-            # 1. 检查是否为动画电影
-            genre_names = [genre.lower() for genre in genres]
+                base_category = 'TV Shows'
+            
+        elif forced_content_type == 'movie':
+            # 强制电影分类
+            base_category = 'Movies'
             if any(genre in genre_names for genre in ['animation', 'animated', '动画']):
                 sub_category = '动画电影'
             else:
-                # 2. 检查语言和地区
                 original_title = metadata.get('original_title', '')
                 if original_title and re.search(r'[\u4e00-\u9fff]', original_title):
                     sub_category = '华语电影'
@@ -1693,6 +2385,62 @@ class VideoRenamer:
                     sub_category = '华语电影'
                 else:
                     sub_category = '外语电影'
+        
+        else:
+            # 3. 使用TMDB类型和Genre进行分类
+            media_type = metadata.get('media_type')
+            if media_type == 'movie':
+                base_category = 'Movies'
+                # 电影子分类
+                if any(genre in genre_names for genre in ['animation', 'animated', '动画']):
+                    sub_category = '动画电影'
+                else:
+                    original_title = metadata.get('original_title', '')
+                    if original_title and re.search(r'[\u4e00-\u9fff]', original_title):
+                        sub_category = '华语电影'
+                    elif original_language in ['zh', 'cn'] or any(country in chinese_countries for country in origin_countries):
+                        sub_category = '华语电影'
+                    else:
+                        sub_category = '外语电影'
+            elif media_type == 'tv':
+                base_category = 'TV Shows'
+                # 电视剧子分类
+                if any(genre in genre_names for genre in ['documentary', '纪录片']):
+                    sub_category = '纪录片'
+                elif any(genre in genre_names for genre in ['reality', 'variety', '综艺', 'game show']):
+                    sub_category = '综艺'
+                elif any(genre in genre_names for genre in ['animation', 'animated', '动画']):
+                    if original_language in ['ja', 'ja-jp'] or any(country in ['JP', '日本'] for country in origin_countries):
+                        sub_category = '日番'
+                    elif original_language in ['zh', 'cn', 'zh-cn', 'zh-tw', 'zh-hk'] or any(country in chinese_countries for country in origin_countries):
+                        sub_category = '国漫'
+                    elif original_language in ['en', 'en-us', 'en-gb'] or any(country in english_countries for country in origin_countries):
+                        sub_category = '欧美动漫'
+                    else:
+                        title = metadata.get('show_name', '') or metadata.get('original_show_name', '')
+                        if re.search(r'[\u3040-\u30FF]', title):
+                            sub_category = '日番'
+                        elif re.search(r'[\u4E00-\u9FFF]', title):
+                            sub_category = '国漫'
+                        else:
+                            sub_category = '其他动漫'
+                elif any(genre in genre_names for genre in ['kids', 'children', 'child', '儿童', 'family']):
+                    sub_category = '儿童'
+                else:
+                    if original_language in ['zh', 'cn'] or any(country in chinese_countries for country in origin_countries):
+                        sub_category = '国产剧'
+                    elif original_language in ['en'] or any(country in english_countries for country in origin_countries):
+                        sub_category = '欧美剧'
+                    elif original_language in ['ja', 'ko', 'th', 'hi'] or any(country in asian_countries for country in origin_countries):
+                        sub_category = '日韩剧'
+                    else:
+                        original_show_name = metadata.get('original_show_name', '')
+                        if original_show_name and re.search(r'[\u4e00-\u9fff]', original_show_name):
+                            sub_category = '国产剧'
+                        else:
+                            sub_category = '未分类'
+            else:
+                base_category = 'Other'
         
         # 组合分类路径
         return f"{base_category}/{sub_category}"

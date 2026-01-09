@@ -78,7 +78,114 @@ class LLMTranslator:
                 if isinstance(text, str):
                     return translated_lines[0] if translated_lines else translated_content
                 return translated_lines
+            else:
+                logger.error(f"LLMTranslator: Unexpected response format: {result}")
+                return None
+        except requests.exceptions.Timeout:
+            logger.error("LLMTranslator: Request timeout")
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"LLMTranslator: Request failed: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            logger.error(f"LLMTranslator: JSON decode error: {e}")
+            return None
+    
+    def parse_filename(self, filename: str) -> Optional[dict]:
+        """
+        使用 LLM 解析复杂的视频文件名，提取元数据。
+
+        Args:
+            filename: 视频文件名
+
+        Returns:
+            包含元数据的字典，或者 None 如果失败。
+            字典可能包含: show_name, season, episode, year, release_group, media_type
+        """
+        if not self.enabled:
+            return None
+
+        prompt = f"""分析这个视频文件名，提取元数据。
+
+文件名: {filename}
+
+请返回JSON格式。
+
+{{{{
+    "show_name": "解析出的剧名/电影名",
+    "season": "季号数字或null",
+    "episode": "集号数字或null",
+    "year": "null",
+    "release_group": "发布组名称",
+    "media_type": "tv",
+    "original_language": "ja"
+}}}}
+
+示例：
+- "[Furretar] 中文配音 - 空之境界 俯瞰风景.mkv" → {{"show_name": "空之境界 俯瞰风景", "season": "1", "episode": "2", ...}}
+- "[Bird] Ganzo! Bandori-chan - 14" → {{"show_name": "Ganzo Bandori-chan", "season": "1", "episode": "14", ...}}
+
+只返回JSON。"""
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+        
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "你是一个视频文件元数据提取专家，擅长从各种格式的文件名中提取信息。"
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "temperature": 0.3,
+            "top_p": 0.9
+        }
+        
+        try:
+            logger.info(f"LLMTranslator: Parsing filename: {filename}")
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+            
+            result = response.json()
+            if "choices" in result and len(result["choices"]) > 0:
+                content = result["choices"][0]["message"]["content"].strip()
                 
+                # 尝试解析 JSON
+                try:
+                    # 清理可能存在的 markdown 代码块标记
+                    content = content.replace('```json', '').replace('```', '').strip()
+                    metadata = json.loads(content)
+                    
+                    # 确保所有字段都存在
+                    required_fields = ['show_name', 'season', 'episode', 'year', 'release_group', 'media_type', 'original_language']
+                    for field in required_fields:
+                        if field not in metadata:
+                            metadata[field] = None
+                    
+                    logger.info(f"LLMParser: Successfully parsed: show_name={metadata.get('show_name')}")
+                    return metadata
+                except json.JSONDecodeError as e:
+                    logger.error(f"LLMTranslator: Failed to parse JSON response: {e}")
+                    logger.debug(f"Raw response: {content}")
+                    return None
+            else:
+                logger.error(f"LLMTranslator: Unexpected response format: {result}")
+                return None
+        except requests.exceptions.Timeout:
+            logger.error("LLMTranslator: Parse request timeout")
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"LLMTranslator: Parse request failed: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            logger.error(f"LLMTranslator: JSON decode error: {e}")
             return None
         except Exception as e:
             logger.error(f"LLMTranslator: Translation failed: {e}")
