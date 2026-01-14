@@ -3,7 +3,7 @@ import os
 
 # 读取README.md作为长描述
 try:
-    with open('README.md', 'r', encoding='utf-8') as f:
+    with open("README.md", "r", encoding="utf-8") as f:
         long_description = f.read()
 except Exception:
     long_description = "自动视频文件重命名和组织工具"
@@ -17,19 +17,19 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/yourusername/video-organizer",
-    packages=find_packages(where='src'),
-    package_dir={'': 'src'},
+    packages=find_packages(where="src"),
+    package_dir={"": "src"},
     include_package_data=True,
     package_data={
-        'video_organizer': ['config.ini'],
+        "video_organizer": ["config.ini"],
     },
     install_requires=[
-        'requests>=2.28.0',
-        'watchdog>=3.0.0',
+        "requests>=2.28.0",
+        "watchdog>=3.0.0",
     ],
     entry_points={
-        'console_scripts': [
-            'video-organizer=video_organizer.main:main',
+        "console_scripts": [
+            "video-organizer=video_organizer.main:main",
         ],
     },
     classifiers=[
@@ -39,10 +39,10 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Natural Language :: Chinese (Simplified)",
         "Operating System :: OS Independent",
-"Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.9",
         "Topic :: Desktop Environment :: File Managers",
         "Topic :: Multimedia :: Video",
         "Topic :: Utilities",
     ],
-    python_requires='>=3.9',
+    python_requires=">=3.9",
 )
