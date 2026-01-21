@@ -14,7 +14,7 @@ class RobustEmosVideoUploader:
     def __init__(
         self,
         auth_token,
-        base_url="https://emos.lol",
+        base_url="https://emos.best",
         chunk_size_mb=50,
         telegram_config=None,
     ):
@@ -43,6 +43,7 @@ class RobustEmosVideoUploader:
         self._tg_message_ids: Dict[str, Optional[int]] = (
             {}
         )  # key: file_path, value: message_id
+        self.tg_message_id: Optional[int] = None  # 当前上传的TG消息ID
         self.tg_last_update_time = 0  # 上次更新时间，用于限流
         self.tg_update_interval = 2  # 更新间隔（秒），避免触发TG API限制
 
@@ -524,7 +525,7 @@ class RobustEmosVideoUploader:
                 response.raise_for_status()
 
                 result = response.json()
-                print(f"步骤4完成 - 媒体UUID: {result.get('media_uuid')}")
+                print(f"步骤4完成 - 媒体id: {result.get('media_id')}")
                 return result
             except Exception as e:
                 if attempt < max_retries - 1:
@@ -567,7 +568,7 @@ class RobustEmosVideoUploader:
 
             print(f"\n=== 上传完成 ===")
             print(f"视频标题: {step1_result.get('title')}")
-            print(f"媒体UUID: {step4_result.get('media_uuid')}")
+            print(f"媒体UUID: {step4_result.get('media_id')}")
 
             return step4_result
 

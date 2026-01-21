@@ -31,6 +31,7 @@ class VideoFileHandler:
         path_mappings: Optional[Dict[str, str]] = None,
         telegram_config: Optional[Dict[str, Any]] = None,
         llm_config: Optional[Dict[str, Any]] = None,
+        config: Optional[Dict[str, Any]] = None,
     ):
         """
         初始化视频文件处理器
@@ -128,6 +129,7 @@ class VideoFileHandler:
                 tmdb_api_key=tmdb_api_key,
                 naming_rules=naming_rules,
                 llm_config=llm_config,
+                config=config,  # 传递完整配置以启用 llm_fallback
             )
             self.logger.info("视频重命名器初始化成功")
         except Exception as e:
@@ -517,7 +519,23 @@ class VideoFileHandler:
             # 注意: 这里使用 extract_metadata 会自动调用 _enrich_with_tmdb
             metadata = self.renamer.extract_metadata(file_path)
 
+            # 打印综合识别结果（类似 --comprehensive 模式）
             print(f"✓ [线程#{worker_id}] 本地识别完成")
+            important_fields = [
+                "show_name",
+                "title",
+                "tmdb_id",
+                "media_type",
+                "season",
+                "episode",
+                "year",
+                "quality_tags",
+                "release_group",
+            ]
+            for field in important_fields:
+                value = metadata.get(field)
+                if value:
+                    print(f"  [{worker_id}] {field}: {value}")
 
             # 提取所需信息
             tmdb_id = str(metadata.get("tmdb_id", ""))
@@ -608,11 +626,27 @@ class VideoFileHandler:
 
             # 第二步：如果获取到了tmdb_id、type、title，且需要使用 Emos (非仅 p123)，调用第二个API
             if tmdb_id and media_type and title and self.upload_targets != "p123":
-                # print(f"\n正在调用第二个API获取ItemId...")
-                # item_id_url = f"{self.emos_base_url}/api/video/getItemId?type={media_type}&title={title}&tmdb_id={tmdb_id}"
-                item_id_url = (
-                    f"{self.emos_base_url}/api/video/getItemId?tmdb_id={tmdb_id}"
-                )
+                # 构建动态 URL，使用实际的 tmdb_id, season, episode
+                season_num = int(season) if season else 1
+                episode_num = int(episode) if episode else 1
+                if media_type == "tv":
+                    item_id_url = (
+                        f"{self.emos_base_url}/api/video/getVideoId"
+                        f"?video_id_type=tmdb"
+                        f"&season_number={season_num}"
+                        f"&episode_number={episode_num}"
+                        f"&video_id_value={tmdb_id}"
+                    )
+                else:
+                    item_id_url = (
+                        f"{self.emos_base_url}/api/video/getVideoId"
+                        f"?video_id_type=tmdb"
+                        # f"&season_number={season_num}"
+                        # f"&episode_number={episode_num}"
+                        f"&video_id_value={tmdb_id}"
+                    )
+
+                print(f"[线程#{worker_id}] 正在请求 Emos API: {item_id_url}")
 
                 # 定义 Emos API headers
                 headers = {
@@ -639,86 +673,41 @@ class VideoFileHandler:
                 )
 
                 # 发送请求
-                response2 = requests.get(item_id_url, headers=headers2)
-                response2.raise_for_status()  # 检查请求是否成功
+                response2 = requests.get(item_id_url, headers=headers2, timeout=30)
+                response2.raise_for_status()
                 result2 = response2.json()
 
-                # print(f"✓ 第二个API请求成功")
+                print(f"[线程#{worker_id}] Emos API 返回: {result2}")
 
-                # 解析季集信息并匹配对应的item_id
-                # 解析季集信息并匹配对应的item_id
+                # 解析返回结果（新版格式：直接包含 season_info 和 episode_info）
+                if result2:
+                    # 检查是否是电视剧
+                    if result2.get("video_type") == "tv":
+                        # 直接从返回结果中获取季集信息
+                        season_info = result2.get("season_info", {})
+                        episode_info = result2.get("episode_info", {})
 
-                if media_type == "movie" and result2:
-                    # 电影匹配逻辑：通常result2中直接包含电影信息，或者是一个包含电影信息的列表
-                    for item in result2:
-                        # 有些API返回的video_type可能是 "movie" 或者没写，我们要灵活判断
-                        # 如果TMDB ID匹配（如果API返回了TMDB ID），或者直接取第一个看起来像电影的结果
-                        v_type = item.get("video_type")
-                        if v_type == "movie" or (not v_type and item.get("item_id")):
-                            matched_item_id = item.get("item_id")
-                            matched_item_type = item.get("item_type")
+                        if season_info and episode_info:
+                            matched_item_id = episode_info.get("item_id")
+                            matched_item_type = episode_info.get("item_type")
+                            print(
+                                f"[线程#{worker_id}] 剧集匹配成功！"
+                                f"item_id: {matched_item_id}, "
+                                f"item_type: {matched_item_type}, "
+                                f"集标题: {episode_info.get('episode_title')}"
+                            )
+                        # elif result2.get("item_id"):
+                        #     # 如果没有 season_info/episode_info，资源有问题跳过
+                        #     # matched_item_id = result2.get("item_id")
+                        #     # matched_item_type = result2.get("item_type")
+                        #     print(
+                        #         f"[线程#{worker_id}] 使用顶层 item_id: {matched_item_id}"
+                        #     )
 
-                            # 检查是否有medias列表（用户提供的case）
-                            medias = item.get("medias", [])
-                            if medias and not matched_item_id:
-                                # 如果顶层没有item_id，尝试从medias取第一个（虽然通常medias是具体文件，item_id是条目ID）
-                                # 用户提供的json显示顶层有item_id: 218374
-                                pass
-
-                            if matched_item_id:
-                                print(
-                                    f"✓ [线程#{worker_id}] 电影匹配成功！item_id: {matched_item_id}"
-                                )
-                                break
-
-                elif season_episode and result2:
-                    # 电视剧匹配逻辑
-                    # 解析季集字符串，例如 "S01 E11" -> (1, 11)
-                    try:
-                        # 移除空格并分割
-                        parts = season_episode.replace(" ", "").upper().split("E")
-                        if len(parts) == 2 and parts[0].startswith("S"):
-                            season_num = int(parts[0][1:])
-                            episode_num = int(parts[1])
-
-                            # print(f"\n正在匹配季集 S{season_num:02d}E{episode_num:02d} 的item_id...")
-
-                            # 遍历第二个API返回的结果，查找匹配的季集
-                            for item in result2:
-                                if item.get("video_type") == "tv":
-                                    seasons = item.get("seasons", [])
-                                    if not seasons:
-                                        # 有时候可能没有seasons字段，检查是否直接匹配（不太常见但防御性编程）
-                                        continue
-
-                                    for season in seasons:
-                                        if season.get("season_number") == season_num:
-                                            episodes = season.get("episodes", [])
-                                            for episode in episodes:
-                                                if (
-                                                    episode.get("episode_number")
-                                                    == episode_num
-                                                ):
-                                                    matched_item_id = episode.get(
-                                                        "item_id"
-                                                    )
-                                                    matched_item_type = episode.get(
-                                                        "item_type"
-                                                    )
-                                                    if (
-                                                        matched_item_id
-                                                        and matched_item_type
-                                                    ):
-                                                        print(
-                                                            f"✓ [线程#{worker_id}] 剧集匹配成功！item_id: {matched_item_id}"
-                                                        )
-                                                        break
-                                            if matched_item_id:
-                                                break
-                                    if matched_item_id:
-                                        break
-                    except Exception as e:
-                        print(f"✗ [线程#{worker_id}] 解析季集信息时出错: {e}")
+                    elif result2.get("video_type") == "movie" and result2.get("item_id"):
+                        matched_item_id = result2.get("item_id")
+                        matched_item_type = result2.get("item_type")
+                        print(f"[线程#{worker_id}] 电影匹配成功！item_id: {matched_item_id}")
 
                 # if not matched_item_id:
                 #     print(f"✗ [线程#{worker_id}] 未找到匹配的item_id")

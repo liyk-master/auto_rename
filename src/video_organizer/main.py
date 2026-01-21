@@ -229,6 +229,7 @@ def force_process_file(file_path: str, config: dict) -> bool:
             path_mappings=monitoring_config.get("path_mappings"),
             telegram_config=config.get("telegram"),
             llm_config=config.get("llm_translation"),
+            config=config,  # 传递完整配置以启用 llm_fallback
         )
 
         # 初始化并添加下载器（用于任务清理）

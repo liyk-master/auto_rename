@@ -926,10 +926,17 @@ class VideoRenamer:
             metadata.setdefault("year", "")
             metadata.setdefault("tmdb_id", "")
             # 确保season和episode有默认值1，即使它们已经存在但值为None
-            if metadata.get("season") is None:
-                metadata["season"] = 1
-            if metadata.get("episode") is None:
-                metadata["episode"] = 1
+            # 但对于电影类型，不设置默认值
+            media_type = metadata.get("media_type", "")
+            if media_type != "movie":
+                if metadata.get("season") is None:
+                    metadata["season"] = 1
+                if metadata.get("episode") is None:
+                    metadata["episode"] = 1
+            else:
+                # 对于电影，删除可能的 season/episode 字段
+                metadata.pop("season", None)
+                metadata.pop("episode", None)
 
             return metadata
         except Exception as e:
@@ -1069,6 +1076,15 @@ class VideoRenamer:
             # 0.9 Special pattern for [Group][Type][ShowName][EnglishName][Year][Episode][Tags].mp4 (GM-Team style)
             # Like: [GM-Team][国漫][遮天][Shrouding the Heavens][2023][142][AVC][GB][1080P].mp4
             r"^\[[^\]]+\]\s*\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\[[^\]]+\]\[(?P<year>\d{4})\]\[(?P<episode>\d{1,4})\]",
+            # 0.0 特殊模式：匹配纯中文标题（不含发布组、季号、集号）- 如 "为了所有的女孩.mkv"
+            r"^(?P<show_name>[\u4e00-\u9fff]+)\.[a-z0-9]+$",
+            # 0.0.1 匹配带年份的纯中文标题 - 如 "为了所有的女孩.2021.mkv"
+            r"^(?P<show_name>[\u4e00-\u9fff]+)[.\s]*(?P<year>\d{4})\.[a-z0-9]+$",
+            # 0.0.2 匹配点号分隔的简单英文标题：如 "The.Secret.Agent.mkv"
+            # 只匹配纯字母，避免匹配 S01E01 格式
+            r"^(?P<show_name>[A-Za-z]+(?:\.[A-Za-z]+)*)\.[a-z0-9]+$",
+            # 0.0.3 带年份的简单格式：如 "Forrest.Gump.1994.mkv"
+            r"^(?P<show_name>[A-Za-z]+(?:\.[A-Za-z]+)*)\.(?P<year>\d{4})\.[a-z0-9]+$",
             # 0. Special pattern for bracket-format anime: [Group][ShowName][48][GB][1080P][x264_AAC].mp4
             r"^\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
             # 0.1 Special pattern for bracket-format anime with season: [Group][ShowName][S2][12][...]
@@ -2193,7 +2209,7 @@ class VideoRenamer:
                     return bool(re.search(r"[\u4e00-\u9fff]", text))
 
                 # 定义完全匹配检查函数
-                def has_exact_match(search_results, target_term):
+                def has_exact_match(search_results, target_term, target_year=None):
                     if not search_results:
                         return False, None
                     # 确保search_results是列表类型
@@ -2211,12 +2227,26 @@ class VideoRenamer:
                         ).lower()
                         original_name = result.get("original_name", "").lower()
 
-                        # 1. 直接匹配
+                        # 1. 直接匹配（标题完全相同）
                         if (
                             result_title == target_term_lower
                             or original_name == target_term_lower
                         ):
-                            return True, result
+                            # 如果没有指定目标年份，或者结果有匹配年份，则认为完全匹配
+                            if not target_year:
+                                return True, result
+                            # 检查年份是否匹配
+                            date_field = (
+                                "first_air_date"
+                                if result.get("media_type") == "tv"
+                                else "release_date"
+                            )
+                            result_date = result.get(date_field, "")
+                            result_year = (
+                                result_date.split("-")[0] if result_date else ""
+                            )
+                            if result_year == str(target_year):
+                                return True, result
 
                         # 2. 简繁基础兼容 (针对 Dragon Raja)
                         if (target_term_lower == "龍族" and result_title == "龙族") or (
@@ -2287,11 +2317,11 @@ class VideoRenamer:
                 # 检查是否有完全匹配
                 if primary_results:
                     exact_match_found, exact_match_result = has_exact_match(
-                        primary_results, prepared_search_term
+                        primary_results, prepared_search_term, search_year
                     )
                     if not exact_match_found:
                         exact_match_found, exact_match_result = has_exact_match(
-                            primary_results, search_term
+                            primary_results, search_term, search_year
                         )
 
                 if exact_match_result:
@@ -2355,7 +2385,7 @@ class VideoRenamer:
                         # 检查跨语言搜索结果
                         if secondary_results:
                             exact_match_found, exact_match_result = has_exact_match(
-                                secondary_results, prepared_search_term
+                                secondary_results, prepared_search_term, search_year
                             )
                             if exact_match_result:
                                 logger.info(
@@ -2409,7 +2439,7 @@ class VideoRenamer:
                         alt_primary = "zh-CN" if alt_prepared_is_chinese else "en-US"
 
                         alt_exact_found, alt_exact = has_exact_match(
-                            alt_results, alt_prepared
+                            alt_results, alt_prepared, search_year
                         )
                         if alt_exact_found:
                             logger.info(
@@ -2738,6 +2768,10 @@ class VideoRenamer:
                 metadata["original_language"] = details.get("original_language", "")
                 metadata["origin_country"] = details.get("origin_country", [])
                 metadata["release_date"] = details.get("release_date", "")
+                # 提取电影年份
+                if metadata["release_date"]:
+                    metadata["year"] = metadata["release_date"].split("-")[0]
+                    logger.debug(f"从TMDB获取到电影年份: {metadata['year']}")
                 metadata["runtime"] = details.get("runtime", 0)
                 metadata["status"] = details.get("status", "")
                 metadata["budget"] = details.get("budget", 0)
