@@ -385,14 +385,22 @@ class RobustEmosVideoUploader:
                     timeout=600,  # 10分钟超时，因为分片变小了
                 )
 
-                if response.status_code in [200, 201, 202, 308]:
+                status_code = response.status_code
+
+                # 立即关闭响应，避免 _has_decoded_content 错误
+                try:
+                    response.close()
+                except Exception:
+                    pass
+
+                if status_code in [200, 201, 202, 308]:
                     # 更新统计信息
                     instant_speed, average_speed, elapsed_time = (
                         self._update_upload_stats(chunk_size, chunk_start_time)
                     )
-                    return True, response, instant_speed, average_speed, elapsed_time
+                    return True, None, instant_speed, average_speed, elapsed_time
                 else:
-                    print(f"分片上传失败，状态码: {response.status_code}")
+                    print(f"分片上传失败，状态码: {status_code}")
 
             except requests.exceptions.SSLError as e:
                 print(f"SSL错误 (尝试 {attempt + 1}/{max_retries}): {str(e)[:100]}")

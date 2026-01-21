@@ -10,7 +10,7 @@ tqdm>=4.60.0
 httpx>=0.24.0
 
 # 可选依赖 - 注释掉需要Python 3.12的包
-# p123client  # 需要Python 3.12，暂时注释
+p123client  # 需要Python 3.12，暂时注释
 
 # 开发依赖
 pytest>=7.0.0

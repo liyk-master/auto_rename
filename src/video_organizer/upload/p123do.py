@@ -190,21 +190,36 @@ def upload_file(
             }
         )
         len_uploaded_parts = 0
+        uploaded_part_numbers = set()  # 已上传的分块编号集合
+        upload_data = resp["data"]
+        slice_size = int(upload_data.get("SliceSize", 200 * 1024 * 1024))
+        total_parts = (
+            file_size + slice_size - 1
+        ) // slice_size  # 必须在slice_size之后定义
+
         if upload_list_resp.get("code") == 0:
-            print(f"[INFO] upload_list_resp: {upload_list_resp}")
             # 验证Parts字段是否存在且不为None
             parts = upload_list_resp["data"].get("Parts")
             if parts is not None:
                 len_uploaded_parts = len(parts)
+                # 提取已上传的分块编号（转换为整数，避免字符串和整数比较问题）
+                uploaded_part_numbers = {int(part.get("PartNumber")) for part in parts}
                 print(f"[INFO] 已上传分块: {parts}")
                 print(f"[INFO] 已上传分块数: {len_uploaded_parts}")
+                print(f"[INFO] 已上传分块编号: {sorted(uploaded_part_numbers)}")
+                # 找出缺失的分块
+                missing_parts = [
+                    i
+                    for i in range(1, total_parts + 1)
+                    if i not in uploaded_part_numbers
+                ]
+                if missing_parts:
+                    print(f"[INFO] 缺失分块: {missing_parts}")
             else:
                 print(f"[INFO] 暂无已上传分块")
         else:
             print(f"[ERROR] 获取已上传分块失败: {upload_list_resp.get('message')}")
             print(f"[INFO] upload_list_resp: {upload_list_resp}")
-        upload_data = resp["data"]
-        slice_size = int(upload_data.get("SliceSize", 200 * 1024 * 1024))
 
         if file_size > slice_size:
             print(
@@ -218,7 +233,7 @@ def upload_file(
                 file_size,
                 slice_size,
                 callback,
-                len_uploaded_parts,
+                uploaded_part_numbers,  # 传递已上传分块编号集合
                 max_workers,
             )
         else:
@@ -363,8 +378,9 @@ def _upload_single_chunk(
                                 pass
 
                     # 及时释放内存
+                    uploaded_size = len(chunk_data)
                     del chunk_data
-                    return slice_size
+                    return uploaded_size
                 else:
                     raise Exception(f"上传返回非200状态码: {response.status_code}")
 
@@ -420,10 +436,13 @@ def _upload_large_file(
     file_size: int,
     slice_size: int,
     callback=None,
-    len_uploaded_parts: int = 0,
+    uploaded_part_numbers: Optional[set] = None,  # 已上传的分块编号集合
     max_workers: int = 2,
 ) -> Dict[str, Any]:
     """分块上传大文件（多线程并发 + 重试机制 + 进度条）"""
+    if uploaded_part_numbers is None:
+        uploaded_part_numbers = set()
+
     total_parts = (file_size + slice_size - 1) // slice_size
     upload_request_kwargs = {
         "method": "PUT",
@@ -446,6 +465,8 @@ def _upload_large_file(
     lock = threading.Lock()
 
     # 使用tqdm创建进度条（包含速度显示）
+    # 计算已上传的字节数
+    uploaded_bytes = len(uploaded_part_numbers) * slice_size
     with tqdm(
         total=file_size,
         unit="B",
@@ -455,14 +476,20 @@ def _upload_large_file(
         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
     ) as pbar:
         # 设置已上传的进度
-        pbar.update(len_uploaded_parts * slice_size)
+        pbar.update(uploaded_bytes)
 
         # 使用线程池并发上传 - 真正的懒加载分片（仅在需要时读取）
         with ThreadPoolExecutor(max_workers=optimal_workers) as executor:
             futures = []
 
+            # 计算需要上传的分块列表（排除已上传的）
+            slices_to_upload = [
+                i for i in range(1, total_parts + 1) if i not in uploaded_part_numbers
+            ]
+            print(f"[INFO] 需要上传的分块: {slices_to_upload}")
+
             # 提交所有分片任务（只提交元数据，不立即读取数据）
-            for slice_no in range(len_uploaded_parts + 1, total_parts + 1):
+            for slice_no in slices_to_upload:
                 future = executor.submit(
                     _upload_single_chunk_lazy,  # 使用懒加载版本的上传函数
                     client,
@@ -492,7 +519,7 @@ def _upload_large_file(
                         if not f.done():
                             f.cancel()
                     raise Exception(
-                        f"上传失败: 已上传 {success_count} 个分片，失败 {error_count} 个分片"
+                        f"上传失败: 已上传 {success_count} 个分块，失败 {error_count} 个分块"
                     )
 
     # 完成上传

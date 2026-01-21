@@ -1137,6 +1137,8 @@ class VideoRenamer:
             r"^(?P<show_name>(?!^\d+$)[A-Za-z][A-Za-z0-9\s\-\'\.]+?)\s+S(?P<season>\d+)\s*-\s*(?P<episode>\d{2,3})",
             # 2.6 匹配 "[Release Group] Show Name S2 - 01" 格式（带字幕组前缀的 S2 - 01 格式）
             r"^\[[^\]]+\]\s*(?P<show_name>(?!^\d+$)[A-Za-z][A-Za-z0-9\s\-\'\.]+?)\s+S(?P<season>\d+)\s*-\s*(?P<episode>\d{2,3})",
+            # 2.7 匹配 "[Release Group] Show Name S3 [01]" 格式（S和集号在方括号中）
+            r"^\[[^\]]+\]\s*(?P<show_name>(?!^\d+$)[A-Za-z][A-Za-z0-9\s\-\'\.]+?)\s+S(?P<season>\d+)\s+\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
             # 3. Episode patterns with strict boundaries (avoiding Hash [Checksum])
             # 匹配 Show Name - 09 (严格限制show_name不能只含数字)
             r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$)(?:[^\-]|\-(?!\d{2,3}(?:\s|\.|\[|$)))+?)\s*-\s*(?P<episode>\d+(?:-\d+)?)\s*(?:\[|\(|$)",
@@ -2081,7 +2083,7 @@ class VideoRenamer:
         return prepared.strip()
 
     def _search_with_language(
-        self, search_term: str, media_type_hint: str, year: str, language: str
+        self, search_term: str, media_type_hint: str, year: Optional[str], language: str
     ) -> List[Dict]:
         """
         基于语言的搜索辅助方法
@@ -2089,7 +2091,7 @@ class VideoRenamer:
         Args:
             search_term (str): 搜索词
             media_type_hint (str): 媒体类型提示
-            year (str): 年份
+            year (Optional[str]): 年份
             language (str): 搜索语言
 
         Returns:
@@ -2182,13 +2184,25 @@ class VideoRenamer:
             # 首先尝试明确的类型搜索
             media_type_hint = metadata.get("media_type", metadata.get("type", ""))
             year = metadata.get("year")
-            # 对于分季剧集，年份可能导致误判（如"剑来" S01 是 2024年，S02 是 2025年）
-            # 如果有明确的季号，搜索时不使用年份
-            search_year = (
-                None
-                if (metadata.get("season") or metadata.get("episode")) and year
-                else year
-            )
+
+            # 安全处理年份参数
+            year_int = None
+            if year:
+                try:
+                    year_int = int(year)
+                    current_year = 2026  # 硬编码当前年份，避免循环导入
+                    # 检查年份是否在未来（当前年份+1，因为有些文件可能包含下一年的预告）
+                    if year_int > current_year + 1:
+                        logger.warning(
+                            f"检测到未来年份 '{year_int}'，当前年份为 {current_year}，"
+                            f"该年份可能无效，将不使用年份过滤条件"
+                        )
+                        year_int = None
+                except (ValueError, TypeError):
+                    year_int = None
+
+            # 使用处理后的年份（过滤了无效年份）
+            search_year: Optional[str] = str(year_int) if year_int else None
 
             # 定义缓存键
             cache_key = (prepared_search_term, media_type_hint, search_year)
