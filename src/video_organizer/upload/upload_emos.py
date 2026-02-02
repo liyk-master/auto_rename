@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import datetime
+import hashlib
 
 
 class RobustEmosVideoUploader:
@@ -17,6 +18,8 @@ class RobustEmosVideoUploader:
         base_url="https://emos.best",
         chunk_size_mb=50,
         telegram_config=None,
+        cache_dir=None,
+        cache_expire_hours=1,
     ):
         self.base_url = base_url
         self.session = self._create_robust_session()
@@ -46,6 +49,106 @@ class RobustEmosVideoUploader:
         self.tg_message_id: Optional[int] = None  # 当前上传的TG消息ID
         self.tg_last_update_time = 0  # 上次更新时间，用于限流
         self.tg_update_interval = 2  # 更新间隔（秒），避免触发TG API限制
+
+        # 断点续传缓存配置
+        if cache_dir:
+            self.cache_dir = Path(cache_dir)
+        else:
+            # 智能判断运行环境：开发环境 vs 打包后的可执行文件
+            import sys
+            import os
+            
+            if getattr(sys, 'frozen', False):
+                # 打包后的可执行文件
+                # 优先使用可执行文件所在目录
+                base_dir = Path(sys.executable).parent
+                # 如果可执行文件在临时目录（如 PyInstaller 的 _MEIPASS），则使用当前工作目录
+                if '_MEIPASS' in sys.executable or 'temp' in sys.executable.lower():
+                    base_dir = Path(os.getcwd())
+            else:
+                # 开发环境：使用项目根目录
+                base_dir = Path(__file__).parent.parent.parent
+            
+            self.cache_dir = base_dir / "data" / "upload_cache"
+        
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_expire_hours = cache_expire_hours
+
+    def _get_cache_key(self, item_type: str, item_id: str, file_path: Path) -> str:
+        """生成缓存键，基于 item_type、item_id 和文件路径"""
+        file_hash = hashlib.md5(str(file_path).encode('utf-8')).hexdigest()[:8]
+        return f"{item_type}_{item_id}_{file_hash}"
+
+    def _get_cache_file_path(self, cache_key: str) -> Path:
+        """获取缓存文件路径"""
+        return self.cache_dir / f"{cache_key}.json"
+
+    def _is_cache_valid(self, cache_file: Path) -> bool:
+        """检查缓存是否有效（未过期）"""
+        if not cache_file.exists():
+            return False
+        try:
+            cache_time = datetime.datetime.fromtimestamp(cache_file.stat().st_mtime)
+            expire_time = datetime.datetime.now() - datetime.timedelta(hours=self.cache_expire_hours)
+            return cache_time > expire_time
+        except Exception:
+            return False
+
+    def _save_upload_cache(self, cache_key: str, step2_result: Dict[str, Any], uploaded_chunks: list, file_path: Path):
+        """保存上传缓存"""
+        cache_file = self._get_cache_file_path(cache_key)
+        cache_data = {
+            "cache_key": cache_key,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "file_path": str(file_path),
+            "file_size": file_path.stat().st_size,
+            "step2_result": step2_result,
+            "uploaded_chunks": uploaded_chunks,
+        }
+        try:
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f, ensure_ascii=False, indent=2)
+            print(f"✓ 已保存上传缓存: {cache_key}")
+        except Exception as e:
+            print(f"✗ 保存缓存失败: {e}")
+
+    def _load_upload_cache(self, cache_key: str, file_path: Path) -> Optional[Dict[str, Any]]:
+        """加载上传缓存"""
+        cache_file = self._get_cache_file_path(cache_key)
+        if not self._is_cache_valid(cache_file):
+            return None
+
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+
+            # 验证文件是否匹配
+            if cache_data.get("file_path") != str(file_path):
+                print(f"✗ 缓存文件路径不匹配，忽略缓存")
+                return None
+
+            current_file_size = file_path.stat().st_size
+            cached_file_size = cache_data.get("file_size")
+            if current_file_size != cached_file_size:
+                print(f"✗ 文件大小已变化（缓存: {cached_file_size}, 当前: {current_file_size}），忽略缓存")
+                return None
+
+            print(f"✓ 加载上传缓存: {cache_key}")
+            print(f"  - 已上传分片: {len(cache_data.get('uploaded_chunks', []))}")
+            return cache_data
+        except Exception as e:
+            print(f"✗ 加载缓存失败: {e}")
+            return None
+
+    def _clear_upload_cache(self, cache_key: str):
+        """清除上传缓存"""
+        cache_file = self._get_cache_file_path(cache_key)
+        try:
+            if cache_file.exists():
+                cache_file.unlink()
+                print(f"✓ 已清除上传缓存: {cache_key}")
+        except Exception as e:
+            print(f"✗ 清除缓存失败: {e}")
 
     def _create_robust_session(self):
         """创建具有重试机制和SSL优化的会话"""
@@ -150,6 +253,7 @@ class RobustEmosVideoUploader:
         instant_speed,
         average_speed,
         elapsed_time,
+        file_name=None,
     ):
         """打印上传进度信息"""
         progress_percent = (chunk_num + 1) / total_chunks * 100
@@ -169,6 +273,8 @@ class RobustEmosVideoUploader:
 
         # 使用换行显示，确保在所有环境下都能看到
         print(f"\n{'='*80}")
+        if file_name:
+            print(f"📁 文件名称: {file_name}")
         print(f"📊 上传进度: {progress_percent:6.2f}%")
         print(f"[{bar}]")
         print(f"分片进度: {chunk_num + 1:3d}/{total_chunks:3d}")
@@ -399,6 +505,10 @@ class RobustEmosVideoUploader:
                         self._update_upload_stats(chunk_size, chunk_start_time)
                     )
                     return True, None, instant_speed, average_speed, elapsed_time
+                elif status_code == 416:
+                    # 416 Range Not Satisfiable: 分片范围无效
+                    print(f"✗ 分片范围无效 (416)，可能需要重新获取上传凭证")
+                    return False, None, 0, 0, 0
                 else:
                     print(f"分片上传失败，状态码: {status_code}")
 
@@ -426,8 +536,8 @@ class RobustEmosVideoUploader:
 
         return False, None, 0, 0, 0
 
-    def step3_chunk_upload(self, file_path, upload_data):
-        """步骤3：分片上传文件（优化版本）"""
+    def step3_chunk_upload(self, file_path, upload_data, cache_key=None, resume_from_cache=False):
+        """步骤3：分片上传文件（支持断点续传）"""
         file_path = Path(file_path)
         upload_url = upload_data["data"]["upload_url"]
         file_size = file_path.stat().st_size
@@ -444,16 +554,34 @@ class RobustEmosVideoUploader:
         chunk_size = self.chunk_size_mb * 1024 * 1024
         total_chunks = math.ceil(file_size / chunk_size)
 
+        # 已上传的分片列表
+        uploaded_chunks = []
+
+        # 如果启用断点续传，尝试加载缓存
+        if resume_from_cache and cache_key:
+            cache_data = self._load_upload_cache(cache_key, file_path)
+            if cache_data:
+                uploaded_chunks = cache_data.get("uploaded_chunks", [])
+                print(f"✓ 检测到断点续传，已上传 {len(uploaded_chunks)}/{total_chunks} 个分片")
+
         print(f"开始分片上传")
         print(f"文件大小: {self._format_size(file_size)}")
         print(f"分片大小: {self._format_size(chunk_size)}")
         print(f"总分片数: {total_chunks}")
+        if uploaded_chunks:
+            print(f"已上传分片: {len(uploaded_chunks)}")
         print("-" * 120)
 
         successful_chunks = 0
 
         with open(file_path, "rb") as f:
             for chunk_num in range(total_chunks):
+                # 跳过已上传的分片
+                if chunk_num in uploaded_chunks:
+                    successful_chunks += 1
+                    print(f"⊘ 分片 {chunk_num + 1}/{total_chunks} 已上传，跳过")
+                    continue
+
                 start_byte = chunk_num * chunk_size
                 end_byte = min(start_byte + chunk_size, file_size)
 
@@ -474,6 +602,12 @@ class RobustEmosVideoUploader:
 
                 if success:
                     successful_chunks += 1
+                    uploaded_chunks.append(chunk_num)
+
+                    # 保存缓存（每上传一个分片就保存一次）
+                    if cache_key:
+                        self._save_upload_cache(cache_key, upload_data, uploaded_chunks, file_path)
+
                     # 显示实时进度
                     self._print_upload_progress(
                         chunk_num,
@@ -483,6 +617,7 @@ class RobustEmosVideoUploader:
                         instant_speed,
                         average_speed,
                         elapsed_time,
+                        file_name=file_path.name,
                     )
                     # 发送/更新 Telegram 进度
                     self._send_tg_progress(
@@ -497,6 +632,9 @@ class RobustEmosVideoUploader:
                     )
                 else:
                     print(f"\n✗ 分片 {chunk_num + 1} 上传失败，跳过后续分片")
+                    # 保存当前进度缓存
+                    if cache_key:
+                        self._save_upload_cache(cache_key, upload_data, uploaded_chunks, file_path)
                     break
 
                 # 添加延迟以避免服务器压力
@@ -547,25 +685,46 @@ class RobustEmosVideoUploader:
                     print(f"步骤4失败，已达到最大重试次数: {e}")
                     raise
 
-    def upload_video(self, file_path, item_type, item_id, file_storage="internal"):
-        """完整的上传流程"""
+    def upload_video(self, file_path, item_type, item_id, file_storage="internal", enable_resume=True):
+        """完整的上传流程（支持断点续传）"""
         try:
+            file_path = Path(file_path)
+            cache_key = self._get_cache_key(item_type, item_id, file_path) if enable_resume else None
+
             print("=== 步骤1: 初始化视频信息 ===")
             step1_result = self.step1_init_video(item_type, item_id)
 
+            # 检查是否有有效的断点续传缓存
+            cache_data = None
+            if cache_key:
+                cache_data = self._load_upload_cache(cache_key, file_path)
+
             print("\n=== 步骤2: 获取上传凭证 ===")
-            step2_result = self.step2_get_upload_token(file_path, file_storage)
+            step2_result = None
+
+            if cache_data and cache_data.get("step2_result"):
+                # 使用缓存的 step2_result（断点续传）
+                step2_result = cache_data["step2_result"]
+                print("✓ 使用缓存的上传凭证（断点续传）")
+            else:
+                # 重新获取上传凭证
+                step2_result = self.step2_get_upload_token(file_path, file_storage)
 
             # 检查是否因为资源已存在而跳过
             if step2_result.get("message") == "此资源您之前上传过":
                 print(f"检测到文件已存在，跳过后续上传步骤。")
                 print(f"如果需要媒体ID，请注意此场景下无法获取新ID。")
+                # 清除缓存（如果存在）
+                if cache_key:
+                    self._clear_upload_cache(cache_key)
                 return {"media_uuid": "EXISTING_RESOURCE_SKIPPED", "skipped": True}
 
             file_id = step2_result["file_id"]
 
             print("\n=== 步骤3: 分片上传文件 ===")
-            upload_success = self.step3_chunk_upload(file_path, step2_result)
+            upload_success = self.step3_chunk_upload(
+                file_path, step2_result, cache_key=cache_key, resume_from_cache=enable_resume
+            )
 
             if not upload_success:
                 print("分片上传未完成，无法进行步骤4")
@@ -577,6 +736,10 @@ class RobustEmosVideoUploader:
             print(f"\n=== 上传完成 ===")
             print(f"视频标题: {step1_result.get('title')}")
             print(f"媒体UUID: {step4_result.get('media_id')}")
+
+            # 上传成功，清除缓存
+            if cache_key:
+                self._clear_upload_cache(cache_key)
 
             return step4_result
 

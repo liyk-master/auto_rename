@@ -811,9 +811,14 @@ class VideoRenamer:
             is_fragment = extracted_show_name.upper() in fragment_keywords
             # 如果剧名全是数字（有些正则误抓），也视为无效
             is_invalid_name = extracted_show_name.isdigit()
+            # 如果剧名只包含季集信息（如 S01E81），也视为无效
+            is_season_episode_only = bool(re.match(r'^S\d+E\d+', extracted_show_name.upper()))
 
             should_lookup_parent = (
-                not metadata.get("show_name") or is_fragment or is_invalid_name
+                not metadata.get("show_name") 
+                or is_fragment 
+                or is_invalid_name 
+                or is_season_episode_only
             )
 
             if should_lookup_parent:
@@ -837,16 +842,18 @@ class VideoRenamer:
                         parent_metadata = self._extract_with_regex(p_dir.name)
                         # 如果父目录能提取到剧名
                         if parent_metadata.get("show_name"):
-                            # 补全缺失字段
-                            for key in ["show_name", "season", "year", "tmdb_id"]:
+                            # 补全缺失字段（只补全 show_name 和 year，不覆盖 season 和 episode）
+                            for key in ["show_name", "year", "tmdb_id"]:
                                 # 特殊逻辑：如果父目录提取的剧名包含季号（如 GGO S02），进行二次清洗
                                 val = parent_metadata.get(key)
                                 if key == "show_name" and val:
                                     # 再次清洗以去除 BDrip, S02 等干扰
                                     val = self._clean_filename_for_search(val)
 
-                                if is_fragment and key == "show_name":
+                                # 如果是片段或季集模式，强制覆盖 show_name
+                                if (is_fragment or is_season_episode_only) and key == "show_name":
                                     metadata[key] = val
+                                # 否则只在字段为空时补全
                                 elif not metadata.get(key) and val:
                                     metadata[key] = val
 
@@ -977,11 +984,14 @@ class VideoRenamer:
         keyword_patterns = [
             r"(?:[^\w]|^)(2160p|4K|UHD|FHD|1080p|720p|480p|360p|240p|Ma10p|Ma10p_1080p)(?:[^\w]|$)",
             r"(?:[^\w]|^)(Dolby\s*Vision|HDR10|HDR|SDR)(?:[^\w]|$)",
-            r"(?:[^\w]|^)(Netflix|Disney\+|HBO|Amazon|Prime|Apple\+|iTunes)(?:[^\w]|$)",
+            # 流媒体平台（完整名称和缩写）
+            r"(?:[^\w]|^)(Netflix|NF|Disney\+|Disney|HBO|HBO\s*Max|Amazon|AMZN|Prime|Apple\+|Apple|iTunes)(?:[^\w]|$)",
             r"(?:[^\w]|^)(BDRip|BluRay|DVDRip|WEB-DL|WEBRip|WEB|BD|DVD)(?:[^\w]|$)",
             r"(?:[^\w]|^)(x265|x264|h265|h264|HEVC|AVC|MPEG4|x265_flac|x264_flac)(?:[^\w]|$)",
             r"(?:[^\w]|^)(DTS-HD|TrueHD|Atmos|DDP|DTS|AAC|AC3|FLAC|flac)(?:[^\w]|$)",
-            r"(?:[^\w]|^)(REPACK|PROPER|INTERNAL)(?:[^\w]|$)",
+            r"(?:[^\w]|^)(REPACK|PROPER|INTERNAL|LIMITED|UNCUT|EXTENDED)(?:[^\w]|$)",
+            r"(?:[^\w]|^)(DIRECTORS\.CUT|THEATRICAL\.CUT|UNCENSORED|UNRATED)(?:[^\w]|$)",
+            r"(?:[^\w]|^)(REMUX|RECODE|HYBRID|CR|HQ)(?:[^\w]|$)",
             r"(?:[^\w]|^)(CHS|ENG|双语|字幕|中字|英字)(?:[^\w]|$)",
         ]
 
@@ -1036,6 +1046,7 @@ class VideoRenamer:
             ".srt",
             ".sub",
             ".idx",
+            ".strm",
         ]
         if ext.lower() not in video_extensions:
             ext = ""
@@ -1073,6 +1084,27 @@ class VideoRenamer:
         # Special pattern for French/foreign movie formats with . and - separators
         # Like: Je.Navais.Que.Le.Neant.-.Shoah.Par.Lanzmann.2025.1080p.BluRay.x264.AAC5.1-[YTS.LT]
         patterns = [
+            # -2. 空格分隔的外语电影模式：匹配 "片名 年份 分辨率 语言 技术信息 发布组" 格式
+            # 如：Kokuho 2025 1080p Japanese WEB-DL HC HEVC x265 BONE.mkv
+            # 如：The Last Viking 2025 1080p Danish WEB-DL HEVC x265 5.1 BONE.mkv
+            # 如：Spirited Away 2001 1080p Japanese BluRay x264-REPACK.mkv
+            # 特点：空格分隔，年份在片名后，包含语言标识和技术信息
+            r"^(?P<show_name>[A-Za-z][A-Za-z0-9\s\']+)\s+(?P<year>\d{4})\s+(?:2160p|4K|UHD|FHD|1080p|720p|480p|360p|240p)(?:\s+(?:Japanese|Chinese|English|Korean|Spanish|French|German|Italian|Portuguese|Russian|Danish|Swedish|Norwegian|Finnish|Polish|Dutch|Czech|Hungarian|Turkish|Greek|Arabic|Hindi|Thai|Vietnamese|Indonesian|Malay|Filipino))?(?:\s+(?:WEB-DL|WEBRip|BluRay|BDRip|DVDRip|DVD|HDTV))(?:\s+(?:HC|REPACK|PROPER|INTERNAL))?(?:\s+[A-Z][A-Za-z0-9\s\-\.\.0-9]+)?$",
+            # -1. 中文电影专用模式：匹配 "片名.分辨率.语言标签[网站信息].扩展名" 格式
+            # 如：特工迷阵.1080p.HD中英双字[最新电影www.5266ys.com].mp4
+            # 如：肖申克的救赎.720p.中英双字[电影天堂www.dytt8.net].mkv
+            # 如：复仇者联盟.4K.中英双字.mp4
+            # 这个模式优先级最高，专门处理中文PT/电影站资源
+            # 注意：使用 name_only（不含扩展名）进行匹配，所以正则不需要匹配扩展名
+            r"^(?P<show_name>[\u4e00-\u9fff\w\s]+)[.\-](?:2160p|4K|UHD|FHD|1080p|720p|480p|360p|240p)(?:[.\-](?:HD|FHD|UHD)?(?:中英双字|中字|英字|双语|国语|粤语|日语版|CHS|ENG|JAP))?(?:\[.*?\])?$",
+            # 0.12 匹配中文目录格式 "剧名 第X季(年份)" - 如 "仙武传 第3季(2024)"
+            r"^(?P<show_name>[\u4e00-\u9fff\w\s]+?)\s*第(?P<season_cn>[一二三四五六七八九十\d]+)季\s*\((?P<year>\d{4})\)",
+            # 0.13 匹配中文目录格式 "剧名(年份)" - 如 "仙武传(2024)"
+            r"^(?P<show_name>[\u4e00-\u9fff\w\s]+?)\s*\((?P<year>\d{4})\)",
+            # 0.10 匹配 "数字-数字 剧名(年份)/SxxExx" 格式（如 6-2神国之上(2025)/S01E05）- 最高优先级
+            r"^(?P<prefix>\d+-\d+)?(?P<show_name>[\u4e00-\u9fff\w\s\.\-]+?)\s*\((?P<year>\d{4})\)[\/\\]S(?P<season>\d+)E(?P<episode>\d+)",
+            # 0.11 匹配 "数字-数字 剧名(年份)SxxExx" 格式（无分隔符）
+            r"^(?P<prefix>\d+-\d+)?(?P<show_name>[\u4e00-\u9fff\w\s\.\-]+?)\s*\((?P<year>\d{4})\)\s*S(?P<season>\d+)E(?P<episode>\d+)",
             # 0.9 Special pattern for [Group][Type][ShowName][EnglishName][Year][Episode][Tags].mp4 (GM-Team style)
             # Like: [GM-Team][国漫][遮天][Shrouding the Heavens][2023][142][AVC][GB][1080P].mp4
             r"^\[[^\]]+\]\s*\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\[[^\]]+\]\[(?P<year>\d{4})\]\[(?P<episode>\d{1,4})\]",
@@ -1128,7 +1160,8 @@ class VideoRenamer:
             r"(?P<show_name>.*?)\s*(?P<season>\d+)(?:st|nd|rd|th)\s*Season",
             r"(?P<show_name>.*?)\s*第(?P<season_cn>[一二三四五六七八九十\d]+)季",
             r"\[(?P<show_name>[^\]]+?)\s+第(?P<season_cn>[一二三四五六七八九十\d]+)季\]",
-            # 2.5 罗马数字季号识别 (例如: 龍族II, 进击的巨人IV)
+            # 2.5 匹配 "赘婿.第1季.E02" 格式（中文季号 + 点 + E集号）
+            r"^(?P<show_name>.+?)第(?P<season_cn>\d+)季\.[Ee][Pp]?(?P<episode>\d+)",
             # 模式 A: 较长的或不常见的罗马数字 (II-IX, V, VI...) 允许后随空格、中横杠或中文附属标题
             r"(?P<show_name>.*?)(?<![a-zA-Z0-9])(?P<roman_season>VIII|VII|VI|III|II|IX|IV|V)(?![a-zA-Z0-9])\s*(?::|-|\s|$)",
             # 模式 B: 极其高频误触的单字母罗马数字 (X, I) 要求后随必须是行尾或元数据标记 (防止切断 Spy x Family)
@@ -1139,9 +1172,16 @@ class VideoRenamer:
             r"^\[[^\]]+\]\s*(?P<show_name>(?!^\d+$)[A-Za-z][A-Za-z0-9\s\-\'\.]+?)\s+S(?P<season>\d+)\s*-\s*(?P<episode>\d{2,3})",
             # 2.7 匹配 "[Release Group] Show Name S3 [01]" 格式（S和集号在方括号中）
             r"^\[[^\]]+\]\s*(?P<show_name>(?!^\d+$)[A-Za-z][A-Za-z0-9\s\-\'\.]+?)\s+S(?P<season>\d+)\s+\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
-            # 3. Episode patterns with strict boundaries (avoiding Hash [Checksum])
+            # 2.8 匹配 "数字-数字 剧名(年份)/SxxExx" 格式（如 6-2神国之上(2025)/S01E05）- 优先级高
+            r"^(?P<prefix>\d+-\d+)?(?P<show_name>[\u4e00-\u9fff\w\s\.\-]+?)\s*\((?P<year>\d{4})\)[\/\\]S(?P<season>\d+)E(?P<episode>\d+)",
+            # 2.9 匹配 "数字-数字 剧名(年份)SxxExx" 格式（无分隔符）- 优先级高
+            r"^(?P<prefix>\d+-\d+)?(?P<show_name>[\u4e00-\u9fff\w\s\.\-]+?)\s*\((?P<year>\d{4})\)\s*S(?P<season>\d+)E(?P<episode>\d+)",
+            # 1. Show Name Season 01 Episode 01
+            r"^(?P<show_name>.*?)[. ]?S(?P<season>\d+)E(?P<episode>\d+)",
             # 匹配 Show Name - 09 (严格限制show_name不能只含数字)
             r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$)(?:[^\-]|\-(?!\d{2,3}(?:\s|\.|\[|$)))+?)\s*-\s*(?P<episode>\d+(?:-\d+)?)\s*(?:\[|\(|$)",
+            # 2.4 匹配 "Show.Name.EP03.1080p...-ReleaseGroup" 格式（如 Kurosaki.san.no...EP03.1080p.HULU.WEB-DL.AAC2.0.H.264-MagicStar）
+            r"^(?P<show_name>.+?)[.\s]*[Ee][Pp](?P<episode>\d+)[.\s]*[^\s]+-(?P<release_group>[A-Za-z]+)$",
             # 匹配 Show Name EP09 / Ep09 / Show.Name.EP09 (严格限制show_name不能只含数字，支持点分隔)
             r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$).*?)(?=[.\s]*(?:EP|Ep|第)[.\s]*\d)[.\s]*(?:EP|Ep|第)[.\s]*(?P<episode>\d+(?:-\d+)?)[.\s]*(?:集)?[.\s]*(?:\[|\(|$)",
             # 修复：匹配 "Spy x Family 2 - 05" 格式 (季号在集号前面，用空格分隔)
@@ -1172,8 +1212,9 @@ class VideoRenamer:
         ]
 
         match_found = False
-        for pattern in patterns:
-            match = re.search(pattern, base_name, re.IGNORECASE)
+        for i, pattern in enumerate(patterns):
+            # 使用 name_only（不含扩展名）进行正则匹配
+            match = re.search(pattern, name_only, re.IGNORECASE)
             if match:
                 match_data = match.groupdict()
 
@@ -1187,6 +1228,9 @@ class VideoRenamer:
                 # 补全元数据
                 for key, value in match_data.items():
                     if value and key != "season_cn" and not metadata.get(key):
+                        # 清理show_name：移除末尾点号，将点替换为空格（用于日文/英文剧名）
+                        if key == "show_name":
+                            value = value.rstrip(".").replace(".", " ")
                         metadata[key] = value
                 match_found = True
 
@@ -2161,6 +2205,175 @@ class VideoRenamer:
             original_quality_tags = metadata.get("quality_tags", "")
             original_release_group = metadata.get("release_group", "")
 
+            # 优先使用已有的 tmdb_id，如果文件名中已经包含 {tmdbid-xxx}
+            existing_tmdb_id = metadata.get("tmdb_id")
+            if existing_tmdb_id:
+                logger.info(f"文件名中已包含TMDB ID: {existing_tmdb_id}，直接使用该ID获取元数据")
+                media_type_hint = metadata.get("media_type", metadata.get("type", ""))
+                
+                try:
+                    tmdb_id_int = int(existing_tmdb_id)
+                    if media_type_hint == "tv":
+                        details = self.tmdb_client.get_tv_details(tmdb_id_int, language="zh-CN")
+                        if details and details.get("name"):
+                            logger.info(f"成功获取TV剧集详情: {details.get('name', '')}")
+                            # 构造搜索结果格式，直接跳到元数据丰富部分
+                            best_match = {
+                                "id": tmdb_id_int,
+                                "name": details.get("name", ""),
+                                "original_name": details.get("original_name", ""),
+                                "first_air_date": details.get("first_air_date", ""),
+                                "overview": details.get("overview", ""),
+                                "poster_path": details.get("poster_path", ""),
+                                "backdrop_path": details.get("backdrop_path", ""),
+                                "vote_average": details.get("vote_average", 0),
+                                "vote_count": details.get("vote_count", 0),
+                                "popularity": details.get("popularity", 0),
+                                "genre_ids": details.get("genre_ids", []),
+                                "origin_country": details.get("origin_country", []),
+                                "original_language": details.get("original_language", ""),
+                                "media_type": "tv",
+                            }
+                            # 保存 genre_ids 用于判断动画类型
+                            metadata["genre_ids"] = best_match.get("genre_ids", [])
+                            
+                            # 跳过搜索，直接进入元数据丰富部分
+                            # 使用专门的API获取更详细的信息，优先使用中文
+                            # 先尝试获取中文详细信息
+                            if not details or not (details.get("name") or details.get("overview")):
+                                details = self.tmdb_client.get_tv_details(tmdb_id_int, language="en-US")
+                                if details:
+                                    logger.info("中文电视剧信息不完整，使用英文信息")
+                            
+                            # 保存原始标题
+                            original_name = metadata.get("show_name")
+                            metadata["original_show_name"] = original_name
+                            # 丰富元数据，优先使用中文标题
+                            metadata["show_name"] = details.get("name", original_name)
+                            metadata["overview"] = details.get("overview", "")
+                            metadata["rating"] = details.get("vote_average", 0)
+                            metadata["genres"] = [genre["name"] for genre in details.get("genres", [])]
+                            metadata["original_name"] = details.get("original_name", "")
+                            metadata["original_language"] = details.get("original_language", "")
+                            metadata["origin_country"] = details.get("origin_country", [])
+                            metadata["first_air_date"] = details.get("first_air_date", "")
+                            metadata["last_air_date"] = details.get("last_air_date", "")
+                            metadata["status"] = details.get("status", "")
+                            metadata["number_of_seasons"] = details.get("number_of_seasons", 0)
+                            metadata["number_of_episodes"] = details.get("number_of_episodes", 0)
+                            metadata["tmdb_id"] = best_match["id"]
+                            
+                            # 提取年份
+                            if details.get("first_air_date"):
+                                metadata["year"] = details["first_air_date"].split("-")[0]
+                            elif "first_air_date" in best_match and best_match["first_air_date"]:
+                                metadata["year"] = best_match["first_air_date"].split("-")[0]
+                            
+                            # 保存图片路径
+                            metadata["poster_path"] = details.get("poster_path", "")
+                            metadata["backdrop_path"] = details.get("backdrop_path", "")
+                            
+                            # 获取演职人员信息
+                            credits = self.tmdb_client.get_tv_credits(best_match["id"])
+                            if credits:
+                                metadata["cast"] = [
+                                    actor["name"] for actor in credits.get("cast", [])[:10]
+                                ]
+                                metadata["director"] = [
+                                    crew["name"]
+                                    for crew in credits.get("crew", [])
+                                    if crew.get("job") == "Director"
+                                ]
+                            
+                            # 获取网络信息
+                            if "networks" in details:
+                                metadata["networks"] = [
+                                    network["name"] for network in details["networks"]
+                                ]
+                            
+                            # 恢复原始的quality_tags和release_group
+                            metadata["quality_tags"] = original_quality_tags
+                            metadata["release_group"] = original_release_group
+                            
+                            logger.info(f"使用TMDB ID成功丰富元数据: show_name={metadata.get('show_name')}, year={metadata.get('year')}")
+                            return metadata
+                    else:
+                        details = self.tmdb_client.get_movie_details(tmdb_id_int, language="zh-CN")
+                        if details and details.get("title"):
+                            logger.info(f"成功获取电影详情: {details.get('title', '')}")
+                            # 构造搜索结果格式，直接跳到元数据丰富部分
+                            best_match = {
+                                "id": tmdb_id_int,
+                                "title": details.get("title", ""),
+                                "original_title": details.get("original_title", ""),
+                                "release_date": details.get("release_date", ""),
+                                "overview": details.get("overview", ""),
+                                "poster_path": details.get("poster_path", ""),
+                                "backdrop_path": details.get("backdrop_path", ""),
+                                "vote_average": details.get("vote_average", 0),
+                                "vote_count": details.get("vote_count", 0),
+                                "popularity": details.get("popularity", 0),
+                                "genre_ids": details.get("genre_ids", []),
+                                "original_language": details.get("original_language", ""),
+                                "media_type": "movie",
+                            }
+                            # 保存 genre_ids 用于判断动画类型
+                            metadata["genre_ids"] = best_match.get("genre_ids", [])
+                            
+                            # 跳过搜索，直接进入元数据丰富部分
+                            # 先尝试获取中文详细信息
+                            if not details or not (details.get("title") or details.get("overview")):
+                                details = self.tmdb_client.get_movie_details(tmdb_id_int, language="en-US")
+                                if details:
+                                    logger.info("中文电影信息不完整，使用英文信息")
+                            
+                            # 保存原始标题
+                            original_name = metadata.get("title")
+                            metadata["original_show_name"] = original_name
+                            # 丰富元数据，优先使用中文标题
+                            metadata["title"] = details.get("title", original_name)
+                            metadata["overview"] = details.get("overview", "")
+                            metadata["rating"] = details.get("vote_average", 0)
+                            metadata["genres"] = [genre["name"] for genre in details.get("genres", [])]
+                            metadata["original_title"] = details.get("original_title", "")
+                            metadata["original_language"] = details.get("original_language", "")
+                            metadata["release_date"] = details.get("release_date", "")
+                            metadata["runtime"] = details.get("runtime", 0)
+                            metadata["status"] = details.get("status", "")
+                            metadata["tmdb_id"] = best_match["id"]
+                            
+                            # 提取年份
+                            if details.get("release_date"):
+                                metadata["year"] = details["release_date"].split("-")[0]
+                            elif "release_date" in best_match and best_match["release_date"]:
+                                metadata["year"] = best_match["release_date"].split("-")[0]
+                            
+                            # 保存图片路径
+                            metadata["poster_path"] = details.get("poster_path", "")
+                            metadata["backdrop_path"] = details.get("backdrop_path", "")
+                            
+                            # 获取演职人员信息
+                            credits = self.tmdb_client.get_movie_credits(best_match["id"])
+                            if credits:
+                                metadata["cast"] = [
+                                    actor["name"] for actor in credits.get("cast", [])[:10]
+                                ]
+                                metadata["director"] = [
+                                    crew["name"]
+                                    for crew in credits.get("crew", [])
+                                    if crew.get("job") == "Director"
+                                ]
+                            
+                            # 恢复原始的quality_tags和release_group
+                            metadata["quality_tags"] = original_quality_tags
+                            metadata["release_group"] = original_release_group
+                            
+                            logger.info(f"使用TMDB ID成功丰富元数据: title={metadata.get('title')}, year={metadata.get('year')}")
+                            return metadata
+                except Exception as e:
+                    logger.warning(f"使用TMDB ID {existing_tmdb_id} 获取元数据失败: {e}，将使用搜索方式")
+            
+            # 如果没有 tmdb_id 或获取失败，则使用搜索方式
             # 优先使用show_name搜索，否则使用title，确保搜索词存在
             search_term = metadata.get("show_name", metadata.get("title", ""))
             if not search_term:
@@ -2678,6 +2891,10 @@ class VideoRenamer:
                         network["name"] for network in details["networks"]
                     ]
 
+                # 保存图片路径
+                metadata["poster_path"] = details.get("poster_path", "")
+                metadata["backdrop_path"] = details.get("backdrop_path", "")
+
                 # 获取演职人员信息
                 credits = self.tmdb_client.get_tv_credits(best_match["id"])
                 if credits:
@@ -2739,6 +2956,10 @@ class VideoRenamer:
                                 )
                                 metadata["episode_rating"] = episode_details.get(
                                     "vote_average", 0
+                                )
+                                # 保存剧集缩略图路径
+                                metadata["still_path"] = episode_details.get(
+                                    "still_path", ""
                                 )
                     except Exception as e:
                         logger.warning(f"获取剧集详情失败: {e}")
@@ -2809,6 +3030,10 @@ class VideoRenamer:
                         for review in details["reviews"]["results"][:3]  # 只取前3条评论
                     ]
 
+                # 保存图片路径
+                metadata["poster_path"] = details.get("poster_path", "")
+                metadata["backdrop_path"] = details.get("backdrop_path", "")
+
             # 设置媒体类型
             metadata["media_type"] = media_type
             # 恢复原始的quality_tags和release_group
@@ -2840,25 +3065,23 @@ class VideoRenamer:
         Returns:
             str: 分类目录路径
         """
-        # 获取字幕组信息
+        # 获取字幕组信息（仅在 TMDB 没有明确分类时使用）
         release_group = metadata.get("release_group", "")
-
-        # 1. 首先检查是否有字幕组映射
         forced_content_type = None
         if release_group:
             # 精确匹配
             if release_group in self._release_group_mapping:
                 forced_content_type = self._release_group_mapping[release_group]
-                logger.info(
-                    f"字幕组 '{release_group}' 映射到类型: {forced_content_type}"
+                logger.debug(
+                    f"字幕组 '{release_group}' 映射到类型: {forced_content_type}（后备）"
                 )
             else:
                 # 模糊匹配（检查字幕组名称是否包含映射关键词）
                 for group_name, content_type in self._release_group_mapping.items():
                     if group_name in release_group or release_group in group_name:
                         forced_content_type = content_type
-                        logger.info(
-                            f"字幕组 '{release_group}' 模糊匹配到 '{group_name}'，映射到类型: {content_type}"
+                        logger.debug(
+                            f"字幕组 '{release_group}' 模糊匹配到 '{group_name}'，映射到类型: {content_type}（后备）"
                         )
                         break
 
@@ -2875,114 +3098,16 @@ class VideoRenamer:
 
         # 子分类逻辑
         sub_category = ""
+        base_category = "Other"  # 默认值
 
-        # 2. 字幕组强制类型优先处理
-        if forced_content_type == "anime":
-            # 强制动漫分类
-            if original_language in ["ja", "ja-jp"] or any(
-                country in ["JP", "日本"] for country in origin_countries
-            ):
-                sub_category = "日番"
-            elif original_language in ["zh", "cn", "zh-cn", "zh-tw", "zh-hk"] or any(
-                country in chinese_countries for country in origin_countries
-            ):
-                sub_category = "国漫"
-            elif original_language in ["en", "en-us", "en-gb"] or any(
-                country in english_countries for country in origin_countries
-            ):
-                sub_category = "欧美动漫"
-            else:
-                title = metadata.get("show_name", "") or metadata.get(
-                    "original_show_name", ""
-                )
-                if re.search(r"[\u3040-\u30FF]", title):
-                    sub_category = "日番"
-                elif re.search(r"[\u4E00-\u9FFF]", title):
-                    sub_category = "国漫"
-                else:
-                    sub_category = "其他动漫"
-            base_category = "TV Shows"
-
-        elif forced_content_type == "drama":
-            # 强制电视剧分类，但优先检查是否为动画（国漫/日漫等）
-            # TMDB动画类型ID: 16
-            genre_ids = metadata.get("genre_ids", [])
-            is_animation = 16 in genre_ids or any(
-                genre in genre_names for genre in ["animation", "animated", "动画"]
-            )
-            is_chinese_lang = original_language in [
-                "zh",
-                "cn",
-                "zh-cn",
-                "zh-tw",
-                "zh-hk",
-            ]
-            is_japanese_lang = original_language in ["ja", "ja-jp"]
-            show_name = metadata.get("show_name", "") or ""
-            is_chinese_title = bool(re.search(r"[\u4E00-\u9FFF]", show_name))
-
-            logger.info(
-                f"分类判断: is_animation={is_animation}, genre_ids={genre_ids}, is_chinese_lang={is_chinese_lang}, is_japanese_lang={is_japanese_lang}"
-            )
-
-            if is_animation:
-                # 按动漫分类处理
-                # 优先级：国漫 > 日番 > 欧美动漫 > 其他
-                if is_chinese_lang or any(
-                    country in chinese_countries for country in origin_countries
-                ):
-                    sub_category = "国漫"
-                elif is_chinese_title:
-                    sub_category = "国漫"
-                elif is_japanese_lang or any(
-                    country in ["JP", "日本"] for country in origin_countries
-                ):
-                    sub_category = "日番"
-                elif original_language in ["en", "en-us", "en-gb"] or any(
-                    country in english_countries for country in origin_countries
-                ):
-                    sub_category = "欧美动漫"
-                else:
-                    sub_category = "其他动漫"
-                base_category = "TV Shows"
-            elif (
-                is_chinese_lang
-                or is_chinese_title
-                or any(country in chinese_countries for country in origin_countries)
-            ):
-                # 中文内容优先判断为国漫/国产剧
-                sub_category = "国漫"
-                base_category = "TV Shows"
-            elif is_japanese_lang or any(
-                country in ["JP", "日本"] for country in origin_countries
-            ):
-                # 日文内容为日番
-                sub_category = "日番"
-                base_category = "TV Shows"
-            else:
-                # 非中文/日文，按电视剧分类
-                if original_language in ["en"] or any(
-                    country in english_countries for country in origin_countries
-                ):
-                    sub_category = "欧美剧"
-                elif original_language in ["ko", "th", "hi"] or any(
-                    country in asian_countries for country in origin_countries
-                ):
-                    sub_category = "日韩剧"
-                else:
-                    original_show_name = metadata.get("original_show_name", "")
-                    if original_show_name and re.search(
-                        r"[\u4e00-\u9fff]", original_show_name
-                    ):
-                        sub_category = "国产剧"
-                    else:
-                        sub_category = "未分类"
-                base_category = "TV Shows"
-
-        elif forced_content_type == "movie":
-            # 强制电影分类
+        # 1. 优先使用 TMDB 分类
+        media_type = metadata.get("media_type")
+        if media_type == "movie":
             base_category = "Movies"
-            if any(genre in genre_names for genre in ["animation", "animated", "动画"]):
+            # 电影子分类
+            if any(
+                genre in genre_names for genre in ["animation", "animated", "动画"]
+            ):
                 sub_category = "动画电影"
             else:
                 original_title = metadata.get("original_title", "")
@@ -2994,51 +3119,90 @@ class VideoRenamer:
                     sub_category = "华语电影"
                 else:
                     sub_category = "外语电影"
-
-        else:
-            # 3. 使用TMDB类型和Genre进行分类
-            media_type = metadata.get("media_type")
-            if media_type == "movie":
-                base_category = "Movies"
-                # 电影子分类
-                if any(
-                    genre in genre_names for genre in ["animation", "animated", "动画"]
+        elif media_type == "tv":
+            base_category = "TV Shows"
+            # 电视剧子分类
+            if any(genre in genre_names for genre in ["documentary", "纪录片"]):
+                sub_category = "纪录片"
+            elif any(
+                genre in genre_names
+                for genre in ["reality", "variety", "综艺", "game show"]
+            ):
+                sub_category = "综艺"
+            elif any(
+                genre in genre_names for genre in ["animation", "animated", "动画"]
+            ):
+                if original_language in ["ja", "ja-jp"] or any(
+                    country in ["JP", "日本"] for country in origin_countries
                 ):
-                    sub_category = "动画电影"
+                    sub_category = "日番"
+                elif original_language in [
+                    "zh",
+                    "cn",
+                    "zh-cn",
+                    "zh-tw",
+                    "zh-hk",
+                ] or any(
+                    country in chinese_countries for country in origin_countries
+                ):
+                    sub_category = "国漫"
+                elif original_language in ["en", "en-us", "en-gb"] or any(
+                    country in english_countries for country in origin_countries
+                ):
+                    sub_category = "欧美动漫"                    
                 else:
-                    original_title = metadata.get("original_title", "")
-                    if original_title and re.search(r"[\u4e00-\u9fff]", original_title):
-                        sub_category = "华语电影"
-                    elif original_language in ["zh", "cn"] or any(
-                        country in chinese_countries for country in origin_countries
-                    ):
-                        sub_category = "华语电影"
+                    title = metadata.get("show_name", "") or metadata.get(
+                        "original_show_name", ""
+                    )
+                    if re.search(r"[\u3040-\u30FF]", title):
+                        sub_category = "日番"
+                    elif re.search(r"[\u4E00-\u9FFF]", title):
+                        sub_category = "国漫"
                     else:
-                        sub_category = "外语电影"
-            elif media_type == "tv":
-                base_category = "TV Shows"
-                # 电视剧子分类
-                if any(genre in genre_names for genre in ["documentary", "纪录片"]):
-                    sub_category = "纪录片"
-                elif any(
-                    genre in genre_names
-                    for genre in ["reality", "variety", "综艺", "game show"]
+                        sub_category = "其他动漫"
+            elif any(
+                genre in genre_names
+                for genre in ["kids", "children", "child", "儿童", "family"]
+            ):
+                sub_category = "儿童"
+            else:
+                if original_language in ["zh", "cn"] or any(
+                    country in chinese_countries for country in origin_countries
                 ):
-                    sub_category = "综艺"
-                elif any(
-                    genre in genre_names for genre in ["animation", "animated", "动画"]
+                    sub_category = "国产剧"
+                elif original_language in ["en"] or any(
+                    country in english_countries for country in origin_countries
                 ):
+                    sub_category = "欧美剧"
+                elif original_language in ["ja", "ko", "th", "hi"] or any(
+                    country in asian_countries for country in origin_countries
+                ):
+                    sub_category = "日韩剧"
+                else:
+                    original_show_name = metadata.get("original_show_name", "")
+                    if original_show_name and re.search(
+                        r"[\u4e00-\u9fff]", original_show_name
+                    ):
+                        sub_category = "国产剧"
+                    else:
+                        sub_category = "未分类"
+        else:
+            base_category = "Other"
+
+        # 2. 如果 TMDB 没有明确的分类（sub_category 为空或为"未分类"），则使用字幕组映射作为后备
+        if not sub_category or sub_category == "未分类":
+            if forced_content_type:
+                logger.info(
+                    f"TMDB没有明确分类，使用字幕组映射: {forced_content_type}"
+                )
+                if forced_content_type == "anime":
+                    base_category = "TV Shows"
+                    # 根据语言和地区判断动漫子分类
                     if original_language in ["ja", "ja-jp"] or any(
                         country in ["JP", "日本"] for country in origin_countries
                     ):
                         sub_category = "日番"
-                    elif original_language in [
-                        "zh",
-                        "cn",
-                        "zh-cn",
-                        "zh-tw",
-                        "zh-hk",
-                    ] or any(
+                    elif original_language in ["zh", "cn", "zh-cn", "zh-tw", "zh-hk"] or any(
                         country in chinese_countries for country in origin_countries
                     ):
                         sub_category = "国漫"
@@ -3056,12 +3220,8 @@ class VideoRenamer:
                             sub_category = "国漫"
                         else:
                             sub_category = "其他动漫"
-                elif any(
-                    genre in genre_names
-                    for genre in ["kids", "children", "child", "儿童", "family"]
-                ):
-                    sub_category = "儿童"
-                else:
+                elif forced_content_type == "drama":
+                    base_category = "TV Shows"
                     if original_language in ["zh", "cn"] or any(
                         country in chinese_countries for country in origin_countries
                     ):
@@ -3075,15 +3235,13 @@ class VideoRenamer:
                     ):
                         sub_category = "日韩剧"
                     else:
-                        original_show_name = metadata.get("original_show_name", "")
-                        if original_show_name and re.search(
-                            r"[\u4e00-\u9fff]", original_show_name
-                        ):
-                            sub_category = "国产剧"
-                        else:
-                            sub_category = "未分类"
-            else:
-                base_category = "Other"
+                        sub_category = "其他剧"
+                elif forced_content_type == "movie":
+                    base_category = "Movies"
+                    if any(genre in genre_names for genre in ["animation", "animated", "动画"]):
+                        sub_category = "动画电影"
+                    else:
+                        sub_category = "外语电影"
 
         # 组合分类路径
         return f"{base_category}/{sub_category}"

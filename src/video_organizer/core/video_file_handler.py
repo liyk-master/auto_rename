@@ -4,13 +4,14 @@ import requests
 import threading
 from queue import Queue, Empty
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 # 导入项目内部的上传工具
 from ..upload.upload_emos import RobustEmosVideoUploader
 
 from .renamer import VideoRenamer
 from .tmdb_client import TMDBClient
+from .subtitle_handler import SubtitleHandler
 from ..utils.logging_utils import get_logger, log_success, log_failure, log_exception
 
 
@@ -137,6 +138,14 @@ class VideoFileHandler:
             # 创建一个基本的重命名器作为后备
             self.renamer = VideoRenamer(tmdb_api_key=None)
 
+        # 初始化字幕处理器
+        try:
+            self.subtitle_handler = SubtitleHandler()
+            self.logger.info("字幕处理器初始化成功")
+        except Exception as e:
+            log_exception(self.logger, "初始化字幕处理器失败")
+            self.subtitle_handler = None
+
         # 父监控器引用
         self._parent_monitor = None
 
@@ -148,6 +157,10 @@ class VideoFileHandler:
         self._uploaded_files = set()  # 已成功上传的文件
         self._failed_files = {}  # 失败的文件及原因
         self._max_set_size = 1000  # 限制集合大小，防止内存溢出
+
+        # 队列去重机制
+        self._queued_files = set()  # 追踪队列中的文件，防止重复添加
+        self._queue_lock = threading.Lock()  # 队列操作锁，防止竞态条件
         self._file_downloader_map = {}  # 文件到下载器的映射，用于删除下载任务
 
         # 上传队列配置
@@ -231,17 +244,49 @@ class VideoFileHandler:
 
     def _is_supported_file(self, file_path: str) -> bool:
         """
-        检查文件是否为支持的视频文件
+        检查文件是否为支持的视频或字幕文件
 
         Args:
             file_path: 文件路径
 
         Returns:
-            是否为支持的视频文件
+            是否为支持的文件
         """
         try:
             file_ext = os.path.splitext(file_path)[1].lower()
             return file_ext in self.supported_extensions
+        except Exception as e:
+            self.logger.error(f"检查文件类型时出错: {file_path}, 错误: {e}")
+            return False
+
+    def _is_subtitle_file(self, file_path: str) -> bool:
+        """
+        检查文件是否为字幕文件
+
+        Args:
+            file_path: 文件路径
+
+        Returns:
+            是否为字幕文件
+        """
+        if not self.subtitle_handler:
+            return False
+        return self.subtitle_handler.is_subtitle_file(Path(file_path))
+
+    def _is_video_file(self, file_path: str) -> bool:
+        """
+        检查文件是否为视频文件
+
+        Args:
+            file_path: 文件路径
+
+        Returns:
+            是否为视频文件
+        """
+        subtitle_extensions = {'.srt', '.ass', '.ssa', '.sub', '.vtt'}
+        try:
+            file_ext = os.path.splitext(file_path)[1].lower()
+            return file_ext in self.supported_extensions and file_ext not in subtitle_extensions
         except Exception as e:
             self.logger.error(f"检查文件类型时出错: {file_path}, 错误: {e}")
             return False
@@ -345,6 +390,10 @@ class VideoFileHandler:
                         f"工作线程 #{worker_id} 处理文件失败: {file_path}, 错误: {e}"
                     )
                 finally:
+                    # 清理状态（不持有锁，避免阻塞其他线程）
+                    self._queued_files.discard(file_path)
+                    self._processing_files.discard(file_path)
+
                     self._upload_queue.task_done()
                     # 显式垃圾回收
                     import gc
@@ -462,7 +511,8 @@ class VideoFileHandler:
 
     def _process_file(self, file_path: str) -> bool:
         """
-        处理视频文件
+        处理视频或字幕文件
+
         Args:
             file_path: 文件路径
         """
@@ -470,26 +520,50 @@ class VideoFileHandler:
             self.logger.warning(f"文件不存在: {file_path}")
             return False
 
-        # 检查文件是否已经在上传中或已上传，避免重复处理
+        # 检查文件类型
+        is_subtitle = self._is_subtitle_file(file_path)
+        is_video = self._is_video_file(file_path)
+
+        if not is_subtitle and not is_video:
+            self.logger.debug(f"文件不是支持的视频或字幕文件，跳过: {file_path}")
+            return False
+
+        # 对于字幕文件，使用特殊的处理逻辑
+        if is_subtitle:
+            return self._process_subtitle_file(file_path)
+
+        # 快速检查：文件是否已经在上传中或已上传（不加锁，因为这些集合只在主线程修改）
         if file_path in self._uploading_files or file_path in self._uploaded_files:
             self.logger.debug(f"文件已在上传中或已上传，跳过处理: {file_path}")
             return True
 
-        # 检查文件是否正在处理中（API调用阶段）
-        if file_path in self._processing_files:
-            self.logger.debug(f"文件正在处理中，跳过: {file_path}")
-            return True
+        # 使用锁保护去重检查，防止竞态条件
+        with self._queue_lock:
+            # 检查文件是否正在处理中（API调用阶段）
+            if file_path in self._processing_files:
+                self.logger.debug(f"文件正在处理中，跳过: {file_path}")
+                return True
 
-        # 检查文件是否完整且可访问
+            # 检查文件是否已在队列中
+            if file_path in self._queued_files:
+                self.logger.debug(f"文件已在队列中，跳过重复添加: {file_path}")
+                return True
+
+            # 立即标记为处理中并添加到队列追踪集合（在锁内完成）
+            self._processing_files.add(file_path)
+            self._queued_files.add(file_path)
+
+        # 检查文件是否完整且可访问（在锁外进行，避免阻塞其他线程）
         if not self._is_file_complete(file_path):
             self.logger.debug(f"文件未完成或被锁定，跳过处理: {file_path}")
+            # 清理状态
+            with self._queue_lock:
+                self._processing_files.discard(file_path)
+                self._queued_files.discard(file_path)
             # 如果有父监控器，可以将文件添加到重试队列
             if self._parent_monitor:
                 self._parent_monitor._pending_files.add(file_path)
             return False
-
-        # 标记为处理中
-        self._processing_files.add(file_path)
 
         if self._use_queue:
             # 放入队列异步处理
@@ -1116,14 +1190,27 @@ class VideoFileHandler:
             del self._failed_files[file_path]
             self.logger.info(f"强制处理: 从失败集合中移除 {file_path}")
 
+        # 使用锁保护去重检查
+        with self._queue_lock:
+            # 检查文件是否已在队列中，避免重复添加
+            if file_path in self._queued_files:
+                self.logger.info(f"强制处理: 文件已在队列中，跳过重复添加: {file_path}")
+                print(f"\n⚠️  文件已在队列中，跳过: {os.path.basename(file_path)}")
+                return True
+
+            # 标记为处理中并添加到队列追踪集合
+            self._processing_files.add(file_path)
+            self._queued_files.add(file_path)
+
         # 检查文件是否不支持
         if not self._is_supported_file(file_path):
+            # 清理状态
+            with self._queue_lock:
+                self._processing_files.discard(file_path)
+                self._queued_files.discard(file_path)
             # log_failure(self.logger, f"不支持的文件类型: {file_path}")
             # return False
             pass
-
-        # 标记为处理中
-        self._processing_files.add(file_path)
 
         if self._use_queue:
             # 放入队列异步处理
@@ -1282,6 +1369,76 @@ class VideoFileHandler:
                     self.logger.warning(f"尝试从下载器强制删除时出错: {e}")
 
         self.logger.debug(f"未能从下载器强制删除任务: {file_path}")
+
+    def _process_subtitle_file(self, subtitle_path: str) -> bool:
+        """
+        处理字幕文件：查找匹配的视频文件并重命名整理
+
+        Args:
+            subtitle_path: 字幕文件路径
+
+        Returns:
+            是否处理成功
+        """
+        if not self.subtitle_handler:
+            self.logger.warning("字幕处理器未初始化，跳过字幕文件处理")
+            return False
+
+        try:
+            print(f"\n🎬 发现字幕文件: {os.path.basename(subtitle_path)}")
+
+            # 解析字幕文件信息
+            subtitle_info = self.subtitle_handler.parse_subtitle_filename(os.path.basename(subtitle_path))
+            language = subtitle_info.get('language', 'Unknown')
+            subtitle_type = subtitle_info.get('type', 'Normal')
+
+            print(f"   语言: {language}")
+            print(f"   类型: {subtitle_type}")
+
+            # 查找匹配的视频文件
+            video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv')
+            video_path = self.subtitle_handler.find_matching_video(Path(subtitle_path), video_extensions)
+
+            if not video_path:
+                print(f"   ⚠️  未找到匹配的视频文件，跳过处理")
+                self.logger.warning(f"未找到匹配的视频文件: {subtitle_path}")
+                return False
+
+            print(f"   ✓ 找到匹配的视频文件: {os.path.basename(video_path)}")
+
+            # 生成新的字幕文件名
+            new_subtitle_name = self.subtitle_handler.generate_subtitle_name(
+                video_path.name, subtitle_info
+            )
+            print(f"   新字幕文件名: {new_subtitle_name}")
+
+            # 查找视频文件的输出目录（如果视频文件已经处理过）
+            # 这里我们暂时将字幕文件放在与视频文件相同的目录
+            video_dir = video_path.parent
+            new_subtitle_path = video_dir / new_subtitle_name
+
+            # 如果目标文件已存在，跳过
+            if new_subtitle_path.exists():
+                print(f"   ℹ️  目标字幕文件已存在，跳过")
+                self.logger.info(f"目标字幕文件已存在: {new_subtitle_path}")
+                return True
+
+            # 移动字幕文件
+            try:
+                import shutil
+                shutil.move(subtitle_path, new_subtitle_path)
+                print(f"   ✅ 字幕文件已移动并重命名")
+                self.logger.info(f"字幕文件已处理: {subtitle_path} -> {new_subtitle_path}")
+                return True
+            except Exception as e:
+                print(f"   ❌ 移动字幕文件失败: {e}")
+                self.logger.error(f"移动字幕文件失败: {subtitle_path} -> {new_subtitle_path}, 错误: {e}")
+                return False
+
+        except Exception as e:
+            print(f"   ❌ 处理字幕文件时出错: {e}")
+            self.logger.error(f"处理字幕文件时出错: {subtitle_path}, 错误: {e}")
+            return False
 
     def _release_file_lock_via_downloader(self, file_path: str) -> bool:
         """
