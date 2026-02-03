@@ -2127,7 +2127,7 @@ class VideoRenamer:
         return prepared.strip()
 
     def _search_with_language(
-        self, search_term: str, media_type_hint: str, year: Optional[str], language: str
+        self, search_term: str, media_type_hint: str, year: Optional[str], language: Optional[str]
     ) -> List[Dict]:
         """
         基于语言的搜索辅助方法
@@ -2136,7 +2136,7 @@ class VideoRenamer:
             search_term (str): 搜索词
             media_type_hint (str): 媒体类型提示
             year (Optional[str]): 年份
-            language (str): 搜索语言
+            language (Optional[str]): 搜索语言，如果为 None 则不限制语言，返回所有语言的结果
 
         Returns:
             List[Dict]: 搜索结果列表
@@ -2534,11 +2534,8 @@ class VideoRenamer:
                     general_results = self.tmdb_client.search_video_show(
                         prepared_search_term, search_year, language=primary_language
                     )
-                    if (
-                        isinstance(general_results, dict)
-                        and "results" in general_results
-                    ):
-                        primary_results = general_results["results"]
+                    if general_results:
+                        primary_results = general_results
                         logger.info(f"通用搜索返回 {len(primary_results)} 个结果")
 
                 # 检查是否有完全匹配
@@ -2570,14 +2567,14 @@ class VideoRenamer:
                             f"第一次搜索结果较少({len(all_results)}个)，进行跨语言搜索"
                         )
 
-                        # 直接使用跨语言搜索，不翻译
+                        # 跨语言搜索：不指定语言参数，让 TMDB 返回所有语言的结果
                         secondary_results = []
                         if media_type_hint:
                             secondary_results = self._search_with_language(
                                 prepared_search_term,
                                 media_type_hint,
                                 search_year,
-                                secondary_language,
+                                None,  # 不限制语言，获取所有语言的结果
                             )
                         elif media_type_hint is None:
                             # 媒体类型不确定，同时搜索电影和电视剧
@@ -2585,13 +2582,13 @@ class VideoRenamer:
                                 prepared_search_term,
                                 "tv",
                                 search_year,
-                                secondary_language,
+                                None,  # 不限制语言
                             )
                             movie_results = self._search_with_language(
                                 prepared_search_term,
                                 "movie",
                                 search_year,
-                                secondary_language,
+                                None,  # 不限制语言
                             )
                             secondary_results = tv_results + movie_results
 
@@ -2600,14 +2597,11 @@ class VideoRenamer:
                                 self.tmdb_client.search_video_show(
                                     prepared_search_term,
                                     search_year,
-                                    language=secondary_language,
+                                    language=None,  # 不限制语言
                                 )
                             )
-                            if (
-                                isinstance(general_secondary_results, dict)
-                                and "results" in general_secondary_results
-                            ):
-                                secondary_results = general_secondary_results["results"]
+                            if general_secondary_results:
+                                secondary_results = general_secondary_results
 
                         # 检查跨语言搜索结果
                         if secondary_results:

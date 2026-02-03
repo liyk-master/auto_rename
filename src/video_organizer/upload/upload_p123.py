@@ -247,8 +247,10 @@ class P123Uploader:
             # 确定目标父文件夹ID
             target_parent_id = self.root_parent_id
 
-            # 如果提供了显式的文件夹结构，优先使用
+            # 保存整理后的文件夹路径用于显示
+            folder_path = None
             if folder_structure and isinstance(folder_structure, list):
+                folder_path = "/".join(folder_structure)
                 print(f"创建/查找目录结构: {' -> '.join(folder_structure)}")
                 current_pid = self.root_parent_id
 
@@ -326,7 +328,7 @@ class P123Uploader:
                 # 发送 123FSLinkV2 格式到TG频道
                 if self.tg_bot_token and self.tg_channel_123fslink:
                     self.send_123fslinkv2_to_tg(
-                        file_path, target_filename, result, self.tg_channel_123fslink
+                        file_path, target_filename, result, self.tg_channel_123fslink, folder_path
                     )
 
                 return result
@@ -476,6 +478,7 @@ class P123Uploader:
         file_name: str,
         result: Dict[str, Any],
         tg_channel: str = "liyk002",
+        folder_path: Optional[str] = None,
     ) -> bool:
         """
         生成 123FSLinkV2 格式并发送到 Telegram 频道
@@ -485,6 +488,7 @@ class P123Uploader:
             file_name: 文件名
             result: 上传结果字典
             tg_channel: Telegram 频道 ID
+            folder_path: 整理后的文件夹路径（可选）
 
         Returns:
             是否发送成功
@@ -502,12 +506,12 @@ class P123Uploader:
             print(f"[WARNING] 无法生成 123FSLinkV2 格式")
             return False
 
-        message_text = (
-            f"📤 *123云盘上传完成*\n\n"
-            f"文件: `{file_name}`\n"
-            f"格式: `{link_v2}`\n\n"
-            f"TG频道: {tg_channel}"
-        )
+        # 构建消息文本，包含文件夹路径
+        message_text = f"📤 *123云盘上传完成*\n\n"
+        if folder_path:
+            message_text += f"路径: `{folder_path}`\n"
+        message_text += f"文件: `{file_name}`\n"
+        message_text += f"格式: `{link_v2}`\n"
 
         try:
             url = f"https://api.telegram.org/bot{self.tg_bot_token}/sendMessage"
@@ -531,26 +535,4 @@ class P123Uploader:
                 return False
         except Exception as e:
             print(f"[WARNING] 发送 123FSLinkV2 通知失败: {e}")
-            return False
-
-        link_v2 = self.generate_123fslinkv2(result)
-        if not link_v2:
-            return False
-
-        message_text = (
-            f"📤 *123云盘上传完成*\n\n"
-            f"文件: `{file_name}`\n"
-            f"格式: `{link_v2}`\n"
-        )
-
-        try:
-            url = f"https://api.telegram.org/bot{self.tg_bot_token}/sendMessage"
-            data = {
-                "chat_id": tg_channel,
-                "text": message_text,
-                "parse_mode": "Markdown",
-            }
-            response = requests.post(url, json=data, timeout=10)
-            return response.status_code == 200 and response.json().get("ok", False)
-        except Exception:
             return False

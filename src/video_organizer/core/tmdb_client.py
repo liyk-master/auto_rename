@@ -37,7 +37,7 @@ class TMDBClient:
         self,
         query: str,
         year: Optional[str] = None,
-        include_adult: Optional[bool] = False,
+        include_adult: Optional[bool] = True,
         language: Optional[str] = "zh-CN",
     ) -> List[Dict]:
         """
@@ -47,15 +47,33 @@ class TMDBClient:
         params = {
             "query": query,
             "include_adult": include_adult,
-            "language": language,
         }
+        # 只有当 language 不为 None 时才添加 language 参数
+        if language is not None:
+            params["language"] = language
         if year:
             # 同时添加两个年份参数，以支持电影和电视剧
             params["year"] = year
             params["first_air_date_year"] = year
 
         data = self._request_with_retry(url, params)
-        return data.get("results", []) if data else []
+
+        # 调试日志：打印返回数据的结构
+        logger.debug(f"search_video_show 返回的数据类型: {type(data)}")
+        if data:
+            logger.debug(f"search_video_show 返回的数据键: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+            if isinstance(data, dict):
+                results = data.get("results", [])
+                logger.debug(f"search_video_show results 数量: {len(results)}")
+                if results:
+                    logger.debug(f"search_video_show 第一个结果: {results[0].get('name') or results[0].get('title') if results else 'none'}")
+                return results
+            else:
+                logger.warning(f"search_video_show 返回的数据不是字典类型: {data}")
+                return []
+        else:
+            logger.warning(f"search_video_show 返回的数据为 None")
+            return []
 
     def get_media_show_details(
         self, show_id: int, media_type: str, language: Optional[str] = "zh-CN"
@@ -295,10 +313,13 @@ class TMDBClient:
         """专门搜索电视剧"""
         url = f"{self.BASE_URL}/search/tv"
         params = (
-            {"query": query, "page": page, "language": language}
+            {"query": query, "page": page}
             if not self.api_key.startswith("eyJ")
-            else {"query": query, "page": page, "language": language}
+            else {"query": query, "page": page}
         )
+        # 只有当 language 不为 None 时才添加 language 参数
+        if language is not None:
+            params["language"] = language
         if year:
             params["first_air_date_year"] = year
         result = self._request_with_retry(url, params)
@@ -318,10 +339,13 @@ class TMDBClient:
         """专门搜索电影"""
         url = f"{self.BASE_URL}/search/movie"
         params = (
-            {"query": query, "page": page, "language": language}
+            {"query": query, "page": page}
             if not self.api_key.startswith("eyJ")
-            else {"query": query, "page": page, "language": language}
+            else {"query": query, "page": page}
         )
+        # 只有当 language 不为 None 时才添加 language 参数
+        if language is not None:
+            params["language"] = language
         if year:
             params["year"] = year
         result = self._request_with_retry(url, params)
