@@ -89,8 +89,8 @@ class EmosClient:
         media_type = self._parse_media_type(meta.get('type'))
         
         # 提取季数和集数
-        season = meta.get('begin_season') or meta.get('total_season')
-        episode = meta.get('begin_episode') or meta.get('total_episode')
+        season = meta.get('begin_season')
+        episode = meta.get('begin_episode')
         
         # 构建标准化的媒体信息
         media_info = {
@@ -136,8 +136,6 @@ class EmosClient:
             return 'tv_show'
         elif '电影' in type_str or 'movie' in type_str:
             return 'movie'
-        elif '动漫' in type_str or '动画' in type_str or 'anime' in type_str:
-            return 'anime'
         else:
             return 'unknown'
     
