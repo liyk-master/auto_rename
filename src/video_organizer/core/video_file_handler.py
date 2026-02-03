@@ -11,6 +11,7 @@ from ..upload.upload_emos import RobustEmosVideoUploader
 
 from .renamer import VideoRenamer
 from .tmdb_client import TMDBClient
+from .emos_client import EmosClient
 from .subtitle_handler import SubtitleHandler
 from ..utils.logging_utils import get_logger, log_success, log_failure, log_exception
 
@@ -172,6 +173,22 @@ class VideoFileHandler:
         # 注册的下载器列表，用于清理任务
         self.downloaders = []
 
+        # 初始化 Emos 三方识别客户端
+        self.emos_recognition_client = None
+        emos_recognition_config = config.get("emos_recognition", {}) if config else {}
+        if emos_recognition_config.get("enabled", False):
+            try:
+                self.emos_recognition_client = EmosClient(
+                    api_url=emos_recognition_config.get(
+                        "api_url", "https://emos.prlo.de/api/recognize"
+                    ),
+                    timeout=int(emos_recognition_config.get("timeout", 30)),
+                    enabled=True,
+                )
+                self.logger.info("Emos 三方识别客户端初始化成功")
+            except Exception as e:
+                self.logger.error(f"初始化 Emos 三方识别客户端失败: {e}")
+
         # 启动上传队列处理线程
         self._start_upload_queue()
 
@@ -283,10 +300,13 @@ class VideoFileHandler:
         Returns:
             是否为视频文件
         """
-        subtitle_extensions = {'.srt', '.ass', '.ssa', '.sub', '.vtt'}
+        subtitle_extensions = {".srt", ".ass", ".ssa", ".sub", ".vtt"}
         try:
             file_ext = os.path.splitext(file_path)[1].lower()
-            return file_ext in self.supported_extensions and file_ext not in subtitle_extensions
+            return (
+                file_ext in self.supported_extensions
+                and file_ext not in subtitle_extensions
+            )
         except Exception as e:
             self.logger.error(f"检查文件类型时出错: {file_path}, 错误: {e}")
             return False
@@ -586,30 +606,82 @@ class VideoFileHandler:
         print(f"\n🔍 [线程#{worker_id}] 开始深入处理文件: {file_path}")
 
         try:
-            # 第一步：获取视频的tmdbid和media_type (使用本地 Renamer + TMDB Client)
-            print(f"正在本地分析文件元数据: {os.path.basename(file_path)}")
+            # 第一步：获取视频的tmdbid和media_type (使用 Emos 三方识别)
+            print(
+                f"正在使用 Emos 三方识别分析文件元数据: {os.path.basename(file_path)}"
+            )
 
-            # 使用 VideoRenamer 提取元数据 (包含 Regex 解析和 TMDB 搜索)
-            # 注意: 这里使用 extract_metadata 会自动调用 _enrich_with_tmdb
-            metadata = self.renamer.extract_metadata(file_path)
+            # 使用 EmosClient 进行三方识别
+            metadata = {}
+            emos_response = None
 
-            # 打印综合识别结果（类似 --comprehensive 模式）
-            print(f"✓ [线程#{worker_id}] 本地识别完成")
-            important_fields = [
-                "show_name",
-                "title",
-                "tmdb_id",
-                "media_type",
-                "season",
-                "episode",
-                "year",
-                "quality_tags",
-                "release_group",
-            ]
-            for field in important_fields:
-                value = metadata.get(field)
-                if value:
-                    print(f"  [{worker_id}] {field}: {value}")
+            if self.emos_recognition_client:
+                filename = os.path.basename(file_path)
+                emos_response = self.emos_recognition_client.recognize(filename)
+
+                if emos_response and self.emos_recognition_client.is_confident(
+                    emos_response
+                ):
+                    # 解析 Emos 返回的媒体信息
+                    media_info = self.emos_recognition_client.parse_media_info(
+                        emos_response
+                    )
+
+                    # 转换为标准 metadata 格式
+                    # TMDB ID 在 media_info 字段中，不是 meta_info
+                    tmdb_id_from_emos = emos_response.get("media_info", {}).get(
+                        "tmdb_id"
+                    )
+
+                    metadata = {
+                        "title": media_info.get("title"),
+                        "show_name": media_info.get("title"),
+                        "original_title": media_info.get("original_title"),
+                        "tmdb_id": tmdb_id_from_emos,
+                        "media_type": media_info.get("type"),
+                        "season": media_info.get("season"),
+                        "episode": media_info.get("episode"),
+                        "year": media_info.get("year"),
+                        "episode_title": media_info.get("episode_title"),
+                        "quality_tags": self._extract_quality_tags(filename),
+                        "release_group": media_info.get("resource_team"),
+                    }
+
+                    print(f"✓ [线程#{worker_id}] Emos 三方识别完成")
+                    print(f"  [{worker_id}] 标题: {metadata.get('title')}")
+                    print(f"  [{worker_id}] 类型: {metadata.get('media_type')}")
+                    print(f"  [{worker_id}] 季: {metadata.get('season')}")
+                    print(f"  [{worker_id}] 集: {metadata.get('episode')}")
+                    print(f"  [{worker_id}] 年份: {metadata.get('year')}")
+                else:
+                    print(
+                        f"⚠ [线程#{worker_id}] Emos 识别失败或结果不可信，回退到本地识别"
+                    )
+            else:
+                print(f"⚠ [线程#{worker_id}] Emos 识别客户端未启用，使用本地识别")
+
+            # 如果 Emos 识别失败，回退到本地 Renamer 识别
+            if not metadata:
+                print(f"正在本地分析文件元数据: {os.path.basename(file_path)}")
+                metadata = self.renamer.extract_metadata(file_path)
+
+                # 打印综合识别结果（类似 --comprehensive 模式）
+                print(f"✓ [线程#{worker_id}] 本地识别完成")
+                important_fields = [
+                    "show_name",
+                    "title",
+                    "tmdb_id",
+                    "media_type",
+                    "season",
+                    "episode",
+                    "year",
+                    "quality_tags",
+                    "release_group",
+                ]
+                for field in important_fields:
+                    value = metadata.get(field)
+                    if value:
+                        print(f"  [{worker_id}] {field}: {value}")
 
             # 提取所需信息
             tmdb_id = str(metadata.get("tmdb_id", ""))
@@ -680,7 +752,7 @@ class VideoFileHandler:
                 season_episode = ""
 
             # 输出获取到的信息
-            print(f"\n[线程#{worker_id}] 文件信息 (本地识别):")
+            print(f"\n[线程#{worker_id}] 文件信息:")
             print(f"  文件: {os.path.basename(file_path)}")
             print(f"  TMDB ID: {tmdb_id}")
             print(f"  媒体类型: {media_type}")
@@ -778,10 +850,14 @@ class VideoFileHandler:
                         #         f"[线程#{worker_id}] 使用顶层 item_id: {matched_item_id}"
                         #     )
 
-                    elif result2.get("video_type") == "movie" and result2.get("item_id"):
+                    elif result2.get("video_type") == "movie" and result2.get(
+                        "item_id"
+                    ):
                         matched_item_id = result2.get("item_id")
                         matched_item_type = result2.get("item_type")
-                        print(f"[线程#{worker_id}] 电影匹配成功！item_id: {matched_item_id}")
+                        print(
+                            f"[线程#{worker_id}] 电影匹配成功！item_id: {matched_item_id}"
+                        )
 
                 # if not matched_item_id:
                 #     print(f"✗ [线程#{worker_id}] 未找到匹配的item_id")
@@ -1388,16 +1464,20 @@ class VideoFileHandler:
             print(f"\n🎬 发现字幕文件: {os.path.basename(subtitle_path)}")
 
             # 解析字幕文件信息
-            subtitle_info = self.subtitle_handler.parse_subtitle_filename(os.path.basename(subtitle_path))
-            language = subtitle_info.get('language', 'Unknown')
-            subtitle_type = subtitle_info.get('type', 'Normal')
+            subtitle_info = self.subtitle_handler.parse_subtitle_filename(
+                os.path.basename(subtitle_path)
+            )
+            language = subtitle_info.get("language", "Unknown")
+            subtitle_type = subtitle_info.get("type", "Normal")
 
             print(f"   语言: {language}")
             print(f"   类型: {subtitle_type}")
 
             # 查找匹配的视频文件
-            video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv')
-            video_path = self.subtitle_handler.find_matching_video(Path(subtitle_path), video_extensions)
+            video_extensions = (".mp4", ".mkv", ".avi", ".mov", ".wmv")
+            video_path = self.subtitle_handler.find_matching_video(
+                Path(subtitle_path), video_extensions
+            )
 
             if not video_path:
                 print(f"   ⚠️  未找到匹配的视频文件，跳过处理")
@@ -1426,13 +1506,18 @@ class VideoFileHandler:
             # 移动字幕文件
             try:
                 import shutil
+
                 shutil.move(subtitle_path, new_subtitle_path)
                 print(f"   ✅ 字幕文件已移动并重命名")
-                self.logger.info(f"字幕文件已处理: {subtitle_path} -> {new_subtitle_path}")
+                self.logger.info(
+                    f"字幕文件已处理: {subtitle_path} -> {new_subtitle_path}"
+                )
                 return True
             except Exception as e:
                 print(f"   ❌ 移动字幕文件失败: {e}")
-                self.logger.error(f"移动字幕文件失败: {subtitle_path} -> {new_subtitle_path}, 错误: {e}")
+                self.logger.error(
+                    f"移动字幕文件失败: {subtitle_path} -> {new_subtitle_path}, 错误: {e}"
+                )
                 return False
 
         except Exception as e:
@@ -1480,6 +1565,75 @@ class VideoFileHandler:
                     self.logger.warning(f"尝试暂停种子时出错: {e}")
 
         return False
+
+    def _extract_quality_tags(self, filename: str) -> str:
+        """
+        从文件名提取质量标签（分辨率、编码等）
+
+        Args:
+            filename: 文件名
+
+        Returns:
+            质量标签字符串
+        """
+        import re
+
+        # 定义质量标签模式
+        quality_patterns = [
+            r"2160p|4K",  # 4K
+            r"1080p|FHD",  # 1080p
+            r"720p|HD",  # 720p
+            r"480p|SD",  # 480p
+            r"H\.264|x264",  # H.264 编码
+            r"H\.265|HEVC|x265",  # H.265 编码
+            r"AV1",  # AV1 编码
+            r"VP9",  # VP9 编码
+            r"Dolby(?!.*Vision)",  # Dolby 音频（不含 Dolby Vision）
+            r"Dolby.?Vision|DV",  # Dolby Vision
+            r"HDR10",  # HDR10
+            r"10bit|Hi10P",  # 10bit
+            r"8bit",  # 8bit
+        ]
+
+        tags = []
+        filename_upper = filename.upper()
+
+        for pattern in quality_patterns:
+            matches = re.findall(pattern, filename_upper, re.IGNORECASE)
+            if matches:
+                # 去重并添加到标签列表
+                for match in matches:
+                    match_upper = match.upper()
+                    if match_upper not in tags:
+                        tags.append(match_upper)
+
+        # 按照常见顺序排列标签
+        priority_order = [
+            "2160P",
+            "4K",
+            "1080P",
+            "720P",
+            "480P",
+            "H.265",
+            "HEVC",
+            "X265",
+            "H.264",
+            "X264",
+            "AV1",
+            "VP9",
+            "10BIT",
+            "8BIT",
+            "HDR10",
+            "DV",
+            "DOLBYVISION",
+            "DOLBY",
+        ]
+        sorted_tags = sorted(
+            tags,
+            key=lambda x: (priority_order.index(x) if x in priority_order else 999),
+        )
+
+        return " ".join(sorted_tags) if sorted_tags else ""
 
     def _cleanup_old_records(self):
         """清理旧的处理记录，防止内存溢出"""

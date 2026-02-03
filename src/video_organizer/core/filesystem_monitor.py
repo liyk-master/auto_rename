@@ -84,6 +84,7 @@ class FileSystemMonitor:
             ),
             telegram_config=self.config.get("telegram") if self.config else None,
             llm_config=self.config.get("llm_translation") if self.config else None,
+            config=self.config,  # 传递完整配置以启用 emos_recognition
         )
         self.event_handler._parent_monitor = self  # 设置父监控器引用
 
@@ -289,7 +290,10 @@ class FileSystemMonitor:
         try:
             # 递归扫描目录
             for file_path in self.directory_watch_dir.rglob("*"):
-                if file_path.is_file() and file_path.suffix.lower() in self.supported_extensions:
+                if (
+                    file_path.is_file()
+                    and file_path.suffix.lower() in self.supported_extensions
+                ):
                     file_path_str = str(file_path)
 
                     # 检查文件是否已处理
@@ -319,20 +323,24 @@ class FileSystemMonitor:
             return
 
         try:
-            logger.debug(f"开始清理空目录，共 {len(self._directory_processed_dirs)} 个目录待检查")
-            logger.debug(f"已成功整理的文件数: {len(self._directory_successfully_processed_files)}")
+            logger.debug(
+                f"开始清理空目录，共 {len(self._directory_processed_dirs)} 个目录待检查"
+            )
+            logger.debug(
+                f"已成功整理的文件数: {len(self._directory_successfully_processed_files)}"
+            )
 
             # 按照深度从深到浅排序，确保先删除子目录
             sorted_dirs = sorted(
                 self._directory_processed_dirs,
                 key=lambda x: x.count(os.path.sep),
-                reverse=True
+                reverse=True,
             )
 
             removed_count = 0
             for dir_path_str in sorted_dirs:
                 dir_path = Path(dir_path_str)
-                
+
                 # 检查目录是否存在
                 if not dir_path.exists() or not dir_path.is_dir():
                     logger.debug(f"目录不存在或不是目录，跳过: {dir_path}")
@@ -345,13 +353,19 @@ class FileSystemMonitor:
                     video_files_in_dir = []
 
                     for file_path in dir_path.rglob("*"):
-                        if file_path.is_file() and file_path.suffix.lower() in self.supported_extensions:
+                        if (
+                            file_path.is_file()
+                            and file_path.suffix.lower() in self.supported_extensions
+                        ):
                             has_video_files = True
                             file_path_str = str(file_path)
                             video_files_in_dir.append(file_path_str)
-                            
+
                             # 检查文件是否在成功整理的列表中
-                            if file_path_str not in self._directory_successfully_processed_files:
+                            if (
+                                file_path_str
+                                not in self._directory_successfully_processed_files
+                            ):
                                 all_files_processed = False
                                 logger.debug(f"目录中仍有未处理的文件: {file_path_str}")
 
@@ -366,7 +380,9 @@ class FileSystemMonitor:
                     # 3. 如果目录下没有视频文件了，并且目录为空（没有其他文件），则删除
 
                     # 检查是否是监控目录本身
-                    is_watch_dir = dir_path.resolve() == self.directory_watch_dir.resolve()
+                    is_watch_dir = (
+                        dir_path.resolve() == self.directory_watch_dir.resolve()
+                    )
                     if is_watch_dir:
                         logger.debug(f"是监控目录本身，不删除: {dir_path}")
                         continue
@@ -375,20 +391,29 @@ class FileSystemMonitor:
                         # 目录为空
                         if len(video_files_in_dir) > 0 and not all_files_processed:
                             # 目录下还有未处理的视频文件，不能删除
-                            logger.debug(f"目录下仍有未处理的视频文件，跳过: {dir_path}")
+                            logger.debug(
+                                f"目录下仍有未处理的视频文件，跳过: {dir_path}"
+                            )
                         else:
                             # 目录为空，且没有未处理的视频文件（或者根本没有视频文件了），可以删除
-                            logger.info(f"目录为空且所有文件已处理，删除目录: {dir_path}")
+                            logger.info(
+                                f"目录为空且所有文件已处理，删除目录: {dir_path}"
+                            )
                             dir_path.rmdir()
                             removed_count += 1
-                            
+
                             # 递归删除父目录
                             parent_dir = dir_path.parent
                             watch_dir_resolved = self.directory_watch_dir.resolve()
-                            
-                            while parent_dir != watch_dir_resolved and parent_dir != parent_dir.parent:
+
+                            while (
+                                parent_dir != watch_dir_resolved
+                                and parent_dir != parent_dir.parent
+                            ):
                                 # 检查父目录是否存在且为空
-                                if parent_dir.exists() and not any(parent_dir.iterdir()):
+                                if parent_dir.exists() and not any(
+                                    parent_dir.iterdir()
+                                ):
                                     logger.info(f"父目录也为空，删除: {parent_dir}")
                                     parent_dir.rmdir()
                                     removed_count += 1
@@ -401,12 +426,18 @@ class FileSystemMonitor:
                         if len(video_files_in_dir) > 0:
                             # 目录下还有视频文件
                             if all_files_processed:
-                                logger.debug(f"目录下所有视频文件已处理，但目录仍有其他文件，跳过: {dir_path}")
+                                logger.debug(
+                                    f"目录下所有视频文件已处理，但目录仍有其他文件，跳过: {dir_path}"
+                                )
                             else:
-                                logger.debug(f"目录中仍有未处理的视频文件，跳过: {dir_path}")
+                                logger.debug(
+                                    f"目录中仍有未处理的视频文件，跳过: {dir_path}"
+                                )
                         else:
                             # 目录下没有视频文件，但有其他文件
-                            logger.debug(f"目录下没有视频文件但有其他文件，跳过: {dir_path}")
+                            logger.debug(
+                                f"目录下没有视频文件但有其他文件，跳过: {dir_path}"
+                            )
 
                 except Exception as e:
                     logger.warning(f"检查目录失败: {dir_path}, 错误: {e}")
@@ -424,7 +455,9 @@ class FileSystemMonitor:
         except Exception as e:
             logger.error(f"清理空目录时发生错误: {e}")
 
-    def _is_file_stable(self, file_path: Path, check_interval: float = 1.0, max_checks: int = 3) -> bool:
+    def _is_file_stable(
+        self, file_path: Path, check_interval: float = 1.0, max_checks: int = 3
+    ) -> bool:
         """
         检查文件是否稳定（文件大小不再变化）
 
@@ -476,7 +509,9 @@ class FileSystemMonitor:
 
             # 生成新路径
             new_path = self.event_handler.renamer.generate_new_path(
-                metadata, original_path=Path(file_path), output_dir=self.directory_output_dir
+                metadata,
+                original_path=Path(file_path),
+                output_dir=self.directory_output_dir,
             )
 
             logger.info(f"目标路径: {new_path}")
@@ -524,9 +559,9 @@ class FileSystemMonitor:
             # 确定元数据文件的保存位置
             # 对于电视剧：保存在剧集目录（Season XX）中
             # 对于电影：保存在电影目录中
-            media_type = metadata.get('media_type', 'tv')
-            
-            if media_type == 'tv':
+            media_type = metadata.get("media_type", "tv")
+
+            if media_type == "tv":
                 # 电视剧：元数据保存在 Season 目录中
                 season_dir = file_path.parent
                 nfo_path = season_dir / "tvshow.nfo"
@@ -548,7 +583,9 @@ class FileSystemMonitor:
                 self._save_json_metadata(json_path, metadata)
 
             # 下载图片（海报和背景图）- 只下载一次
-            self._download_images_for_series(movie_dir if media_type == 'movie' else season_dir, metadata)
+            self._download_images_for_series(
+                movie_dir if media_type == "movie" else season_dir, metadata
+            )
 
             logger.info(f"元数据刮削完成: {file_path.parent}")
 
@@ -566,112 +603,113 @@ class FileSystemMonitor:
 
         # 构建 NFO 内容
         nfo_content = '<?xml version="1.0" encoding="UTF-8"?>\n'
-        nfo_content += '<movie>\n' if metadata.get('media_type') == 'movie' else '<tvshow>\n'
+        nfo_content += (
+            "<movie>\n" if metadata.get("media_type") == "movie" else "<tvshow>\n"
+        )
 
         # 添加标题
-        title = metadata.get('title') or metadata.get('show_name', '')
-        nfo_content += f'  <title>{title}</title>\n'
+        title = metadata.get("title") or metadata.get("show_name", "")
+        nfo_content += f"  <title>{title}</title>\n"
 
         # 添加原始标题
-        original_title = metadata.get('original_title') or metadata.get('original_name', '')
+        original_title = metadata.get("original_title") or metadata.get(
+            "original_name", ""
+        )
         if original_title and original_title != title:
-            nfo_content += f'  <originaltitle>{original_title}</originaltitle>\n'
+            nfo_content += f"  <originaltitle>{original_title}</originaltitle>\n"
 
         # 添加年份
-        year = metadata.get('year', '')
+        year = metadata.get("year", "")
         if year:
-            nfo_content += f'  <year>{year}</year>\n'
-            nfo_content += f'  <premiered>{year}-01-01</premiered>\n'
+            nfo_content += f"  <year>{year}</year>\n"
+            nfo_content += f"  <premiered>{year}-01-01</premiered>\n"
 
         # 添加评分
-        rating = metadata.get('rating', 0)
+        rating = metadata.get("rating", 0)
         if rating:
-            nfo_content += f'  <rating>{rating}</rating>\n'
+            nfo_content += f"  <rating>{rating}</rating>\n"
 
         # 添加概览
-        overview = metadata.get('overview', '')
+        overview = metadata.get("overview", "")
         if overview:
-            nfo_content += f'  <plot>{overview}</plot>\n'
+            nfo_content += f"  <plot>{overview}</plot>\n"
 
         # 添加类型
-        genres = metadata.get('genres', [])
+        genres = metadata.get("genres", [])
         for genre in genres:
-            nfo_content += f'  <genre>{genre}</genre>\n'
+            nfo_content += f"  <genre>{genre}</genre>\n"
 
         # 添加 TMDB ID
-        tmdb_id = metadata.get('tmdb_id', '')
+        tmdb_id = metadata.get("tmdb_id", "")
         if tmdb_id:
-            nfo_content += f'  <tmdbid>{tmdb_id}</tmdbid>\n'
+            nfo_content += f"  <tmdbid>{tmdb_id}</tmdbid>\n"
 
         # 添加海报和背景图路径
-        poster_path = metadata.get('poster_path')
+        poster_path = metadata.get("poster_path")
         if poster_path:
             nfo_content += f'  <thumb aspect="poster">poster.jpg</thumb>\n'
 
-        backdrop_path = metadata.get('backdrop_path')
+        backdrop_path = metadata.get("backdrop_path")
         if backdrop_path:
-            nfo_content += f'  <fanart><thumb>backdrop.jpg</thumb></fanart>\n'
+            nfo_content += f"  <fanart><thumb>backdrop.jpg</thumb></fanart>\n"
 
         # 添加演员
-        cast = metadata.get('cast', [])
+        cast = metadata.get("cast", [])
         for actor in cast:
-            nfo_content += f'  <actor>\n'
+            nfo_content += f"  <actor>\n"
             nfo_content += f'    <name>{actor.get("name", "")}</name>\n'
             nfo_content += f'    <role>{actor.get("character", "")}</role>\n'
-            nfo_content += f'  </actor>\n'
+            nfo_content += f"  </actor>\n"
 
         # 添加季集信息（仅电视剧）
-        if metadata.get('media_type') == 'tv':
-            season = metadata.get('season', 1)
-            episode = metadata.get('episode', 1)
-            episode_name = metadata.get('episode_name', '')
-            nfo_content += f'  <season>{season}</season>\n'
-            nfo_content += f'  <episode>{episode}</episode>\n'
+        if metadata.get("media_type") == "tv":
+            season = metadata.get("season", 1)
+            episode = metadata.get("episode", 1)
+            episode_name = metadata.get("episode_name", "")
+            nfo_content += f"  <season>{season}</season>\n"
+            nfo_content += f"  <episode>{episode}</episode>\n"
             if episode_name:
-                nfo_content += f'  <episodetitle>{episode_name}</episodetitle>\n'
+                nfo_content += f"  <episodetitle>{episode_name}</episodetitle>\n"
 
             # 添加剧集缩略图
-            still_path = metadata.get('still_path')
+            still_path = metadata.get("still_path")
             if still_path:
-                nfo_content += f'  <thumb>thumb.jpg</thumb>\n'
+                nfo_content += f"  <thumb>thumb.jpg</thumb>\n"
 
-        nfo_content += '</movie>\n' if metadata.get('media_type') == 'movie' else '</tvshow>\n'
+        nfo_content += (
+            "</movie>\n" if metadata.get("media_type") == "movie" else "</tvshow>\n"
+        )
 
         # 保存 NFO 文件
-        with open(nfo_path, 'w', encoding='utf-8') as f:
+        with open(nfo_path, "w", encoding="utf-8") as f:
             f.write(nfo_content)
 
         logger.info(f"NFO 元数据已保存: {nfo_path}")
 
     def _save_json_metadata(self, json_path: Path, metadata: dict):
+        """
 
-            """
+        保存 JSON 格式的元数据
 
-            保存 JSON 格式的元数据
 
-    
 
-            Args:
+        Args:
 
-                json_path: JSON 文件保存路径
+            json_path: JSON 文件保存路径
 
-                metadata: 元数据字典
+            metadata: 元数据字典
 
-            """
+        """
 
-            import json
+        import json
 
-    
+        # 保存 JSON 文件
 
-            # 保存 JSON 文件
+        with open(json_path, "w", encoding="utf-8") as f:
 
-            with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
 
-                json.dump(metadata, f, ensure_ascii=False, indent=2)
-
-    
-
-            logger.info(f"JSON 元数据已保存: {json_path}")
+        logger.info(f"JSON 元数据已保存: {json_path}")
 
     def _download_images_for_series(self, series_dir: Path, metadata: dict):
         """
@@ -690,13 +728,13 @@ class FileSystemMonitor:
             backdrop_size = "w1280"  # 背景图尺寸
 
             # 下载海报
-            poster_path = metadata.get('poster_path')
+            poster_path = metadata.get("poster_path")
             if poster_path:
                 poster_url = f"{base_url}/{poster_size}{poster_path}"
                 self._download_image(poster_url, series_dir / "poster.jpg")
 
             # 下载背景图
-            backdrop_path = metadata.get('backdrop_path')
+            backdrop_path = metadata.get("backdrop_path")
             if backdrop_path:
                 backdrop_url = f"{base_url}/{backdrop_size}{backdrop_path}"
                 self._download_image(backdrop_url, series_dir / "fanart.jpg")
@@ -727,7 +765,7 @@ class FileSystemMonitor:
 
             # 保存图片
             save_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(save_path, 'wb') as f:
+            with open(save_path, "wb") as f:
                 f.write(response.content)
 
             logger.info(f"图片已下载: {save_path}")
@@ -746,7 +784,9 @@ class FileSystemMonitor:
         # 启动目录监控线程
         directory_monitor_thread = None
         if self.directory_monitor_enabled:
-            directory_monitor_thread = threading.Thread(target=self._directory_monitor_loop)
+            directory_monitor_thread = threading.Thread(
+                target=self._directory_monitor_loop
+            )
             directory_monitor_thread.daemon = True
             directory_monitor_thread.start()
             logger.info("目录监控线程已启动")

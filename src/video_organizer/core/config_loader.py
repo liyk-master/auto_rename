@@ -19,6 +19,11 @@ DEFAULT_CONFIG = {
         "path_mappings": {},  # 用于将下载器返回的路径映射到主机实际路径，例如："/downloads": "F:/Downloads"
     },
     "emos": {"auth_token": "", "base_url": "https://emos.lol"},
+    "emos_recognition": {
+        "enabled": False,
+        "api_url": "https://emos.prlo.de/api/recognize",
+        "timeout": 30,
+    },
     "p123": {
         "token": "",
         "parent_id": 0,
@@ -87,9 +92,13 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
             base_dir = os.path.dirname(sys.executable)
             config_path = os.path.join(base_dir, "config.ini")
         else:
-            # 开发环境：使用项目内配置文件路径
+            # 开发环境：使用项目根目录的配置文件路径
+            # 从 src/video_organizer/core/config_loader.py 向上四级到达项目根目录
             config_path = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)), "config.ini"
+                os.path.dirname(
+                    os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                ),
+                "config.ini",
             )
 
     # 检查配置文件是否存在
@@ -177,9 +186,6 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
                         # 特殊处理字典类型，用于path_mappings配置
                         if key == "path_mappings":
                             mappings_str = config[section].get(key, "")
-                            print(
-                                f"DEBUG: Config Loader - path_mappings string: '{mappings_str}'"
-                            )
                             mappings = {}
                             if mappings_str:
                                 for mapping in mappings_str.split(","):
@@ -190,11 +196,45 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
                                             mappings[parts[0].strip()] = parts[
                                                 1
                                             ].strip()
-                                            print(
-                                                f"DEBUG: Parsed mapping: {parts[0].strip()} -> {parts[1].strip()}"
-                                            )
                             config_dict[section][key] = mappings
-                            print(f"DEBUG: Final mappings dict: {mappings}")
+                        else:
+                            config_dict[section][key] = config[section].get(key)
+                    else:
+                        config_dict[section][key] = config[section].get(key)
+                else:
+                    # 对于未知配置项，保留为字符串
+                    config_dict[section][key] = config[section].get(key)
+
+        # 如果配置中有该节
+        if section in config:
+            for key, value in config[section].items():
+                # 根据默认值类型转换
+                if key in default_options:
+                    if isinstance(default_options[key], bool):
+                        config_dict[section][key] = config[section].getboolean(key)
+                    elif isinstance(default_options[key], int):
+                        config_dict[section][key] = config[section].getint(key)
+                    elif isinstance(default_options[key], list):
+                        config_dict[section][key] = [
+                            item.strip()
+                            for item in config[section].get(key, "").split(",")
+                            if item.strip()
+                        ]
+                    elif isinstance(default_options[key], dict):
+                        # 特殊处理字典类型，用于path_mappings配置
+                        if key == "path_mappings":
+                            mappings_str = config[section].get(key, "")
+                            mappings = {}
+                            if mappings_str:
+                                for mapping in mappings_str.split(","):
+                                    mapping = mapping.strip()
+                                    if mapping:
+                                        parts = mapping.split(":", 1)
+                                        if len(parts) == 2:
+                                            mappings[parts[0].strip()] = parts[
+                                                1
+                                            ].strip()
+                            config_dict[section][key] = mappings
                         else:
                             config_dict[section][key] = config[section].get(key)
                     else:
