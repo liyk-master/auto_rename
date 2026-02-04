@@ -1296,6 +1296,9 @@ class VideoRenamer:
                 show_name = re.sub(r"^[A-Z]{2,6}(?:[._]|\s)\s*", "", show_name)
                 # 2. 移除括号内的年份 (2022) - 无论位置如何
                 show_name = re.sub(r"\s*\(\d{4}(?:-\d{4})?\)\s*", " ", show_name)
+                # 2.5 移除包含质量标记的圆括号内容（如 (1080p NF WEB-DL x265 10bit Silence)）
+                quality_keywords = r"1080p|720p|480p|360p|2160p|4k|uhd|fhd|bluray|bdrip|web-dl|webrip|dvdrip|bd|dvd|web|x264|x265|h264|h265|hevc|dts|ac3|ddp|aac|dts-hd|truehd|atmos|flac|repack|proper|internal|5\.1|7\.1|10bit|NF|Netflix|Disney\+|HBO|Amazon|Prime|Apple\+"
+                show_name = re.sub(r"\s*\([^)]*(" + quality_keywords + r")[^)]*\)", "", show_name, flags=re.IGNORECASE)
                 # 3. 移除方括号内的标签，如 [国漫]、[中文配音] 等
                 # 先移除特定的常见标签
                 common_tags = [
@@ -1458,6 +1461,9 @@ class VideoRenamer:
                         show_name = re.sub(
                             r"\s*\(\d{4}(?:-\d{4})?\)\s*", " ", show_name
                         )
+                        # 移除包含质量标记的圆括号内容（如 (1080p NF WEB-DL x265 10bit Silence)）
+                        quality_keywords = r"1080p|720p|480p|360p|2160p|4k|uhd|fhd|bluray|bdrip|web-dl|webrip|dvdrip|bd|dvd|web|x264|x265|h264|h265|hevc|dts|ac3|ddp|aac|dts-hd|truehd|atmos|flac|repack|proper|internal|5\.1|7\.1|10bit|NF|Netflix|Disney\+|HBO|Amazon|Prime|Apple\+"
+                        show_name = re.sub(r"\s*\([^)]*(" + quality_keywords + r")[^)]*\)", "", show_name, flags=re.IGNORECASE)
                         # 移除末尾的空格和点
                         show_name = show_name.strip().rstrip(".")
                         # 移除多余的空格
@@ -1975,9 +1981,15 @@ class VideoRenamer:
         cleaned = re.sub(r"\-?[A-Z]{2,6}$", "", cleaned)
 
         # 4. 移除质量标签和年份
-        cleaned = re.sub(r"[\[\(]?\d{4}[\]\)]?", "", cleaned)
+        cleaned = re.sub(r"[\[\(]\d{4}[\]\)]", "", cleaned)
         cleaned = re.sub(r"[.\-]\d{4}[.\-]", "", cleaned)
         cleaned = re.sub(r"\s+\d{4}\s*$", "", cleaned)
+
+        # 4.5 移除包含质量标记的圆括号内容（如 (1080p NF WEB-DL x265 10bit Silence)）
+        # 质量标记关键词
+        quality_keywords = r"1080p|720p|480p|360p|2160p|4k|uhd|fhd|bluray|bdrip|web-dl|webrip|dvdrip|bd|dvd|web|x264|x265|h264|h265|hevc|dts|ac3|ddp|aac|dts-hd|truehd|atmos|flac|repack|proper|internal|5\.1|7\.1|10bit|NF|Netflix|Disney\+|HBO|Amazon|Prime|Apple\+"
+        # 移除包含质量标记的圆括号内容
+        cleaned = re.sub(r"\([^)]*(" + quality_keywords + r")[^)]*\)", "", cleaned, flags=re.IGNORECASE)
 
         # 移除质量标签（按点号或横杠分隔）
         quality_tags = [
@@ -2514,20 +2526,40 @@ class VideoRenamer:
                     if primary_results:
                         logger.info(f"专用类型搜索返回 {len(primary_results)} 个结果")
                 elif media_type_hint is None:
-                    # 媒体类型不确定，同时搜索电影和电视剧
-                    logger.info("媒体类型不确定，同时搜索电影和电视剧...")
-                    tv_results = self._search_with_language(
-                        prepared_search_term, "tv", search_year, primary_language
+                    # 媒体类型不确定，使用 /search/multi 接口一次性搜索所有类型
+                    logger.info("媒体类型不确定，使用 /search/multi 接口搜索所有类型...")
+                    multi_results = self.tmdb_client.search_multi(
+                        prepared_search_term,
+                        search_year,
+                        language=primary_language
                     )
-                    movie_results = self._search_with_language(
-                        prepared_search_term, "movie", search_year, primary_language
-                    )
-
-                    # 合并结果，优先使用电视剧结果
-                    primary_results = tv_results + movie_results
-                    logger.info(
-                        f"TV搜索返回 {len(tv_results)} 个结果, Movie搜索返回 {len(movie_results)} 个结果, 合并后 {len(primary_results)} 个结果"
-                    )
+                    if multi_results:
+                        primary_results = multi_results
+                        logger.info(f"Multi搜索返回 {len(primary_results)} 个结果")
+                        # 打印所有结果的详细信息
+                        for i, result in enumerate(primary_results):
+                            result_type = result.get("media_type", "unknown")
+                            result_title = result.get("name") or result.get("title", "N/A")
+                            result_year = ""
+                            if result_type == "tv":
+                                result_year = result.get("first_air_date", "")[:4] if result.get("first_air_date") else ""
+                            elif result_type == "movie":
+                                result_year = result.get("release_date", "")[:4] if result.get("release_date") else ""
+                            result_popularity = result.get("popularity", 0)
+                            logger.info(f"  结果 {i+1}: {result_title} ({result_type}, {result_year}, popularity={result_popularity})")
+                    else:
+                        # 如果 multi 搜索失败，降级为分别搜索
+                        logger.info("Multi搜索失败，降级为分别搜索电影和电视剧...")
+                        tv_results = self._search_with_language(
+                            prepared_search_term, "tv", search_year, primary_language
+                        )
+                        movie_results = self._search_with_language(
+                            prepared_search_term, "movie", search_year, primary_language
+                        )
+                        primary_results = tv_results + movie_results
+                        logger.info(
+                            f"TV搜索返回 {len(tv_results)} 个结果, Movie搜索返回 {len(movie_results)} 个结果, 合并后 {len(primary_results)} 个结果"
+                        )
 
                 # 如果专用搜索没有结果，尝试通用搜索
                 if not primary_results:
@@ -2681,118 +2713,91 @@ class VideoRenamer:
             # 寻找最匹配的结果
             best_match = None
 
-            # 1. 优先匹配年份和媒体类型
-            for result in results:
-                # 尝试匹配年份
-                date_field = (
-                    "first_air_date"
-                    if result.get("media_type") == "tv"
-                    else "release_date"
-                )
-                if date_field in result and result[date_field]:
-                    result_year = result[date_field].split("-")[0]
-                    if result_year == metadata.get("year"):
-                        best_match = result
-                        logger.info(
-                            f"找到年份匹配的结果: {result.get('name', result.get('title'))} ({result_year})"
-                        )
-                        break
-
-            # 2. 无论是否有媒体类型提示，都使用标题相似度和流行度排序选择最佳结果
-            if not best_match:
-                # 优先考虑媒体类型匹配的结果
-                if media_type_hint:
-                    # 筛选出匹配媒体类型的结果
-                    type_matched_results = [
-                        result
-                        for result in results
-                        if result.get("media_type") == media_type_hint
-                    ]
-                    if type_matched_results:
-                        target_results = type_matched_results
-                    else:
-                        # 如果没有匹配媒体类型的结果，使用所有结果
-                        target_results = results
+            # 使用标题相似度和流行度排序选择最佳结果
+            # 优先考虑媒体类型匹配的结果
+            if media_type_hint:
+                # 筛选出匹配媒体类型的结果
+                type_matched_results = [
+                    result
+                    for result in results
+                    if result.get("media_type") == media_type_hint
+                ]
+                if type_matched_results:
+                    target_results = type_matched_results
                 else:
-                    # 没有媒体类型提示，使用所有结果
+                    # 如果没有匹配媒体类型的结果，使用所有结果
                     target_results = results
+            else:
+                # 没有媒体类型提示，使用所有结果
+                target_results = results
 
-                # 计算标题相似度并按相似度和流行度排序
-                search_term_lower = search_term.lower()
+            # 计算标题相似度并按相似度和流行度排序
+            search_term_lower = search_term.lower()
 
-                def calculate_score(result):
-                    title = result.get("name", result.get("title", "")).lower()
-                    original_name = result.get("original_name", "").lower()
+            def calculate_score(result):
+                title = result.get("name", result.get("title", "")).lower()
+                original_name = result.get("original_name", "").lower()
 
-                    # 标准化搜索词和标题，移除所有非字母数字和中文的字符（包括中文点(·)）
-                    normalized_search = re.sub(
-                        r"[^\w\s\u4e00-\u9fff]", "", search_term_lower
-                    )
-                    normalized_search = re.sub(r"\s+", "", normalized_search)
-
-                    normalized_title = re.sub(r"[^\w\s\u4e00-\u9fff]", "", title)
-                    normalized_title = re.sub(r"\s+", "", normalized_title)
-
-                    normalized_original = re.sub(
-                        r"[^\w\s\u4e00-\u9fff]", "", original_name
-                    )
-                    normalized_original = re.sub(r"\s+", "", normalized_original)
-
-                    # 定义通用数字字符集（用于模糊匹配）
-                    # 包括：阿拉伯数字(0-9)、中文数字(一二三四五六七八九十)、罗马数字(Ⅰ-Ⅹ, ⅰ-ⅹ)
-                    digit_pattern = (
-                        "[0-9一二三四五六七八九十ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅰⅱⅲⅳⅵⅶⅷⅸⅹⅺⅻⅼⅽⅾⅿ]+"
-                    )
-                    # 进一步标准化：移除所有数字（用于模糊匹配）
-                    fuzzy_search = re.sub(digit_pattern, "", normalized_search)
-                    fuzzy_title = re.sub(digit_pattern, "", normalized_title)
-                    fuzzy_original = re.sub(digit_pattern, "", normalized_original)
-
-                    score = 0
-                    # 1. 模糊匹配：移除所有数字后，搜索词和标题完全匹配
-                    if fuzzy_search == fuzzy_title or fuzzy_search == fuzzy_original:
-                        score = 12000
-                    # 2. 搜索词是标题的前缀（标题更长，更精确）
-                    elif (
-                        normalized_title.startswith(normalized_search)
-                        and len(normalized_title) > len(normalized_search)
-                    ) or (
-                        normalized_original.startswith(normalized_search)
-                        and len(normalized_original) > len(normalized_search)
-                    ):
-                        score = 15000
-                    # 3. 完全匹配得分极高（在标准化后的字符串上）
-                    elif (
-                        normalized_search == normalized_title
-                        or normalized_search == normalized_original
-                    ):
-                        score = 10000
-                    # 4. 搜索词是标题的显著子集（在标准化后的字符串上）
-                    elif (
-                        normalized_search in normalized_title
-                        and len(normalized_search) > 1
-                    ):
-                        score = 1000
-                    # 5. 标题是搜索词的子集（在标准化后的字符串上）
-                    elif (
-                        normalized_title in normalized_search
-                        and len(normalized_title) > 1
-                    ):
-                        score = 500
-
-                    total_score = score + result.get("popularity", 0)
-                    return total_score
-
-                # 按得分排序
-                sorted_results = sorted(
-                    target_results, key=calculate_score, reverse=True
+                # 标准化搜索词和标题，移除所有非字母数字和中文的字符（包括中文点(·)）
+                normalized_search = re.sub(
+                    r"[^\w\s\u4e00-\u9fff]", "", search_term_lower
                 )
-                best_match = sorted_results[0]
-                logger.info(
-                    f"找到最匹配的结果: {best_match.get('name', best_match.get('title'))}"
+                normalized_search = re.sub(r"\s+", "", normalized_search)
+
+                normalized_title = re.sub(r"[^\w\s\u4e00-\u9fff]", "", title)
+                normalized_title = re.sub(r"\s+", "", normalized_title)
+
+                normalized_original = re.sub(
+                    r"[^\w\s\u4e00-\u9fff]", "", original_name
                 )
-                # 保存 genre_ids 用于判断动画类型（搜索结果中有，详情API中文版可能丢失动画标签）
-                metadata["genre_ids"] = best_match.get("genre_ids", [])
+                normalized_original = re.sub(r"\s+", "", normalized_original)
+
+                # 定义通用数字字符集（用于模糊匹配）
+                # 包括：阿拉伯数字(0-9)、中文数字(一二三四五六七八九十)、罗马数字(Ⅰ-Ⅹ, ⅰ-ⅹ)
+                digit_pattern = (
+                    "[0-9一二三四五六七八九十ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅰⅱⅲⅳⅵⅶⅷⅸⅹⅺⅻⅼⅽⅾⅿ]+"
+                )
+                # 进一步标准化：移除所有数字（用于模糊匹配）
+                fuzzy_search = re.sub(digit_pattern, "", normalized_search)
+                fuzzy_title = re.sub(digit_pattern, "", normalized_title)
+                fuzzy_original = re.sub(digit_pattern, "", normalized_original)
+
+                score = 0
+                # 1. 完全匹配得分最高（在标准化后的字符串上）
+                if (
+                    normalized_search == normalized_title
+                    or normalized_search == normalized_original
+                ):
+                    score = 20000
+                # 2. 模糊匹配：移除所有数字后，搜索词和标题完全匹配
+                elif fuzzy_search == fuzzy_title or fuzzy_search == fuzzy_original:
+                    score = 15000
+                # 3. 搜索词是标题的显著子集（在标准化后的字符串上）
+                elif (
+                    normalized_search in normalized_title
+                    and len(normalized_search) > 1
+                ):
+                    score = 1000
+                # 4. 标题是搜索词的子集（在标准化后的字符串上）
+                elif (
+                    normalized_title in normalized_search
+                    and len(normalized_title) > 1
+                ):
+                    score = 500
+
+                total_score = score + result.get("popularity", 0)
+                return total_score
+
+            # 按得分排序
+            sorted_results = sorted(
+                target_results, key=calculate_score, reverse=True
+            )
+            best_match = sorted_results[0]
+            logger.info(
+                f"找到最匹配的结果: {best_match.get('name', best_match.get('title'))} (类型: {best_match.get('media_type')}, 得分: {calculate_score(best_match)})"
+            )
+            # 保存 genre_ids 用于判断动画类型（搜索结果中有，详情API中文版可能丢失动画标签）
+            metadata["genre_ids"] = best_match.get("genre_ids", [])
 
             # 3. 确保结果有效
             if not best_match:
@@ -3116,11 +3121,12 @@ class VideoRenamer:
         elif media_type == "tv":
             base_category = "TV Shows"
             # 电视剧子分类
-            if any(genre in genre_names for genre in ["documentary", "纪录片"]):
+            # 综艺和纪录片不分地区，直接归类
+            if any(genre in genre_names for genre in ["documentary", "纪录片", "纪录"]):
                 sub_category = "纪录片"
             elif any(
                 genre in genre_names
-                for genre in ["reality", "variety", "综艺", "game show"]
+                for genre in ["reality", "variety", "综艺", "game show", "真人秀"]
             ):
                 sub_category = "综艺"
             elif any(
@@ -3143,7 +3149,7 @@ class VideoRenamer:
                 elif original_language in ["en", "en-us", "en-gb"] or any(
                     country in english_countries for country in origin_countries
                 ):
-                    sub_category = "欧美动漫"                    
+                    sub_category = "欧美动漫"
                 else:
                     title = metadata.get("show_name", "") or metadata.get(
                         "original_show_name", ""

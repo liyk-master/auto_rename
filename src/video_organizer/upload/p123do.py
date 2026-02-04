@@ -473,6 +473,8 @@ def _upload_large_file(
         unit_scale=True,
         desc=f"上传 {target_name}",
         ncols=100,
+        mininterval=0.1,  # 每0.1秒更新一次
+        miniters=1,  # 至少更新1次
         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
     ) as pbar:
         # 设置已上传的进度

@@ -309,13 +309,14 @@ class TMDBClient:
         year: Optional[int] = None,
         page: int = 1,
         language: Optional[str] = "zh-CN",
+        include_adult: Optional[bool] = True,
     ) -> Optional[Dict]:
         """专门搜索电视剧"""
         url = f"{self.BASE_URL}/search/tv"
         params = (
-            {"query": query, "page": page}
+            {"query": query, "page": page, "include_adult": include_adult}
             if not self.api_key.startswith("eyJ")
-            else {"query": query, "page": page}
+            else {"query": query, "page": page, "include_adult": include_adult}
         )
         # 只有当 language 不为 None 时才添加 language 参数
         if language is not None:
@@ -367,3 +368,42 @@ class TMDBClient:
         """
         url = f"{self.BASE_URL}/tv/{show_id}/credits"
         return self._request_with_retry(url)
+
+    def search_multi(
+        self,
+        query: str,
+        year: Optional[int] = None,
+        page: int = 1,
+        language: Optional[str] = "zh-CN",
+        include_adult: Optional[bool] = True,
+    ) -> List[Dict]:
+        """
+        使用 /search/multi 接口同时搜索电影和电视剧
+
+        Args:
+            query: 搜索词
+            year: 年份（可选）
+            page: 页码
+            language: 搜索语言
+            include_adult: 是否包含成人内容
+
+        Returns:
+            搜索结果列表，每个结果包含 media_type 字段
+        """
+        url = f"{self.BASE_URL}/search/multi"
+        params = {"query": query, "page": page, "include_adult": include_adult}
+
+        # 只有当 language 不为 None 时才添加 language 参数
+        if language is not None:
+            params["language"] = language
+
+        if year:
+            # multi 接口同时支持 year 和 first_air_date_year
+            params["year"] = year
+            params["first_air_date_year"] = year
+
+        result = self._request_with_retry(url, params)
+        if result and "results" in result:
+            # 返回结果列表
+            return result["results"]
+        return []

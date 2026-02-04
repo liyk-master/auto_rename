@@ -213,6 +213,12 @@ class FileSystemMonitor:
         if Path(mapped_file_path).suffix.lower() in self.supported_extensions:
             file_path_str = str(Path(mapped_file_path))
 
+            # 跳过 Sample 文件（样本文件）
+            file_name = os.path.basename(mapped_file_path).lower()
+            if file_name.startswith("sample"):
+                logger.info(f"跳过 Sample 文件: {mapped_file_path}")
+                return
+
             # 使用锁保护检查和添加操作，防止竞态条件
             with self._processing_lock:
                 if (
@@ -291,6 +297,12 @@ class FileSystemMonitor:
             for file_path in self.directory_watch_dir.rglob("*"):
                 if file_path.is_file() and file_path.suffix.lower() in self.supported_extensions:
                     file_path_str = str(file_path)
+
+                    # 跳过 Sample 文件（样本文件）
+                    file_name = file_path.name.lower()
+                    if file_name.startswith("sample"):
+                        logger.debug(f"跳过 Sample 文件: {file_path_str}")
+                        continue
 
                     # 检查文件是否已处理
                     if file_path_str not in self._directory_processed_files:
