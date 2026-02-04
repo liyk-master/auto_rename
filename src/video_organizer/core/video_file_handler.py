@@ -714,7 +714,21 @@ class VideoFileHandler:
             # 下面的逻辑原本是: media_type = "tv" if media_type == "电视剧" else "movie"
             # 现在 renamer 直接返回标准代码，所以我们只需确保它是 tv 或 movie
             if media_type not in ["tv", "movie"]:
-                # 如果是 anime 或其他，归类为 tv
+                # 如果是 anime 或其他，先判断是否为电影
+                # 基于文件名特征判断：如果没有季集信息（S01E01），可能是电影
+                filename = os.path.basename(file_path).lower()
+                has_season_episode = bool(re.search(r'[sS]\d+[eE]\d+|第\d+季|第\d+集', filename))
+                
+                if not has_season_episode and season is None and episode is None:
+                    # 没有季集信息，默认为电影
+                    media_type = "movie"
+                else:
+                    # 有季集信息，归类为 tv
+                    media_type = "tv"
+            
+            # 修复 Emos 返回的 type 映射问题
+            # Emos 返回 "tv_show" 或 "movie"，需要转换为 "tv" 或 "movie"
+            if media_type == "tv_show":
                 media_type = "tv"
 
             # 初始化匹配结果
@@ -724,9 +738,18 @@ class VideoFileHandler:
             # 第二步：如果获取到了tmdb_id、type、title，且需要使用 Emos (非仅 p123)，调用第二个API
             if tmdb_id and media_type and title and self.upload_targets != "p123":
                 # 构建动态 URL，使用实际的 tmdb_id, season, episode
-                season_num = int(season) if season else 1
-                episode_num = int(episode) if episode else 1
+                # 修复 S0 问题：保留 0 值，不转换为 1
+                season_num = int(season) if season is not None else None
+                episode_num = int(episode) if episode is not None else None
+                
                 if media_type == "tv":
+                    # 对于电视剧，必须有 season 和 episode
+                    # 如果没有提供，使用默认值 1
+                    if season_num is None:
+                        season_num = 0
+                    if episode_num is None:
+                        episode_num = 1
+                    
                     item_id_url = (
                         f"{self.emos_base_url}/api/video/getVideoId"
                         f"?video_id_type=tmdb"
@@ -735,11 +758,10 @@ class VideoFileHandler:
                         f"&video_id_value={tmdb_id}"
                     )
                 else:
+                    # 电影不需要 season 和 episode
                     item_id_url = (
                         f"{self.emos_base_url}/api/video/getVideoId"
                         f"?video_id_type=tmdb"
-                        # f"&season_number={season_num}"
-                        # f"&episode_number={episode_num}"
                         f"&video_id_value={tmdb_id}"
                     )
 
