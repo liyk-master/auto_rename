@@ -877,6 +877,15 @@ class VideoRenamer:
             if media_type_hint:
                 metadata["media_type"] = media_type_hint
 
+            # 3.5 智能判断媒体类型：如果提取到了 season 或 episode，优先识别为电视剧
+            # 除非用户明确指定了 media_type_hint 为 movie
+            if not media_type_hint:
+                has_season = metadata.get("season") is not None and metadata.get("season") != ""
+                has_episode = metadata.get("episode") is not None and metadata.get("episode") != ""
+                if has_season or has_episode:
+                    metadata["media_type"] = "tv"
+                    logger.info(f"检测到季集信息 (season={metadata.get('season')}, episode={metadata.get('episode')})，自动识别为电视剧类型")
+
             # 4. 如果仍没有 show_name，使用智能清洗
             if not metadata.get("show_name"):
                 metadata["show_name"] = (
@@ -922,7 +931,11 @@ class VideoRenamer:
                         )
                     metadata["show_name"] = show_name.strip()
 
-                    metadata = self._enrich_with_tmdb(metadata)
+                    # 只有在 TMDB 客户端可用时才进行元数据丰富
+                    if self.tmdb_client:
+                        metadata = self._enrich_with_tmdb(metadata)
+                    else:
+                        logger.warning("TMDB 客户端未初始化，跳过元数据丰富")
                 except Exception as e:
                     logger.error(f"TMDB元数据丰富失败: {e}")
 
@@ -1162,10 +1175,14 @@ class VideoRenamer:
             r"\[(?P<show_name>[^\]]+?)\s+第(?P<season_cn>[一二三四五六七八九十\d]+)季\]",
             # 2.5 匹配 "赘婿.第1季.E02" 格式（中文季号 + 点 + E集号）
             r"^(?P<show_name>.+?)第(?P<season_cn>\d+)季\.[Ee][Pp]?(?P<episode>\d+)",
-            # 模式 A: 较长的或不常见的罗马数字 (II-IX, V, VI...) 允许后随空格、中横杠或中文附属标题
-            r"(?P<show_name>.*?)(?<![a-zA-Z0-9])(?P<roman_season>VIII|VII|VI|III|II|IX|IV|V)(?![a-zA-Z0-9])\s*(?::|-|\s|$)",
+            # 模式 A: 较长的或不常见的罗马数字 (II-IX, V, VI...) 允许后随空格、中横杠、下划线或中文附属标题
+            # 修改: 使用正向预查允许罗马数字后面跟下划线、点或空格，以匹配 "36小時II_01" 格式
+            r"(?P<show_name>.*?)(?P<roman_season>VIII|VII|VI|III|II|IX|IV|V)(?=[_.:\-\s]|$)",
             # 模式 B: 极其高频误触的单字母罗马数字 (X, I) 要求后随必须是行尾或元数据标记 (防止切断 Spy x Family)
-            r"(?P<show_name>.*?)(?<![a-zA-Z0-9])(?P<roman_season>X|I)(?![a-zA-Z0-9])\s*(?::|-|\[|\(|\r?$)",
+            # 修改: 前面必须是非字母数字字符，避免误识别如 IQIYI 中的 I
+            r"(?P<show_name>.*?)(?<![a-zA-Z0-9])(?P<roman_season>X|I)(?=[_.:\-\[\(]|$)",
+            # 模式 C: 罗马数字季号 + 下划线 + 集号 (如 "On Call 36小時II_01")
+            r"(?P<show_name>.*?)(?P<roman_season>VIII|VII|VI|III|II|IX|IV|V)_(?P<episode>\d{1,3})",
             # 2.5 匹配 "Show Name S2 - 01" 格式（季号在集号前面，用空格分隔）- 必须在 "Show Name - 09" 之前
             r"^(?P<show_name>(?!^\d+$)[A-Za-z][A-Za-z0-9\s\-\'\.]+?)\s+S(?P<season>\d+)\s*-\s*(?P<episode>\d{2,3})",
             # 2.6 匹配 "[Release Group] Show Name S2 - 01" 格式（带字幕组前缀的 S2 - 01 格式）
@@ -1195,6 +1212,8 @@ class VideoRenamer:
             r"^(?P<show_name>(?!^\d+$).*?)\s*\[OVA(?P<episode>\d{1,4})\]",
             # 匹配 Show Name [12][...] (严格限制show_name不能只含数字)
             r"^(?P<show_name>(?!^\d+$).*?)\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
+            # 匹配纯中文标题 + 空格 + 集号（如 "大正偽婚～替身新娘與軍服的猛愛 8"）
+            r"^(?P<show_name>[\u4e00-\u9fff\u3000-\u303f\w\s～]+?)\s+(?P<episode>\d{1,4})(?:\s|$|\.)",
             # 匹配 剧名 22 [GB] (空格集号，严格限制show_name不能只含数字且不含年份，且集号必须小于1000)
             # 添加年份前向否定断言，避免将年份误识别为集号
             r"^(?:\[[^\]]+\]\s+)?(?P<show_name>(?!^\d+$)[\u4e00-\u9fff\w\s]+?(?<!\d{4}))\s+(?P<episode>\d{1,3}(?:-\d{1,3})?)(?<!\d{4})(?:\s|$)",
@@ -1293,7 +1312,34 @@ class VideoRenamer:
                 # 1. 移除首部的发布组方括号，如 [Dynamis One]
                 show_name = re.sub(r"^\[[^\]]+\]\s*", "", show_name)
                 # 2. 移除首部的无括号发布组格式（如 AHTV.Judge, AHTV Judge, VCB-Studio）
-                show_name = re.sub(r"^[A-Z]{2,6}(?:[._]|\s)\s*", "", show_name)
+                # 修复：添加已知发布组白名单检查，避免误判剧名中的大写字母缩写（如 MF GHOST 中的 MF）
+                known_release_groups = [
+                    "AHTV", "VCB", "GM", "KTXP", "NC", "ANK", "EMR", "MISO", "UHA", "NPU",
+                    "WOLF", "SDMN", "WMSUB", "FLSNOW", "ORION", "KODAW", "LEOPARD", "IRIZA",
+                    "KISS", "MCE", "MT", "DHT", "YTS", "BONE", "FZSD", "SWEET", "AOF", "A-F",
+                    "XKS", "XKSUB", "ZYZ", "ZY", "QY", "KLM", "KL", "JZY", "JZ", "MNC", "MN",
+                    "MNG", "HL", "HAOLIN", "FL", "FLSNOW", "MS", "MOE", "AGL", "AG", "DDL",
+                    "DD", "LUM", "LUMINOUS", "KLD", "KALEIDO", "OCT", "OCTOPUS", "JH", "JUHUA",
+                    "XM", "XINGMENG", "BY", "BAIYU", "TD", "TIANDAO", "QG", "QINGGUO", "YY",
+                    "YIYU", "XP", "XIAOP", "CX", "CHUXUE", "XX", "XIAOXING", "WZ", "WANZI",
+                    "XCX", "XIAOCHENGXU", "CY", "CHUYIN", "XXS", "XIAOXING", "QX", "QIANXIA",
+                    "MY", "MENGYUE", "RZ", "ROUZONG", "XK", "XINGKONG", "LY", "LEYUAN", "ZS",
+                    "ZHONGSHEN", "KAMIGAMI", "QY", "QIANYU", "ML", "MENGLAN", "FZ", "FENGZHIS",
+                    "HM", "HAOLIN", "MS", "MOSEN", "AGL", "AIGULU", "DD", "DIDI", "LUM",
+                    "LUMINOUS", "KLD", "KALEIDO", "OCT", "OCTOPUS", "JH", "JUHUA", "XM",
+                    "XINGMENG", "BY", "BAIYU", "TD", "TIANDAO", "QG", "QINGGUO", "YY", "YIYU",
+                    "XP", "XIAOP", "CX", "CHUXUE", "XX", "XIAOXING", "WZ", "WANZI", "XCX",
+                    "XIAOCHENGXU", "CY", "CHUYIN", "XXS", "XIAOXING", "QX", "QIANXIA", "MY",
+                    "MENGYUE", "RZ", "ROUZONG", "XK", "XINGKONG", "LY", "LEYUAN", "ZS",
+                    "ZHONGSHEN", "KAMIGAMI", "QY", "QIANYU", "ML", "MENGLAN", "FZ", "FENGZHIS",
+                ]
+                # 只有当匹配的大写字母在已知发布组列表中时才移除
+                def remove_release_group(match):
+                    group_name = match.group(1)
+                    if group_name in known_release_groups:
+                        return ""
+                    return match.group(0)  # 保留原始内容
+                show_name = re.sub(r"^([A-Z]{2,6})(?:[._]|\s)\s*", remove_release_group, show_name)
                 # 2. 移除括号内的年份 (2022) - 无论位置如何
                 show_name = re.sub(r"\s*\(\d{4}(?:-\d{4})?\)\s*", " ", show_name)
                 # 2.5 移除包含质量标记的圆括号内容（如 (1080p NF WEB-DL x265 10bit Silence)）
@@ -3179,21 +3225,17 @@ class VideoRenamer:
                 ):
                     sub_category = "日韩剧"
                 else:
-                    original_show_name = metadata.get("original_show_name", "")
-                    if original_show_name and re.search(
-                        r"[\u4e00-\u9fff]", original_show_name
-                    ):
-                        sub_category = "国产剧"
-                    else:
-                        sub_category = "未分类"
+                    # 未处理的语种都归类到欧美剧（仅在TMDB有搜索结果时）
+                    sub_category = "欧美剧"
         else:
             base_category = "Other"
 
         # 2. 如果 TMDB 没有明确的分类（sub_category 为空或为"未分类"），则使用字幕组映射作为后备
-        if not sub_category or sub_category == "未分类":
+        # 或者TMDB没有搜索结果时，根据文件名中的字符判断
+        if not sub_category or sub_category == "未分类" or not metadata.get("tmdb_id"):
             if forced_content_type:
                 logger.info(
-                    f"TMDB没有明确分类，使用字幕组映射: {forced_content_type}"
+                    f"TMDB没有明确分类或未搜索到结果，使用字幕组映射: {forced_content_type}"
                 )
                 if forced_content_type == "anime":
                     base_category = "TV Shows"
@@ -3235,13 +3277,34 @@ class VideoRenamer:
                     ):
                         sub_category = "日韩剧"
                     else:
-                        sub_category = "其他剧"
+                        # 没有TMDB结果时，根据文件名字符判断
+                        title = metadata.get("show_name", "") or metadata.get("original_show_name", "")
+                        if re.search(r"[\u3040-\u30FF]", title):  # 日文平假名/片假名
+                            sub_category = "日番"
+                        elif re.search(r"[\u4E00-\u9FFF]", title):  # 中文
+                            sub_category = "国产剧"
+                        else:
+                            sub_category = "其他剧"
                 elif forced_content_type == "movie":
                     base_category = "Movies"
                     if any(genre in genre_names for genre in ["animation", "animated", "动画"]):
                         sub_category = "动画电影"
                     else:
                         sub_category = "外语电影"
+            else:
+                # 没有字幕组映射，TMDB也没有分类或未搜索到结果时，根据文件名字符判断
+                if media_type == "tv":
+                    base_category = "TV Shows"
+                    title = metadata.get("show_name", "") or metadata.get("original_show_name", "")
+                    if re.search(r"[\u3040-\u30FF]", title):  # 日文平假名/片假名
+                        sub_category = "日番"
+                    elif re.search(r"[\u4E00-\u9FFF]", title):  # 中文
+                        sub_category = "国产剧"
+                    else:
+                        sub_category = "欧美剧"
+                elif media_type == "movie":
+                    base_category = "Movies"
+                    sub_category = "外语电影"
 
         # 组合分类路径
         return f"{base_category}/{sub_category}"

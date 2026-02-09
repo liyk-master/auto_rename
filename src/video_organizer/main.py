@@ -202,6 +202,11 @@ def force_process_file(file_path: str, config: dict) -> bool:
         emos_config = config.get("emos", {})
         p123_config = config.get("p123", {})
 
+        # DEBUG: 打印 TMDB 配置
+        print(f"DEBUG: TMDB config: {tmdb_config}")
+        if tmdb_config:
+            print(f"DEBUG: TMDB API key exists: {'Yes' if tmdb_config.get('api_key') else 'No'}")
+
         # 验证文件存在
         if not os.path.exists(file_path):
             cli_output.print_error(f"文件不存在: {file_path}")
@@ -456,10 +461,13 @@ def main() -> None:
             cli_output.print_info(f"源目录ID: {organize_source_id}")
             cli_output.print_info(f"目标目录ID: {organize_target_id}")
 
-            result = organizer.organize_all(
+            # 使用流式处理（适用于大量文件）
+            cli_output.print_info("使用流式处理模式（适用于大量文件）")
+            result = organizer.organize_streaming(
                 source_id=organize_source_id,
                 target_id=organize_target_id,
                 dry_run=dry_run,
+                show_progress=True,
             )
 
             cli_output.print_separator()

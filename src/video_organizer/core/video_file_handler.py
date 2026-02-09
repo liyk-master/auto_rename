@@ -613,6 +613,16 @@ class VideoFileHandler:
 
             # 提取所需信息
             tmdb_id = str(metadata.get("tmdb_id", ""))
+
+            # 检查是否成功获取到 TMDB ID
+            if not tmdb_id or tmdb_id == "":
+                print(f"\n❌ [线程#{worker_id}] 未找到 TMDB 匹配结果")
+                print(f"⚠️  建议：请手动处理该文件或确认文件名是否正确")
+                print(f"⚠️  文件将跳过上传，等待手动处理\n")
+                # 从上传中集合移除，添加到已上传集合（避免重复处理）
+                self._uploaded_files.add(file_path)
+                self._uploading_files.discard(file_path)
+                return False
             media_type = metadata.get(
                 "media_type", "tv"
             )  # 默认为 tv, renamer 会返回 'tv' 或 'movie'

@@ -7,8 +7,9 @@ import os
 import sys
 import time
 import requests
+import re
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from colorama import Fore, init
 
 # 初始化 colorama
@@ -325,12 +326,20 @@ class P123Uploader:
                 print(f"\n🎉 123云盘上传成功!")
                 print(f"文件ID: {result.get('fileid')}")
 
+                # 上传同目录下的字幕文件
+                print(f"\n📝 开始上传字幕文件...")
+                subtitles = self.upload_subtitles(
+                    file_path, target_parent_id, target_filename, folder_structure
+                )
+
                 # 发送 123FSLinkV2 格式到TG频道
                 if self.tg_bot_token and self.tg_channel_123fslink:
                     self.send_123fslinkv2_to_tg(
                         file_path, target_filename, result, self.tg_channel_123fslink, folder_path
                     )
 
+                # 将字幕信息也返回
+                result['subtitles'] = subtitles
                 return result
             else:
                 print(f"\n❌ 123云盘上传失败!")
@@ -342,6 +351,204 @@ class P123Uploader:
 
             traceback.print_exc()
             return None
+
+    def upload_subtitles(
+        self,
+        video_path: str,
+        target_parent_id: int,
+        video_filename: str,
+        video_folder_structure: Optional[list] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        上传视频同目录下的所有字幕文件
+
+        Args:
+            video_path: 视频文件路径
+            target_parent_id: 目标文件夹ID（视频所在的文件夹）
+            video_filename: 整理后的视频文件名
+            video_folder_structure: 视频的文件夹结构
+
+        Returns:
+            成功上传的字幕文件信息列表
+        """
+        import re
+        from pathlib import Path
+
+        subtitle_extensions = {'.srt', '.ass', '.ssa', '.sub', '.vtt'}
+        uploaded_subtitles = []
+
+        try:
+            video_dir = Path(video_path).parent
+            video_stem = Path(video_filename).stem  # 整理后的视频文件名（不含扩展名）
+
+            print(f"\n📝 扫描字幕文件: {video_dir}")
+
+            # 扫描同目录下的所有字幕文件
+            subtitle_files = [
+                f for f in video_dir.iterdir()
+                if f.is_file() and f.suffix.lower() in subtitle_extensions
+            ]
+
+            if not subtitle_files:
+                print(f"   未找到字幕文件")
+                return uploaded_subtitles
+
+            print(f"   找到 {len(subtitle_files)} 个字幕文件")
+
+            for subtitle_file in subtitle_files:
+                try:
+                    print(f"\n   处理字幕: {subtitle_file.name}")
+
+                    # 解析字幕文件名，提取语言和类型信息
+                    subtitle_info = self._parse_subtitle_info(subtitle_file.name)
+
+                    # 生成新的字幕文件名：使用视频文件名 + 字幕语言/类型信息
+                    new_subtitle_name = self._generate_subtitle_name(
+                        video_filename, subtitle_info
+                    )
+
+                    print(f"   重命名为: {new_subtitle_name}")
+
+                    # 上传字幕文件
+                    result = self._upload_with_progress(
+                        str(subtitle_file), target_parent_id, new_subtitle_name
+                    )
+
+                    if result:
+                        print(f"   ✅ 字幕上传成功")
+                        uploaded_subtitles.append(result)
+                    else:
+                        print(f"   ❌ 字幕上传失败")
+
+                except Exception as e:
+                    print(f"   ❌ 处理字幕文件时出错: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            print(f"\n📝 字幕上传完成: 成功 {len(uploaded_subtitles)}/{len(subtitle_files)} 个")
+
+        except Exception as e:
+            print(f"\n❌ 字幕上传过程异常: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return uploaded_subtitles
+
+    def _parse_subtitle_info(self, filename: str) -> Dict[str, Optional[str]]:
+        """
+        解析字幕文件名，提取语言和类型信息
+
+        Args:
+            filename: 字幕文件名
+
+        Returns:
+            包含 language 和 type 的字典
+        """
+        # 字幕语言代码映射
+        language_map = {
+            'en': 'English', 'eng': 'English', 'english': 'English',
+            'zh': 'Chinese', 'chs': 'Chinese', 'zhs': 'Chinese', 'sc': 'Chinese',
+            'cht': 'Chinese', 'tc': 'Chinese', 'zh-tw': 'Chinese',
+            'ja': 'Japanese', 'jpn': 'Japanese', 'japanese': 'Japanese',
+            'ko': 'Korean', 'kor': 'Korean', 'korean': 'Korean',
+            'fr': 'French', 'fra': 'French', 'french': 'French',
+            'de': 'German', 'deu': 'German', 'german': 'German',
+            'es': 'Spanish', 'spa': 'Spanish', 'spanish': 'Spanish',
+            'ru': 'Russian', 'rus': 'Russian', 'russian': 'Russian',
+            'pt': 'Portuguese', 'por': 'Portuguese', 'portuguese': 'Portuguese',
+            'it': 'Italian', 'ita': 'Italian', 'italian': 'Italian',
+            'ar': 'Arabic', 'ara': 'Arabic', 'arabic': 'Arabic',
+            'hi': 'Hindi', 'hin': 'Hindi', 'hindi': 'Hindi',
+            'th': 'Thai', 'tha': 'Thai', 'thai': 'Thai',
+            'vi': 'Vietnamese', 'vie': 'Vietnamese', 'vietnamese': 'Vietnamese',
+            'id': 'Indonesian', 'ind': 'Indonesian', 'indonesian': 'Indonesian',
+            'pl': 'Polish', 'pol': 'Polish', 'polish': 'Polish',
+            'nl': 'Dutch', 'nld': 'Dutch', 'dutch': 'Dutch',
+            'sv': 'Swedish', 'swe': 'Swedish', 'swedish': 'Swedish',
+            'no': 'Norwegian', 'nor': 'Norwegian', 'norwegian': 'Norwegian',
+            'da': 'Danish', 'dan': 'Danish', 'danish': 'Danish',
+            'fi': 'Finnish', 'fin': 'Finnish', 'finnish': 'Finnish',
+            'tr': 'Turkish', 'tur': 'Turkish', 'turkish': 'Turkish',
+            'cs': 'Czech', 'ces': 'Czech', 'cze': 'Czech', 'czech': 'Czech',
+            'hu': 'Hungarian', 'hun': 'Hungarian', 'hungarian': 'Hungarian',
+            'ro': 'Romanian', 'ron': 'Romanian', 'romanian': 'Romanian',
+            'uk': 'Ukrainian', 'ukr': 'Ukrainian', 'ukrainian': 'Ukrainian',
+            'bg': 'Bulgarian', 'bul': 'Bulgarian', 'bulgarian': 'Bulgarian',
+            'el': 'Greek', 'ell': 'Greek', 'gre': 'Greek', 'greek': 'Greek',
+            'he': 'Hebrew', 'heb': 'Hebrew', 'hebrew': 'Hebrew',
+        }
+
+        info = {
+            'language': None,
+            'type': 'Normal'
+        }
+
+        filename_lower = filename.lower()
+
+        # 检查是否为听障字幕 (SDH/HI)
+        if re.search(r'\.sdh\.|\.hi\.|\.sdh$|\.hi$', filename_lower):
+            info['type'] = 'SDH'
+
+        # 检查是否为强制字幕
+        if re.search(r'\.forced\.|\.forced$', filename_lower):
+            info['type'] = 'Forced'
+
+        # 检查是否为闭路字幕
+        if re.search(r'\.cc\.|\.cc$', filename_lower):
+            info['type'] = 'CC'
+
+        # 提取语言信息
+        for code, lang in language_map.items():
+            pattern = rf'\.{code}\.|^{code}\.|\.{code}$'
+            if re.search(pattern, filename_lower):
+                info['language'] = lang
+                break
+
+        return info
+
+    def _generate_subtitle_name(
+        self,
+        video_filename: str,
+        subtitle_info: Dict[str, Optional[str]]
+    ) -> str:
+        """
+        生成新的字幕文件名
+
+        Args:
+            video_filename: 视频文件名（如 "Alpha (2025) S01E01.mkv"）
+            subtitle_info: 字幕信息字典
+
+        Returns:
+            新的字幕文件名
+        """
+        import re
+        from pathlib import Path
+
+        # 获取视频文件名（不含扩展名）
+        video_stem = Path(video_filename).stem
+
+        # 获取字幕扩展名（默认使用 .srt）
+        subtitle_ext = '.srt'
+
+        # 构建新的字幕文件名
+        new_name = video_stem
+
+        # 添加语言标识
+        if subtitle_info.get('language'):
+            lang = subtitle_info['language']
+            new_name = f"{new_name}.{lang}"
+
+            # 如果不是标准字幕，添加类型标识
+            if subtitle_info.get('type') != 'Normal':
+                subtitle_type = subtitle_info['type']
+                new_name = f"{new_name}.{subtitle_type}{subtitle_ext}"
+            else:
+                new_name = f"{new_name}{subtitle_ext}"
+        else:
+            # 没有语言标识，直接使用原扩展名
+            new_name = f"{new_name}{subtitle_ext}"
+
+        return new_name
 
     def _upload_with_progress(
         self, file_path: str, parent_id: int, file_name: str

@@ -152,7 +152,7 @@ class P123Organizer:
 
     def get_all_video_files_recursive(self, parent_id: int, max_depth: int = 5) -> List[Dict]:
         """
-        使用 p123client.tool.iterdir 递归获取目录下所有视频文件
+        使用 p123client.tool.iterdir 递归获取目录下所有视频文件（批量模式）
 
         Args:
             parent_id: 目录ID
@@ -190,6 +190,67 @@ class P123Organizer:
             )
 
         return all_files
+
+    def yield_files_recursive(self, parent_id: int, max_depth: int = 5):
+        """
+        流式获取视频文件（生成器模式，逐个返回文件）
+
+        Args:
+            parent_id: 目录ID
+            max_depth: 最大递归深度
+
+        Yields:
+            视频文件字典
+        """
+        if not self.is_available() or parent_id == 0:
+            return
+
+        for item in iterdir(
+            self.client,
+            payload=parent_id,
+            min_depth=1,
+            max_depth=max_depth,
+            list_method="list_new",
+        ):
+            # 后置过滤：只处理视频文件
+            if item.get("is_dir", False):
+                continue  # 跳过文件夹
+            yield {
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "type": 0 if not item.get("is_dir", False) else 1,
+                "size": item.get("size"),
+                "create_time": item.get("ctime"),
+                "update_time": item.get("mtime"),
+                "parent_path": item.get("parent_id"),
+            }
+
+    def count_video_files(self, parent_id: int, max_depth: int = 5) -> int:
+        """
+        统计视频文件数量（用于进度显示）
+
+        Args:
+            parent_id: 目录ID
+            max_depth: 最大递归深度
+
+        Returns:
+            视频文件总数
+        """
+        if not self.is_available() or parent_id == 0:
+            return 0
+
+        count = 0
+        for item in iterdir(
+            self.client,
+            payload=parent_id,
+            min_depth=1,
+            max_depth=max_depth,
+            list_method="list_new",
+        ):
+            if not item.get("is_dir", False):
+                count += 1
+
+        return count
 
     def _get_content_type(self, media_type: str, origin_country: str) -> str:
         if media_type == "movie":
@@ -355,7 +416,7 @@ class P123Organizer:
             # 先重命名（如果需要）
             if new_name:
                 rename_payload = {"fileId": file_id, "fileName": new_name}
-                rename_result = self.client.fs_rename_one(rename_payload)
+                rename_result = self.client.fs_rename(rename_payload)
                 if rename_result.get("code") != 0:
                     logger.error(f"重命名失败: {rename_result.get('message')}")
                     return False
@@ -615,7 +676,7 @@ class P123Organizer:
         dry_run: bool = False,
     ) -> Dict:
         """
-        整理所有文件
+        整理所有文件（批量模式，一次性加载所有文件到内存）
 
         Args:
             source_id: 源目录ID（默认使用配置中的organize_source_id）
@@ -741,5 +802,178 @@ class P123Organizer:
             "failed": failed,
             "skipped": skipped,
             "total": len(organize_files),
+            "errors": errors,
+        }
+
+    def organize_streaming(
+        self,
+        source_id: int = None,
+        target_id: int = None,
+        dry_run: bool = False,
+        show_progress: bool = True,
+    ) -> Dict:
+        """
+        流式整理所有文件（推荐用于大量文件）
+
+        优势：
+        - 低内存占用：逐个处理文件，不一次性加载所有文件
+        - 实时进度：显示处理进度
+        - 快速响应：无需等待所有文件获取完成
+
+        Args:
+            source_id: 源目录ID（默认使用配置中的organize_source_id）
+            target_id: 目标目录ID（默认使用配置中的organize_target_id）
+            dry_run: 试运行模式（只显示不执行）
+            show_progress: 是否显示进度条
+
+        Returns:
+            整理结果统计
+        """
+        if not self.is_available():
+            return {"success": 0, "failed": 0, "skipped": 0, "errors": []}
+
+        # 使用配置或传入的参数
+        source_id = source_id or self.organize_source_id
+        target_id = target_id or self.organize_target_id
+
+        if source_id == 0:
+            logger.error("源目录ID未设置")
+            return {
+                "success": 0,
+                "failed": 0,
+                "skipped": 0,
+                "errors": ["源目录ID未设置"],
+            }
+
+        if target_id == 0:
+            logger.error("目标目录ID未设置")
+            return {
+                "success": 0,
+                "failed": 0,
+                "skipped": 0,
+                "errors": ["目标目录ID未设置"],
+            }
+
+        # 统计文件总数（用于进度显示）
+        total_count = self.count_video_files(source_id)
+        logger.info(f"源目录共有 {total_count} 个视频文件")
+
+        # 统计
+        success = 0
+        failed = 0
+        skipped = 0
+        processed_count = 0
+        errors = []
+
+        # 进度条
+        pbar = None
+        if show_progress and total_count > 0:
+            try:
+                from tqdm import tqdm
+                pbar = tqdm(
+                    total=total_count,
+                    desc="整理进度",
+                    unit="文件",
+                    ncols=100,
+                )
+            except ImportError:
+                logger.warning("tqdm 未安装，不显示进度条")
+                show_progress = False
+
+        # 流式处理文件
+        for file_info in self.yield_files_recursive(source_id):
+            file_name = file_info.get("name", "未知")
+            processed_count += 1
+
+            # 跳过文件夹
+            if file_info.get("type") == 1:
+                if pbar:
+                    pbar.update(1)
+                continue
+
+            # 跳过非视频文件
+            name = file_name.lower()
+            if not any(name.endswith(ext) for ext in [".mp4", ".mkv", ".avi", ".mov", ".wmv"]):
+                if pbar:
+                    pbar.update(1)
+                continue
+
+            # 如果没有元数据，尝试通过文件名识别
+            if not file_info.get("tmdb_id"):
+                if self.tmdb_api_key:
+                    try:
+                        metadata = self.recognize_file_by_name(file_name)
+                        if metadata.get("show_name"):
+                            # 将识别的元数据添加到文件信息中
+                            file_info["show_name"] = metadata.get("show_name", "")
+                            file_info["year"] = metadata.get("year", "")
+                            file_info["season"] = metadata.get("season", "")
+                            file_info["episode"] = metadata.get("episode", "")
+                            file_info["tmdb_id"] = metadata.get("tmdb_id", "")
+                            file_info["media_type"] = metadata.get("media_type", "tv")
+                            file_info["quality_tags"] = metadata.get("quality_tags", "")
+                            file_info["release_group"] = metadata.get("release_group", "")
+                            file_info["category_path"] = metadata.get("category_path", "TV Shows/电视剧")
+                            logger.info(
+                                f"[{processed_count}/{total_count}] 识别成功: {file_name} -> {metadata['show_name']}"
+                            )
+                        else:
+                            logger.warning(f"[{processed_count}/{total_count}] 无法识别: {file_name}")
+                            skipped += 1
+                            if pbar:
+                                pbar.update(1)
+                            continue
+                    except Exception as e:
+                        logger.warning(f"[{processed_count}/{total_count}] 识别异常: {file_name} - {e}")
+                        skipped += 1
+                        if pbar:
+                            pbar.update(1)
+                        continue
+                else:
+                    logger.warning(f"[{processed_count}/{total_count}] TMDB API未配置，跳过: {file_name}")
+                    skipped += 1
+                    if pbar:
+                        pbar.update(1)
+                    continue
+
+            # 只处理有元数据的文件
+            if file_info.get("tmdb_id"):
+                # 确保有 category_path
+                if not file_info.get("category_path"):
+                    file_info["category_path"] = "TV Shows/电视剧"
+
+                if dry_run:
+                    logger.info(
+                        f"[{processed_count}/{total_count}] [试运行] 将整理: {file_name} -> {file_info.get('show_name', '未知')}"
+                    )
+                    success += 1
+                else:
+                    try:
+                        result = self.organize_file(file_info, target_id)
+                        if result:
+                            success += 1
+                            logger.info(f"[{processed_count}/{total_count}] ✓ 整理成功: {file_name}")
+                        else:
+                            failed += 1
+                            errors.append(f"整理失败: {file_name}")
+                            logger.error(f"[{processed_count}/{total_count}] ✗ 整理失败: {file_name}")
+                    except Exception as e:
+                        failed += 1
+                        errors.append(f"整理异常: {file_name} - {str(e)}")
+                        logger.error(f"[{processed_count}/{total_count}] ✗ 整理异常: {file_name}: {e}")
+            else:
+                skipped += 1
+
+            if pbar:
+                pbar.update(1)
+
+        if pbar:
+            pbar.close()
+
+        return {
+            "success": success,
+            "failed": failed,
+            "skipped": skipped,
+            "total": processed_count,
             "errors": errors,
         }

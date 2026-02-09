@@ -467,15 +467,25 @@ def _upload_large_file(
     # 使用tqdm创建进度条（包含速度显示）
     # 计算已上传的字节数
     uploaded_bytes = len(uploaded_part_numbers) * slice_size
+    
+    # 生成唯一的进度条位置（基于文件路径）
+    import hashlib
+    file_hash = hashlib.md5(str(file_path).encode()).hexdigest()[:8]
+    position = int(file_hash, 16) % 10  # 0-9之间的位置
+    
     with tqdm(
         total=file_size,
         unit="B",
         unit_scale=True,
         desc=f"上传 {target_name}",
-        ncols=100,
+        ncols=120,  # 增加宽度以显示更多信息
         mininterval=0.1,  # 每0.1秒更新一次
         miniters=1,  # 至少更新1次
         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+        position=position,  # 指定进度条位置，避免多线程冲突
+        leave=True,  # 上传完成后保留进度条
+        file=sys.stdout,  # 明确指定输出到标准输出
+        disable=False,  # 确保不禁用进度条
     ) as pbar:
         # 设置已上传的进度
         pbar.update(uploaded_bytes)
@@ -588,55 +598,76 @@ def _upload_small_file(
     with open(file_path, "rb") as f:
         file_data = f.read()
 
-    # 上传文件，失败时重试
-    max_retries = 6
-    retry_count = 0
-    upload_success = False
-    current_resp = resp
+    file_size = len(file_data)
 
-    while retry_count < max_retries and not upload_success:
-        try:
-            # 准备 Headers
-            headers = UPLOAD_HEADERS.copy()
+    # 为小文件上传添加简单的进度条
+    import hashlib
+    file_hash = hashlib.md5(str(file_path).encode()).hexdigest()[:8]
+    position = int(file_hash, 16) % 10
+    
+    with tqdm(
+        total=file_size,
+        unit="B",
+        unit_scale=True,
+        desc=f"上传 {target_name}",
+        ncols=120,
+        position=position,
+        leave=True,
+        file=sys.stdout,
+    ) as pbar:
+        # 上传文件，失败时重试
+        max_retries = 6
+        retry_count = 0
+        upload_success = False
+        current_resp = resp
 
-            # 使用 requests 直接上传
-            response = requests.put(
-                current_resp["data"]["presignedUrls"]["1"],
-                data=file_data,
-                headers=headers,
-                timeout=600,  # 增加超时时间到600秒
-            )
-            response.raise_for_status()
-            upload_success = True
-            if callback:
-                try:
-                    callback(os.path.getsize(file_path), os.path.getsize(file_path))
-                except Exception:
-                    pass
-        except Exception as upload_err:
-            retry_count += 1
-            if retry_count < max_retries:
-                print(
-                    f"[WARNING] {target_name} 上传失败，正在重试 ({retry_count}/{max_retries}): {upload_err}"
+        while retry_count < max_retries and not upload_success:
+            try:
+                # 准备 Headers
+                headers = UPLOAD_HEADERS.copy()
+
+                # 使用 requests 直接上传
+                response = requests.put(
+                    current_resp["data"]["presignedUrls"]["1"],
+                    data=file_data,
+                    headers=headers,
+                    timeout=600,  # 增加超时时间到600秒
                 )
-                time.sleep(5)  # 等待后重试
+                response.raise_for_status()
+                upload_success = True
+                
+                # 更新进度条到100%
+                pbar.update(file_size)
+                
+                if callback:
+                    try:
+                        callback(file_size, file_size)
+                    except Exception:
+                        pass
+            except Exception as upload_err:
+                retry_count += 1
+                if retry_count < max_retries:
+                    print(
+                        f"[WARNING] {target_name} 上传失败，正在重试 ({retry_count}/{max_retries}): {upload_err}"
+                    )
+                    time.sleep(5)  # 等待后重试
 
-                # 重新获取上传URL
-                try:
-                    print(f"[INFO] 重新获取上传URL")
-                    current_resp = client.upload_auth(upload_data)
-                    if current_resp.get("code") != 0:
-                        raise Exception(
-                            f"重新获取上传URL失败: {current_resp.get('message')}"
-                        )
-                except Exception as url_err:
-                    print(f"[ERROR] 重新获取上传URL失败: {url_err}")
+                    # 重新获取上传URL
+                    try:
+                        print(f"[INFO] 重新获取上传URL")
+                        current_resp = client.upload_auth(upload_data)
+                        if current_resp.get("code") != 0:
+                            raise Exception(
+                                f"重新获取上传URL失败: {current_resp.get('message')}"
+                            )
+                    except Exception as url_err:
+                        print(f"[ERROR] 重新获取上传URL失败: {url_err}")
+                        raise
+                else:
+                    print(
+                        f"[ERROR] {target_name} 上传失败，已达到最大重试次数: {upload_err}"
+                    )
                     raise
-            else:
-                print(
-                    f"[ERROR] {target_name} 上传失败，已达到最大重试次数: {upload_err}"
-                )
-                raise
 
     upload_data["isMultipart"] = False
     complete_resp = client.upload_complete(upload_data)
