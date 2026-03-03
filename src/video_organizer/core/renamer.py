@@ -1097,6 +1097,11 @@ class VideoRenamer:
         # Special pattern for French/foreign movie formats with . and - separators
         # Like: Je.Navais.Que.Le.Neant.-.Shoah.Par.Lanzmann.2025.1080p.BluRay.x264.AAC5.1-[YTS.LT]
         patterns = [
+            # -3. 中英双语标题格式：匹配 "[中文标题].英文标题.年份.技术信息" 格式
+            # 如：[我是卧底].I'm.Undercover.2026.2160p.60fps.HQ.WEB-DL.HEVC.10bit.AV3A5.1.4.7Audios-QHstudIo.mp4
+            # 如：[流浪地球].The.Wandering.Earth.2019.1080p.BluRay.x264.mp4
+            # 特点：方括号中文标题 + 点号分隔英文标题 + 年份 + 技术信息
+            r"^\[(?P<show_name>[\u4e00-\u9fff]+)\]\.(?P<en_title>[A-Za-z0-9'\.\s]+?)\.(?P<year>\d{4})\.(?:2160p|4K|UHD|FHD|1080p|720p|480p|360p|240p)",
             # -2. 空格分隔的外语电影模式：匹配 "片名 年份 分辨率 语言 技术信息 发布组" 格式
             # 如：Kokuho 2025 1080p Japanese WEB-DL HC HEVC x265 BONE.mkv
             # 如：The Last Viking 2025 1080p Danish WEB-DL HEVC x265 5.1 BONE.mkv
@@ -1107,9 +1112,10 @@ class VideoRenamer:
             # 如：特工迷阵.1080p.HD中英双字[最新电影www.5266ys.com].mp4
             # 如：肖申克的救赎.720p.中英双字[电影天堂www.dytt8.net].mkv
             # 如：复仇者联盟.4K.中英双字.mp4
+            # 如：内幕.2160p.国粤双语.HD中字无水印[最新电影www.5266ys.com].mp4
             # 这个模式优先级最高，专门处理中文PT/电影站资源
             # 注意：使用 name_only（不含扩展名）进行匹配，所以正则不需要匹配扩展名
-            r"^(?P<show_name>[\u4e00-\u9fff\w\s]+)[.\-](?:2160p|4K|UHD|FHD|1080p|720p|480p|360p|240p)(?:[.\-](?:HD|FHD|UHD)?(?:中英双字|中字|英字|双语|国语|粤语|日语版|CHS|ENG|JAP))?(?:\[.*?\])?$",
+            r"^(?P<show_name>[\u4e00-\u9fff\w\s]+)[.\-](?:2160p|4K|UHD|FHD|1080p|720p|480p|360p|240p)(?:[.\-][^\[\]]+)?(?:\[.*?\])?$",
             # 0.12 匹配中文目录格式 "剧名 第X季(年份)" - 如 "仙武传 第3季(2024)"
             r"^(?P<show_name>[\u4e00-\u9fff\w\s]+?)\s*第(?P<season_cn>[一二三四五六七八九十\d]+)季\s*\((?P<year>\d{4})\)",
             # 0.13 匹配中文目录格式 "剧名(年份)" - 如 "仙武传(2024)"
@@ -1177,7 +1183,8 @@ class VideoRenamer:
             r"^(?P<show_name>.+?)第(?P<season_cn>\d+)季\.[Ee][Pp]?(?P<episode>\d+)",
             # 模式 A: 较长的或不常见的罗马数字 (II-IX, V, VI...) 允许后随空格、中横杠、下划线或中文附属标题
             # 修改: 使用正向预查允许罗马数字后面跟下划线、点或空格，以匹配 "36小時II_01" 格式
-            r"(?P<show_name>.*?)(?P<roman_season>VIII|VII|VI|III|II|IX|IV|V)(?=[_.:\-\s]|$)",
+            # 添加前向否定断言，确保罗马数字前面不是字母，避免将 iT.WEB-DL 中的 V 误识别为第5季
+            r"(?P<show_name>.*?)(?<![a-zA-Z])(?P<roman_season>VIII|VII|VI|III|II|IX|IV|V)(?=[_.:\-\s]|$)",
             # 模式 B: 极其高频误触的单字母罗马数字 (X, I) 要求后随必须是行尾或元数据标记 (防止切断 Spy x Family)
             # 修改: 前面必须是非字母数字字符，避免误识别如 IQIYI 中的 I
             r"(?P<show_name>.*?)(?<![a-zA-Z0-9])(?P<roman_season>X|I)(?=[_.:\-\[\(]|$)",
@@ -1220,7 +1227,11 @@ class VideoRenamer:
             # 匹配 [Nekomoe kissaten][Watashi wo Tabetai, Hitodenashi][12][1080p][JPSC] 格式
             r"^\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
             # 基础降级模式 (只抓集号，添加年份排除)
-            # 匹配 [Doomdos] - 荒古恩仇录·破 风篇 - 第32话 - [1080P] 这种格式
+            # 匹配 [Doomdos] - 请吃红小豆吧！新年快乐 - 第06话 - [1080P] 这种格式
+            # 优先匹配格式：[字幕组] - 剧名 - 副标题 - 第X话
+            # 策略：提取第一个 "-" 和第二个 "-" 之间的内容作为剧名（如果有副标题）
+            r"^(?:\[[^\]]+\])?\s*-\s*(?P<show_name>[^\-]+?)(?:\s*-\s*(?!第\d+话)[^\-]+)*\s*-\s*第(?P<episode>\d+(?:-\d+)?)话",
+            # 匹配 [Doomdos] - 荒古恩仇录·破 风篇 - 第32话 - [1080P] 这种格式（备选模式）
             r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$).*?)\s*-\s*第(?P<episode>\d+(?:-\d+)?)话\s*",
             r"(?<!\d{4})第(?P<episode>\d+(?:-\d+)?)集",
             r"(?<!\d{4})第(?P<episode>\d+(?:-\d+)?)话",
@@ -1255,10 +1266,17 @@ class VideoRenamer:
 
         # 提取字幕组信息（通常在文件名开头，格式为[字幕组名称]）
         # 在所有其他正则匹配之后提取，确保不会被覆盖
+        # 但要排除已被识别为标题的中文方括号内容（如 [我是卧底].I'm.Undercover.2026...）
         release_group_pattern = r"^\[([^\]]+)\]"
         release_group_match = re.search(release_group_pattern, base_name)
         if release_group_match:
-            metadata["release_group"] = release_group_match.group(1)
+            potential_group = release_group_match.group(1)
+            # 如果方括号内容是纯中文，且已经被识别为 show_name，则不当作发布组
+            is_chinese_only = bool(re.match(r'^[\u4e00-\u9fff]+$', potential_group))
+            if is_chinese_only and metadata.get("show_name") == potential_group:
+                pass  # 这是标题，不是发布组
+            else:
+                metadata["release_group"] = potential_group
 
         # 提取末尾的发布组格式（如 -MagicStar）
         release_group_trailing_pattern = r"\-([A-Za-z]+)\.(?:mkv|mp4|avi|flv|mov|wmv)$"
@@ -1311,6 +1329,9 @@ class VideoRenamer:
                 show_name = metadata["show_name"]
                 # 1. 移除首部的发布组方括号，如 [Dynamis One]
                 show_name = re.sub(r"^\[[^\]]+\]\s*", "", show_name)
+                # 1.5 移除括号内的纯语言标签 (JP)、(CN) 等
+                language_tags_in_brackets = r"\s*\((JP|CN|CHS|JAP|ENG|CHT|SC|TC)\)\s*"
+                show_name = re.sub(language_tags_in_brackets, " ", show_name, flags=re.IGNORECASE)
                 # 2. 移除首部的无括号发布组格式（如 AHTV.Judge, AHTV Judge, VCB-Studio）
                 # 修复：添加已知发布组白名单检查，避免误判剧名中的大写字母缩写（如 MF GHOST 中的 MF）
                 known_release_groups = [
@@ -1340,7 +1361,7 @@ class VideoRenamer:
                         return ""
                     return match.group(0)  # 保留原始内容
                 show_name = re.sub(r"^([A-Z]{2,6})(?:[._]|\s)\s*", remove_release_group, show_name)
-                # 2. 移除括号内的年份 (2022) - 无论位置如何
+                # 2.5 移除括号内的年份 (2022) - 无论位置如何
                 show_name = re.sub(r"\s*\(\d{4}(?:-\d{4})?\)\s*", " ", show_name)
                 # 2.5 移除包含质量标记的圆括号内容（如 (1080p NF WEB-DL x265 10bit Silence)）
                 quality_keywords = r"1080p|720p|480p|360p|2160p|4k|uhd|fhd|bluray|bdrip|web-dl|webrip|dvdrip|bd|dvd|web|x264|x265|h264|h265|hevc|dts|ac3|ddp|aac|dts-hd|truehd|atmos|flac|repack|proper|internal|5\.1|7\.1|10bit|NF|Netflix|Disney\+|HBO|Amazon|Prime|Apple\+"
@@ -1638,6 +1659,13 @@ class VideoRenamer:
             r"(?i)(^|[^a-zA-Z])(第\d+季|第\d+集|EP\d+|\d+话|OVA\d+|SP\d+)", base_name
         ):
             is_tv = True
+        # 检查 "- 集号" 格式（如 "Show Name - 19"）
+        # 避免将年份误识别为集号（如 "Show Name 2025 - 19" 中，2025是年份，19是集号）
+        elif re.search(
+            r"(?i)^\[?[^\]]*\]?\s*[^\-]+\s+-\s+\d{1,3}(?!\d{4})(?:\s|\[|\(|$)",
+            base_name,
+        ):
+            is_tv = True
         elif metadata.get("season") and metadata.get("episode"):
             # 检查season和episode是否合理（避免将年份等数字误识别）
             try:
@@ -1652,10 +1680,53 @@ class VideoRenamer:
                         "year"
                     ):
                         is_tv = False
+                    # 进一步检查：如果季号等于年份，很可能是误识别
+                    elif metadata.get("year") and str(season_num) == metadata.get(
+                        "year"
+                    ):
+                        is_tv = False
                     else:
                         is_tv = True
             except (ValueError, TypeError):
                 is_tv = False
+        
+        # 统一检查：如果已经识别为TV，需要验证season和episode是否合理
+        if is_tv:
+            if metadata.get("season") and metadata.get("episode"):
+                try:
+                    season_num = int(metadata["season"])
+                    episode_num = int(metadata["episode"])
+                    # 如果episode大于1000，可能是误识别
+                    if episode_num > 1000:
+                        is_tv = False
+                    # 如果season大于10
+                    elif season_num > 10:
+                        # 进一步检查：如果季号等于年份，很可能是误识别
+                        if metadata.get("year") and str(season_num) == metadata.get("year"):
+                            # 清空被误识别的season，但保持is_tv=True因为episode仍然有效
+                            metadata["season"] = None
+                        else:
+                            # 季号大于10但不等于年份，可能是多季剧集，不清空
+                            pass
+                    # 进一步检查：如果集号等于年份，很可能是误识别
+                    elif metadata.get("year") and str(episode_num) == metadata.get("year"):
+                        is_tv = False
+                except (ValueError, TypeError):
+                    is_tv = False
+            elif metadata.get("season"):
+                try:
+                    season_num = int(metadata["season"])
+                    # 如果season大于10，可能是误识别
+                    if season_num > 10:
+                        # 进一步检查：如果季号等于年份，很可能是误识别
+                        if metadata.get("year") and str(season_num) == metadata.get("year"):
+                            # 清空被误识别的season，但保持is_tv=True因为episode可能仍然有效
+                            metadata["season"] = None
+                        else:
+                            # 季号大于10但不等于年份，可能是多季剧集，不清空
+                            pass
+                except (ValueError, TypeError):
+                    is_tv = False
         elif metadata.get("season") or metadata.get("episode"):
             # 只有season或只有episode的情况
             try:
@@ -1689,7 +1760,8 @@ class VideoRenamer:
         # 2. 检测电影类型
         is_movie = False
         # 优先检测PT/网盘常见的电影命名格式（包含分辨率、编码、来源等信息）
-        if re.search(
+        # 但如果已经识别为TV（有明确的季集信息），则不再识别为电影
+        if not is_tv and re.search(
             r"(?i)(2160p|4k|uhd|fhd|1080p|720p|480p|360p|240p)(?:\.|\s)(web-dl|bluray|bdrip|hdrip|dvdrip|webdl|bd|dvd)(?:\.|\s)(x264|x265|h264|h265|hevc|xvid|divx)",
             base_name,
         ):
@@ -2032,7 +2104,7 @@ class VideoRenamer:
         cleaned = re.sub(r"\s+\d{4}\s*$", "", cleaned)
 
         # 4.5 移除包含质量标记的圆括号内容（如 (1080p NF WEB-DL x265 10bit Silence)）
-        # 质量标记关键词
+        # 质量标记关键词（不包含语言标签）
         quality_keywords = r"1080p|720p|480p|360p|2160p|4k|uhd|fhd|bluray|bdrip|web-dl|webrip|dvdrip|bd|dvd|web|x264|x265|h264|h265|hevc|dts|ac3|ddp|aac|dts-hd|truehd|atmos|flac|repack|proper|internal|5\.1|7\.1|10bit|NF|Netflix|Disney\+|HBO|Amazon|Prime|Apple\+"
         # 移除包含质量标记的圆括号内容
         cleaned = re.sub(r"\([^)]*(" + quality_keywords + r")[^)]*\)", "", cleaned, flags=re.IGNORECASE)
@@ -2076,8 +2148,6 @@ class VideoRenamer:
             "5.1",
             "7.1",
             "GB",
-            "JP",
-            "CHS",
             "JPSC",
         ]
         for tag in quality_tags:
@@ -2087,6 +2157,11 @@ class VideoRenamer:
             cleaned = re.sub(
                 r"\s+" + re.escape(tag) + r"$", "", cleaned, flags=re.IGNORECASE
             )
+
+        # 单独处理语言标签（在括号内的语言标签，如 (JP)、(CN) 等）
+        # 只移除括号内的纯语言标签，不影响其他内容
+        language_tags_in_brackets = r"\((JP|CN|CHS|JAP|ENG|CHT|SC|TC)\)"
+        cleaned = re.sub(language_tags_in_brackets, "", cleaned, flags=re.IGNORECASE)
 
         # 5. 移除所有方括号内容（包含技术参数的块、发布组、集号等）
         # 先移除方括号内容，保留剧名部分
@@ -2717,7 +2792,7 @@ class VideoRenamer:
             if not results:
                 logger.warning(f"没有找到匹配 '{search_term}' 的结果")
 
-                # 备选策略：尝试使用 cleaned_name 搜索
+                # 备选策略1：尝试使用 cleaned_name 搜索
                 cleaned_name = metadata.get("cleaned_name", "")
                 if cleaned_name and cleaned_name != search_term:
                     logger.info(
@@ -2748,6 +2823,60 @@ class VideoRenamer:
                         elif alt_results:
                             results = alt_results[:5]  # 取前5个结果
                             logger.info(f"备选搜索返回 {len(results)} 个结果")
+
+                # 备选策略2：智能截断剧名，尝试去除副标题后重新搜索
+                # 适用于 "请吃红小豆吧！新年快乐" 格式，实际剧名是 "请吃红小豆吧"
+                if not results and re.search(r"[\u4e00-\u9fff]", search_term):
+                    # 尝试截断策略：按常见分隔符拆分
+                    truncate_patterns = [
+                        r"^(.+?)[！!？?\s]+.+$",  # 感叹号/问号分隔
+                        r"^(.+?)～.+$",  # 波浪号分隔
+                        r"^(.+?)\s+第\d+[集话]",  # 集号前截断
+                    ]
+                    for truncate_pattern in truncate_patterns:
+                        truncated_match = re.match(truncate_pattern, search_term)
+                        if truncated_match:
+                            truncated_name = truncated_match.group(1).strip()
+                            if len(truncated_name) >= 2 and truncated_name != search_term:
+                                logger.info(
+                                    f"尝试截断搜索词: '{search_term}' -> '{truncated_name}'"
+                                )
+                                truncated_results = self._search_with_language(
+                                    truncated_name, media_type_hint, search_year, primary_language
+                                ) or self._search_with_language(
+                                    truncated_name, media_type_hint, search_year, secondary_language
+                                )
+                                if truncated_results:
+                                    logger.info(
+                                        f"截断搜索找到 {len(truncated_results)} 个结果"
+                                    )
+                                    results = truncated_results[:5]
+                                    break
+
+                    # 如果上述截断策略都失败，尝试智能缩短策略
+                    # 适用于中文名没有分隔符的情况（如 "请吃红小豆吧新年快乐"）
+                    # 策略：尝试按2-4个字符逐步缩短
+                    if not results and len(search_term) > 4:
+                        # 常见的副标题关键词
+                        subtitle_keywords = ["新年快乐", "特别篇", "番外", "剧场版", "OVA", "SP"]
+                        for keyword in subtitle_keywords:
+                            if search_term.endswith(keyword):
+                                truncated_name = search_term[:-len(keyword)]
+                                if len(truncated_name) >= 2:
+                                    logger.info(
+                                        f"尝试移除副标题关键词: '{search_term}' -> '{truncated_name}'"
+                                    )
+                                    truncated_results = self._search_with_language(
+                                        truncated_name, media_type_hint, search_year, primary_language
+                                    ) or self._search_with_language(
+                                        truncated_name, media_type_hint, search_year, secondary_language
+                                    )
+                                    if truncated_results:
+                                        logger.info(
+                                            f"移除副标题后找到 {len(truncated_results)} 个结果"
+                                        )
+                                        results = truncated_results[:5]
+                                        break
 
                 if not results:
                     # 确保返回的metadata包含必要字段
