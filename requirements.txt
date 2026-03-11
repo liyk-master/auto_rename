@@ -9,6 +9,10 @@ tqdm>=4.60.0
 # HTTP客户端 - Python 3.9兼容版本
 httpx>=0.24.0
 
+# 数据库依赖 - 用于 emya 入库功能
+SQLAlchemy>=2.0.0
+PyMySQL>=1.1.0
+
 # 可选依赖 - 注释掉需要Python 3.12的包
 p123client  # 需要Python 3.12，暂时注释
 

@@ -201,6 +201,8 @@ def force_process_file(file_path: str, config: dict) -> bool:
         tmdb_config = config.get("tmdb")
         emos_config = config.get("emos", {})
         p123_config = config.get("p123", {})
+        cloud189_config = config.get("cloud189", {})
+        yun139_config = config.get("yun139", {})
 
         # DEBUG: 打印 TMDB 配置
         print(f"DEBUG: TMDB config: {tmdb_config}")
@@ -230,11 +232,14 @@ def force_process_file(file_path: str, config: dict) -> bool:
             tmdb_config=tmdb_config,
             emos_config=emos_config,
             p123_config=p123_config,
+            cloud189_config=cloud189_config,
+            yun139_config=yun139_config,
             processing_config=config.get("processing"),
             path_mappings=monitoring_config.get("path_mappings"),
             telegram_config=config.get("telegram"),
             llm_config=config.get("llm_translation"),
             config=config,  # 传递完整配置以启用 llm_fallback
+            emya_db_config=config.get("emya_db"),  # 传递 emya 数据库配置
         )
 
         # 初始化并添加下载器（用于任务清理）

@@ -907,6 +907,8 @@ class VideoRenamer:
                     show_name = metadata["show_name"]
                     # Remove release group in brackets at the beginning
                     show_name = re.sub(r"^\[[^\]]+\]\s*", "", show_name)
+                    # Remove Chinese brackets and keep content (【我推的孩子】 -> 我推的孩子)
+                    show_name = re.sub(r"【([^】]+)】", r"\1", show_name)
                     # Remove release group without brackets at the beginning (including space-separated)
                     show_name = re.sub(r"^[A-Z]{2,6}(?:[._]|\s)\s*", "", show_name)
                     # Remove common release group tags
@@ -957,6 +959,30 @@ class VideoRenamer:
                 # 对于电影，删除可能的 season/episode 字段
                 metadata.pop("season", None)
                 metadata.pop("episode", None)
+
+            # 8. 确定分类信息
+            try:
+                category_path = self._determine_category(metadata)
+                # 解析分类路径：TV Shows/国产剧 -> base_category="TV Shows", sub_category="国产剧"
+                parts = category_path.split("/")
+                if len(parts) >= 2:
+                    metadata["base_category"] = parts[0]
+                    metadata["sub_category"] = parts[1]
+                else:
+                    metadata["base_category"] = parts[0] if parts else ""
+                    metadata["sub_category"] = ""
+                metadata["category_path"] = category_path
+                logger.debug(f"分类信息: {category_path}")
+            except Exception as e:
+                logger.warning(f"确定分类失败: {e}")
+                # 使用默认分类
+                if metadata.get("media_type") == "movie":
+                    metadata["base_category"] = "Movies"
+                    metadata["sub_category"] = "外语电影"
+                else:
+                    metadata["base_category"] = "TV Shows"
+                    metadata["sub_category"] = "国产剧"
+                metadata["category_path"] = f"{metadata['base_category']}/{metadata['sub_category']}"
 
             return metadata
         except Exception as e:
@@ -1138,6 +1164,9 @@ class VideoRenamer:
             r"^(?P<show_name>[A-Za-z]+(?:\.[A-Za-z]+)*)\.(?P<year>\d{4})\.[a-z0-9]+$",
             # 0. Special pattern for bracket-format anime: [Group][ShowName][48][GB][1080P][x264_AAC].mp4
             r"^\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
+            # 0.0.1 Special pattern for [Group] [ShowName] - Episode [TechInfo] format (Chinese brackets converted)
+            # Like: [ANi] [我推的孩子] - 33 [1080P][Baha][WEB-DL][AAC AVC][CHT].mp4
+            r"^\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\s*-\s*(?P<episode>\d{1,4}(?:-\d{1,4})?)\s*\[",
             # 0.1 Special pattern for bracket-format anime with season: [Group][ShowName][S2][12][...]
             r"^\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\s*\[S(?P<season>\d+)\]\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
             # 0.2 Special pattern for anime with episode title: [Group][Detective Conan_30th_1hSP][1187][Episode Title][...].mp4
@@ -1211,6 +1240,8 @@ class VideoRenamer:
             # 修复：匹配 "Spy x Family 2 - 05" 格式 (季号在集号前面，用空格分隔)
             r"^(?P<show_name>(?!^\d+$).+?)\s+(?P<season>\d+)\s*-\s*(?P<episode>\d{2})(?:\s|\.|\[|$)",
             # --- 常用 BT 资源/动漫格式匹配 ---
+            # 匹配 [字幕组] Show Name 2 [09] 格式（标题末尾数字为季号，集号在方括号中）
+            r"^\[[^\]]+\]\s*(?P<show_name>[A-Za-z][A-Za-z0-9\s]+?)\s+(?P<season>\d+)\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
             # 匹配 [VCB-Studio] Show Name [12] 或 [denisplay] Detective Conan Movie 12 - Full Score of Fear (2008) [20th] 等格式
             r"^\[[^\]]+\]\s*(?P<show_name>.*?)\s*(?:\(\d{4}\))?\s*(?:\[[^\]\d]+\])?\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
             # 匹配 [VCB-Studio] Show Name [OVA03] 等OVA格式
@@ -1329,6 +1360,8 @@ class VideoRenamer:
                 show_name = metadata["show_name"]
                 # 1. 移除首部的发布组方括号，如 [Dynamis One]
                 show_name = re.sub(r"^\[[^\]]+\]\s*", "", show_name)
+                # 1.1 移除中文方括号并保留内容（如 【我推的孩子】 -> 我推的孩子）
+                show_name = re.sub(r"【([^】]+)】", r"\1", show_name)
                 # 1.5 移除括号内的纯语言标签 (JP)、(CN) 等
                 language_tags_in_brackets = r"\s*\((JP|CN|CHS|JAP|ENG|CHT|SC|TC)\)\s*"
                 show_name = re.sub(language_tags_in_brackets, " ", show_name, flags=re.IGNORECASE)
@@ -1940,25 +1973,41 @@ class VideoRenamer:
             # 4. 处理空格分隔的副标题
             # 例如：瑞草洞 Law and the City -> 瑞草洞
             # 但保留类似"假面骑士 ZEZTZ"中的系列标识
+            # 以及类似"人中之龍 Powered by 日本統一"这种中文夹英文的情况
             if " " in show_name and re.search(r"[\u4e00-\u9fff]", show_name):
                 parts = show_name.split(" ")
-                # 收集所有相关部分：包含中文的部分和可能的系列标识
-                relevant_parts = []
-                found_chinese = False
-                for part in parts:
+                # 检查后面是否还有中文部分（用于处理"中文 英文 中文"的情况）
+                has_chinese_after = False
+                for i, part in enumerate(parts):
                     if re.search(r"[\u4e00-\u9fff]", part):
-                        relevant_parts.append(part)
-                        found_chinese = True
-                    elif found_chinese and (
-                        part.isupper() or re.match(r"^[A-Z0-9]{2,}$", part)
-                    ):
-                        # 如果已经找到了中文部分，并且下一个部分是大写字母组合（可能是系列标识），则保留
-                        relevant_parts.append(part)
-                    elif found_chinese:
-                        # 否则停止收集
+                        # 检查后面是否还有中文
+                        for later_part in parts[i+1:]:
+                            if re.search(r"[\u4e00-\u9fff]", later_part):
+                                has_chinese_after = True
+                                break
                         break
-                if relevant_parts:
-                    show_name = " ".join(relevant_parts)
+                
+                if has_chinese_after:
+                    # 如果后面还有中文，保留整个名称（如"人中之龍 Powered by 日本統一"）
+                    pass
+                else:
+                    # 否则只保留中文部分和可能的大写系列标识
+                    relevant_parts = []
+                    found_chinese = False
+                    for part in parts:
+                        if re.search(r"[\u4e00-\u9fff]", part):
+                            relevant_parts.append(part)
+                            found_chinese = True
+                        elif found_chinese and (
+                            part.isupper() or re.match(r"^[A-Z0-9]{2,}$", part)
+                        ):
+                            # 如果已经找到了中文部分，并且下一个部分是大写字母组合（可能是系列标识），则保留
+                            relevant_parts.append(part)
+                        elif found_chinese:
+                            # 否则停止收集
+                            break
+                    if relevant_parts:
+                        show_name = " ".join(relevant_parts)
 
             # 5. 移除常见的修饰词
             modifiers = [
@@ -2088,6 +2137,10 @@ class VideoRenamer:
         """清理文件名，移除常见的修饰词和标记，为搜索做准备"""
         # 1. 移除后缀
         cleaned = os.path.splitext(filename)[0]
+
+        # 1.5 预处理：将中文方括号转换为英文方括号，便于后续正则匹配
+        # 这样可以统一处理 [xxx] 和 【xxx】 格式
+        cleaned = cleaned.replace("【", "[").replace("】", "]")
 
         # 2. 预处理：移除括号内的技术参数和发布组
         # 质量标记正则表达式
@@ -3069,6 +3122,21 @@ class VideoRenamer:
                 metadata["poster_path"] = details.get("poster_path", "")
                 metadata["backdrop_path"] = details.get("backdrop_path", "")
 
+                # 获取季信息（包含季海报）
+                if "seasons" in details:
+                    metadata["seasons_info"] = [
+                        {
+                            "season_number": s.get("season_number"),
+                            "name": s.get("name", ""),
+                            "poster_path": s.get("poster_path", ""),
+                            "air_date": s.get("air_date", ""),
+                            "episode_count": s.get("episode_count", 0),
+                        }
+                        for s in details["seasons"]
+                        if s.get("season_number", 0) > 0  # 排除特别篇
+                    ]
+                    logger.debug(f"获取到 {len(metadata['seasons_info'])} 个季信息")
+
                 # 获取演职人员信息
                 credits = self.tmdb_client.get_tv_credits(best_match["id"])
                 if credits:
@@ -3107,34 +3175,28 @@ class VideoRenamer:
                             search_episode,
                             language="zh-CN",
                         )
+                        
                         # 如果中文剧集信息不完整，尝试获取英文信息
                         if not episode_details or not episode_details.get("name"):
-                            episode_details = self.tmdb_client.get_tv_episode_details(
+                            episode_details_en = self.tmdb_client.get_tv_episode_details(
                                 best_match["id"],
                                 metadata["season"],
                                 metadata["episode"],
                                 language="en-US",
                             )
-                            logger.info("中文剧集信息不完整，使用英文信息")
+                            if episode_details_en:
+                                logger.info("中文剧集信息不完整，使用英文信息")
+                                episode_details = episode_details_en
 
-                            if episode_details:
-                                # 设置剧集名称
-                                metadata["episode_name"] = episode_details.get(
-                                    "name", ""
-                                )
-                                metadata["episode_overview"] = episode_details.get(
-                                    "overview", ""
-                                )
-                                metadata["air_date"] = episode_details.get(
-                                    "air_date", ""
-                                )
-                                metadata["episode_rating"] = episode_details.get(
-                                    "vote_average", 0
-                                )
-                                # 保存剧集缩略图路径
-                                metadata["still_path"] = episode_details.get(
-                                    "still_path", ""
-                                )
+                        # 设置剧集信息（无论中英文）
+                        if episode_details:
+                            metadata["episode_name"] = episode_details.get("name", "")
+                            metadata["episode_overview"] = episode_details.get("overview", "")
+                            metadata["air_date"] = episode_details.get("air_date", "")
+                            metadata["episode_rating"] = episode_details.get("vote_average", 0)
+                            # 保存剧集缩略图路径
+                            metadata["still_path"] = episode_details.get("still_path", "")
+                            logger.debug(f"获取到剧集信息: name={metadata['episode_name']}, still_path={metadata['still_path']}")
                     except Exception as e:
                         logger.warning(f"获取剧集详情失败: {e}")
             else:

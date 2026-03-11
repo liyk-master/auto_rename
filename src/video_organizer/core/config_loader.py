@@ -26,6 +26,28 @@ DEFAULT_CONFIG = {
         "organize_source_id": 0,  # 需要整理的源目录ID
         "organize_target_id": 0,  # 整理到的目标目录ID
     },
+    "cloud189": {
+        "username": "",
+        "password": "",
+        "cookie": "",
+        "parent_folder_id": "-11",
+        "family_id": "124822297192865",
+        "max_workers": 5,
+        "strm_server": "",  # STRM 服务器地址，如 http://192.168.2.148:5000
+        "strm_output_dir": "",  # STRM 文件输出目录
+        "delete_after_strm": False,  # 生成 STRM 后删除云端文件
+    },
+    "yun139": {
+        "authorization": "",  # Base64编码的认证信息
+        "cloud_type": "personal_new",  # 云盘类型: personal_new, personal, family, group
+        "cloud_id": "",  # 家庭云/群组云ID
+        "parent_id": "/",  # 根目录文件夹ID，空字符串表示根目录
+        "custom_part_size": 0,  # 自定义分片大小，0为自动
+        "max_workers": 3,  # 并行上传视频数量（每个视频内分片串行上传）
+        "strm_server": "",  # STRM 服务器地址，如 http://192.168.2.148:5010
+        "strm_output_dir": "",  # STRM 文件输出目录
+        "delete_after_strm": False,  # 生成 STRM 后删除云端文件
+    },
     "naming": {
         "tv_show_format": "{show_name}/Season {season:02d}/{show_name} {season_episode} {quality_tags}",
         "movie_format": "{movie_name}{year_suffix}/{movie_name}{year_suffix} {quality_tags}",
@@ -47,6 +69,7 @@ DEFAULT_CONFIG = {
         "min_file_size": 0,
         "ignore_patterns": [],
         "upload_targets": "emos",
+        "max_upload_workers": 3,  # 并行上传工作线程数
     },
     "logging": {
         "log_level": "INFO",
@@ -63,6 +86,21 @@ DEFAULT_CONFIG = {
     },
     "llm_fallback": {"enabled": False, "max_concurrent": 2},
     "downloaders": [],
+    "emya_db": {
+        "enabled": False,
+        "host": "localhost",
+        "port": 3306,
+        "user": "root",
+        "password": "",
+        "database": "emya",
+        "charset": "utf8mb4",
+        "pool_size": 5,
+        "max_overflow": 10,
+        "pool_recycle": 3600,
+        "default_user_id": 1,
+        "default_tv_library": "电视剧",
+        "default_movie_library": "电影",
+    },
 }
 
 

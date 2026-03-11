@@ -28,11 +28,14 @@ class VideoFileHandler:
         tmdb_config: Optional[Dict[str, Any]] = None,
         emos_config: Optional[Dict[str, Any]] = None,
         p123_config: Optional[Dict[str, Any]] = None,
+        cloud189_config: Optional[Dict[str, Any]] = None,
+        yun139_config: Optional[Dict[str, Any]] = None,
         processing_config: Optional[Dict[str, Any]] = None,
         path_mappings: Optional[Dict[str, str]] = None,
         telegram_config: Optional[Dict[str, Any]] = None,
         llm_config: Optional[Dict[str, Any]] = None,
         config: Optional[Dict[str, Any]] = None,
+        emya_db_config: Optional[Dict[str, Any]] = None,
     ):
         """
         初始化视频文件处理器
@@ -46,6 +49,7 @@ class VideoFileHandler:
             processing_config: 处理配置字典
             path_mappings: 路径映射字典 (下载器路径 -> 本地路径)
             llm_config: LLM 翻译配置
+            yun139_config: 139云盘配置字典
         """
         # 初始化日志记录器
         self.logger = get_logger(__name__)
@@ -61,9 +65,17 @@ class VideoFileHandler:
         )
         # 清理配置值中的行内注释
         raw_targets = self.processing_config.get("upload_targets", "emos")
-        self.upload_targets = (
-            str(raw_targets).split("#")[0].split(";")[0].strip()
-        )  # emos, p123, both
+        raw_targets = str(raw_targets).split("#")[0].split(";")[0].strip()
+        
+        # 解析上传目标：支持逗号分隔的多选，如 "emos,p123,cloud189"
+        # 也兼容旧格式: emos, p123, both, all
+        if raw_targets == "both":
+            self.upload_targets = ["emos", "p123"]
+        elif raw_targets == "all":
+            self.upload_targets = ["emos", "p123", "cloud189", "yun139"]
+        else:
+            # 逗号分隔的多选
+            self.upload_targets = [t.strip() for t in raw_targets.split(",") if t.strip()]
 
         # 初始化Emos配置
         # 初始化Emos配置
@@ -79,7 +91,7 @@ class VideoFileHandler:
         )  # 分片大小(MB)，默认50
         self.max_upload_workers = int(
             self.processing_config.get("max_upload_workers", 1)
-        )  # 并发上传数
+        )  # 并发上传数（全局默认）
 
         # 初始化 123 云盘配置
         self.p123_config = p123_config or {}
@@ -89,6 +101,42 @@ class VideoFileHandler:
         self.p123_max_workers = int(
             self.p123_config.get("max_workers", 2)
         )  # 默认2个线程
+
+        # 初始化天翼云盘配置
+        self.cloud189_config = cloud189_config or {}
+        raw_cloud189_username = self.cloud189_config.get("username", "")
+        self.cloud189_username = str(raw_cloud189_username).split("#")[0].split(";")[0].strip()
+        raw_cloud189_password = self.cloud189_config.get("password", "")
+        self.cloud189_password = str(raw_cloud189_password).split("#")[0].split(";")[0].strip()
+        raw_cloud189_cookie = self.cloud189_config.get("cookie", "")
+        self.cloud189_cookie = str(raw_cloud189_cookie).split("#")[0].split(";")[0].strip()
+        raw_cloud189_parent_id = self.cloud189_config.get("parent_folder_id", "-11")
+        self.cloud189_parent_id = str(raw_cloud189_parent_id).split("#")[0].split(";")[0].strip()
+        raw_cloud189_family_id = self.cloud189_config.get("family_id", "623471237149826045")
+        self.cloud189_family_id = str(raw_cloud189_family_id).split("#")[0].split(";")[0].strip()
+        self.cloud189_max_workers = int(self.cloud189_config.get("max_workers", 5))
+        raw_cloud189_strm_server = self.cloud189_config.get("strm_server", "")
+        self.cloud189_strm_server = str(raw_cloud189_strm_server).split("#")[0].split(";")[0].strip()
+        raw_cloud189_strm_output = self.cloud189_config.get("strm_output_dir", "")
+        self.cloud189_strm_output_dir = str(raw_cloud189_strm_output).split("#")[0].split(";")[0].strip()
+        self.cloud189_delete_after_strm = self.cloud189_config.get("delete_after_strm", False)
+
+        # 初始化 139 云盘配置
+        self.yun139_config = yun139_config or {}
+        raw_yun139_auth = self.yun139_config.get("authorization", "")
+        self.yun139_authorization = str(raw_yun139_auth).split("#")[0].split(";")[0].strip()
+        self.yun139_cloud_type = self.yun139_config.get("cloud_type", "personal_new")
+        self.yun139_cloud_id = self.yun139_config.get("cloud_id", "")
+        # parent_id: / 或空字符串表示根目录
+        raw_yun139_parent_id = self.yun139_config.get("parent_id", "/")
+        self.yun139_parent_id = str(raw_yun139_parent_id).split("#")[0].split(";")[0].strip() or "/"
+        self.yun139_custom_part_size = int(self.yun139_config.get("custom_part_size", 0))
+        self.yun139_max_workers = int(self.yun139_config.get("max_workers", 3))  # 并行上传视频数
+        raw_yun139_strm_server = self.yun139_config.get("strm_server", "")
+        self.yun139_strm_server = str(raw_yun139_strm_server).split("#")[0].split(";")[0].strip()
+        raw_yun139_strm_output = self.yun139_config.get("strm_output_dir", "")
+        self.yun139_strm_output_dir = str(raw_yun139_strm_output).split("#")[0].split(";")[0].strip()
+        self.yun139_delete_after_strm = self.yun139_config.get("delete_after_strm", False)
 
         # 初始化 Telegram 配置
         self.telegram_config = telegram_config or {}
@@ -122,6 +170,53 @@ class VideoFileHandler:
             except Exception as e:
                 self.logger.error(f"初始化123云盘上传器失败: {e}")
 
+        # 初始化天翼云盘上传器
+        self.cloud189_uploader = None
+        if self.cloud189_username or self.cloud189_cookie:
+            try:
+                from ..upload.upload_cloud189 import Cloud189Uploader
+
+                self.cloud189_uploader = Cloud189Uploader(
+                    username=self.cloud189_username,
+                    password=self.cloud189_password,
+                    cookie=self.cloud189_cookie,
+                    parent_folder_id=self.cloud189_parent_id,
+                    family_id=self.cloud189_family_id,
+                    telegram_config=self.telegram_config,
+                    max_workers=self.cloud189_max_workers,
+                    strm_server=self.cloud189_strm_server,
+                    strm_output_dir=self.cloud189_strm_output_dir,
+                    delete_after_strm=self.cloud189_delete_after_strm,
+                )
+                self.logger.info("天翼云盘上传器初始化成功")
+            except Exception as e:
+                self.logger.error(f"初始化天翼云盘上传器失败: {e}")
+
+        # 初始化 139 云盘上传器
+        self.yun139_uploader = None
+        if self.yun139_authorization:
+            try:
+                from ..upload.upload_yun139 import Yun139Uploader
+
+                self.yun139_uploader = Yun139Uploader(
+                    authorization=self.yun139_authorization,
+                    cloud_type=self.yun139_cloud_type,
+                    cloud_id=self.yun139_cloud_id,
+                    parent_id=self.yun139_parent_id,
+                    custom_part_size=self.yun139_custom_part_size,
+                    telegram_config=self.telegram_config,
+                    strm_server=self.yun139_strm_server,
+                    strm_output_dir=self.yun139_strm_output_dir,
+                    delete_after_strm=self.yun139_delete_after_strm,
+                )
+                # 如果 yun139 配置了 max_workers，则覆盖全局设置
+                if self.yun139_max_workers > 0:
+                    self.max_upload_workers = self.yun139_max_workers
+                    self.logger.info(f"139云盘使用自定义并发数: {self.yun139_max_workers}")
+                self.logger.info("139云盘上传器初始化成功")
+            except Exception as e:
+                self.logger.error(f"初始化139云盘上传器失败: {e}")
+
         # 初始化文件重命名器
         try:
             # 从配置中获取TMDB API密钥
@@ -145,6 +240,37 @@ class VideoFileHandler:
         except Exception as e:
             log_exception(self.logger, "初始化字幕处理器失败")
             self.subtitle_handler = None
+
+        # 初始化 emya 数据库入库功能
+        self.emya_db_config = emya_db_config or {}
+        self.emya_enabled = self.emya_db_config.get("enabled", False)
+        self.emya_controller = None
+
+        if self.emya_enabled:
+            try:
+                from .emya_api import init_controller, EmyaApiController
+
+                # 初始化数据库连接
+                db_config = {
+                    "host": self.emya_db_config.get("host", "localhost"),
+                    "port": self.emya_db_config.get("port", 3306),
+                    "user": self.emya_db_config.get("user", "root"),
+                    "password": self.emya_db_config.get("password", ""),
+                    "database": self.emya_db_config.get("database", "emya"),
+                    "charset": self.emya_db_config.get("charset", "utf8mb4"),
+                    "pool_size": self.emya_db_config.get("pool_size", 5),
+                    "max_overflow": self.emya_db_config.get("max_overflow", 10),
+                    "pool_recycle": self.emya_db_config.get("pool_recycle", 3600),
+                }
+
+                self.emya_controller = init_controller(
+                    db_config=db_config,
+                    default_user_id=self.emya_db_config.get("default_user_id", 1),
+                )
+                self.logger.info("emya 数据库入库功能初始化成功")
+            except Exception as e:
+                self.logger.error(f"初始化 emya 数据库入库功能失败: {e}")
+                self.emya_enabled = False
 
         # 父监控器引用
         self._parent_monitor = None
@@ -708,8 +834,10 @@ class VideoFileHandler:
             matched_item_id = None
             matched_item_type = None
 
-            # 第二步：如果获取到了tmdb_id、type、title，且需要使用 Emos (非仅 p123)，调用第二个API
-            if tmdb_id and media_type and title and self.upload_targets != "p123":
+            # 第二步：如果获取到了tmdb_id、type、title，且需要上传到 Emos，调用API获取item_id
+            # 只有 upload_targets 包含 emos 时才需要获取 item_id
+            needs_emos_item = "emos" in self.upload_targets
+            if tmdb_id and media_type and title and needs_emos_item:
                 # 构建动态 URL，使用实际的 tmdb_id, season, episode
                 season_num = int(season) if season else 1
                 episode_num = int(episode) if episode else 1
@@ -797,10 +925,10 @@ class VideoFileHandler:
                 #     print(f"✗ [线程#{worker_id}] 未找到匹配的item_id")
 
             # 步骤4：决定是否需要上传
-            # 如果只上传到123云盘，不需要 item_id，可以直接上传
-            if self.upload_targets == "p123":
-                # 只上传到123，不需要 Emos 的 item_id
-                print(f"✓ [线程#{worker_id}] 配置为仅上传到123云盘，跳过Emos匹配")
+            # 如果只上传到123云盘、天翼云盘或139云盘（不包含 emos），不需要 item_id，可以直接上传
+            if "emos" not in self.upload_targets and len(self.upload_targets) > 0:
+                # 只上传到 p123、cloud189 或 yun139，不需要 Emos 的 item_id
+                print(f"✓ [线程#{worker_id}] 配置为上传到 {self.upload_targets}，跳过Emos匹配")
                 self._execute_upload(
                     file_path,
                     media_type,
@@ -904,7 +1032,7 @@ class VideoFileHandler:
 
         try:
             # 1. 上传到 Emos
-            if self.upload_targets in ["emos", "both"]:
+            if "emos" in self.upload_targets:
                 print(f"\n{'='*60}")
                 print(f"📤 [线程#{worker_id}] 上传到 Emos")
                 print(f"类型: {matched_item_type}")
@@ -939,7 +1067,7 @@ class VideoFileHandler:
                         upload_results["emos"] = None
 
             # 2. 上传到 123云盘
-            if self.upload_targets in ["p123", "both"]:
+            if "p123" in self.upload_targets:
                 print(f"\n{'='*60}")
                 print(f"📤 [线程#{worker_id}] 上传到 123云盘")
                 print(f"{'='*60}\n")
@@ -1014,14 +1142,111 @@ class VideoFileHandler:
                         traceback.print_exc()
                         upload_results["p123"] = None
 
-            # 3. 判断是否所有目标云盘都上传成功
-            required_targets = []
-            if self.upload_targets == "emos":
-                required_targets = ["emos"]
-            elif self.upload_targets == "p123":
-                required_targets = ["p123"]
-            elif self.upload_targets == "both":
-                required_targets = ["emos", "p123"]
+            # 3. 上传到天翼云盘
+            if "cloud189" in self.upload_targets:
+                print(f"\n{'='*60}")
+                print(f"📤 [线程#{worker_id}] 上传到天翼云盘")
+                print(f"{'='*60}\n")
+
+                if not self.cloud189_uploader:
+                    print(f"✗ [线程#{worker_id}] 未配置天翼云盘，跳过上传")
+                    upload_results["cloud189"] = None
+                else:
+                    try:
+                        # 生成标准化路径
+                        try:
+                            renamed_relative_path = self.renamer.generate_new_path(
+                                metadata, original_path=file_path
+                            )
+                            target_filename = renamed_relative_path.name
+                            folder_parts = list(renamed_relative_path.parent.parts)
+                            base_folders = ["media"]
+                            folder_structure = base_folders + folder_parts
+                            print(
+                                f"[线程#{worker_id}] 标准化重命名计划: {os.path.basename(file_path)} -> {renamed_relative_path}"
+                            )
+                        except Exception as e:
+                            print(f"生成标准化路径失败: {e}，使用默认命名")
+                            target_filename = os.path.basename(file_path)
+                            folder_structure = None
+
+                        # 获取剧名/电影名
+                        show_name = title
+                        season = metadata.get("season")
+                        episode = metadata.get("episode")
+
+                        upload_results["cloud189"] = self.cloud189_uploader.upload_video(
+                            file_path,
+                            show_name=show_name,
+                            season=season,
+                            episode=episode,
+                            media_type=media_type,
+                            folder_structure=folder_structure,
+                            rename_to=target_filename,
+                        )
+
+                        if upload_results["cloud189"]:
+                            print(f"\n🎉 [线程#{worker_id}] 天翼云盘上传成功!")
+                        else:
+                            print(f"\n❌ [线程#{worker_id}] 天翼云盘上传失败!")
+                    except Exception as e:
+                        print(f"\n❌ [线程#{worker_id}] 天翼云盘上传异常: {e}")
+                        import traceback
+
+                        traceback.print_exc()
+                        upload_results["cloud189"] = None
+
+            # 4. 上传到139云盘
+            if "yun139" in self.upload_targets:
+                print(f"\n{'='*60}")
+                print(f"📤 [线程#{worker_id}] 上传到 139云盘")
+                print(f"{'='*60}\n")
+
+                if not self.yun139_uploader:
+                    print(f"✗ [线程#{worker_id}] 未配置139云盘，跳过上传")
+                    upload_results["yun139"] = None
+                else:
+                    try:
+                        # 生成标准化路径
+                        try:
+                            renamed_relative_path = self.renamer.generate_new_path(
+                                metadata, original_path=file_path
+                            )
+                            target_filename = renamed_relative_path.name
+                            folder_parts = list(renamed_relative_path.parent.parts)
+                            base_folders = ["media"]
+                            folder_structure = base_folders + folder_parts
+                            print(
+                                f"[线程#{worker_id}] 标准化重命名计划: {os.path.basename(file_path)} -> {renamed_relative_path}"
+                            )
+                        except Exception as e:
+                            print(f"生成标准化路径失败: {e}，使用默认命名")
+                            target_filename = os.path.basename(file_path)
+                            folder_structure = None
+
+                        upload_results["yun139"] = self.yun139_uploader.upload_video(
+                            file_path,
+                            media_type,
+                            str(matched_item_id),
+                            None,
+                            media_info,
+                            rename_to=target_filename,
+                            folder_structure=folder_structure,
+                        )
+
+                        if upload_results["yun139"]:
+                            print(f"\n🎉 [线程#{worker_id}] 139云盘上传成功!")
+                        else:
+                            print(f"\n❌ [线程#{worker_id}] 139云盘上传失败!")
+                    except Exception as e:
+                        print(f"\n❌ [线程#{worker_id}] 139云盘上传异常: {e}")
+                        import traceback
+
+                        traceback.print_exc()
+                        upload_results["yun139"] = None
+
+            # 5. 判断是否所有目标云盘都上传成功
+            required_targets = self.upload_targets  # 现在是列表格式
 
             # 检查所有必需的上传是否都成功
             all_success = all(
@@ -1033,6 +1258,94 @@ class VideoFileHandler:
                 # 从上传中集合移除，添加到已上传集合
                 self._uploaded_files.add(file_path)
                 self._uploading_files.discard(file_path)
+
+                # 执行 emya 数据库入库（如果启用）
+                emya_import_result = None
+                if self.emya_enabled and self.emya_controller:
+                    try:
+                        print(f"\n{'='*60}")
+                        print(f"📥 [线程#{worker_id}] 开始 emya 数据库入库")
+                        print(f"{'='*60}\n")
+
+                        # 获取媒体 URL
+                        media_url = None
+                        if upload_results.get("emos"):
+                            media_url = upload_results["emos"].get("url") or upload_results["emos"].get("media_uuid")
+                        elif upload_results.get("p123"):
+                            media_url = upload_results["p123"].get("url") or upload_results["p123"].get("fileid")
+                        elif upload_results.get("cloud189"):
+                            media_url = upload_results["cloud189"].get("url") or upload_results["cloud189"].get("file_id")
+                        elif upload_results.get("yun139"):
+                            media_url = upload_results["yun139"].get("url") or upload_results["yun139"].get("file_id")
+
+                        if media_url:
+                            # 构建入库元数据
+                            import_metadata = {
+                                "show_name": title,
+                                "title": title,
+                                "tmdb_id": int(tmdb_id) if tmdb_id else None,
+                                "media_type": media_type,
+                                "season": metadata.get("season"),
+                                "episode": metadata.get("episode"),
+                                "year": metadata.get("year"),
+                                "quality_tags": metadata.get("quality_tags"),
+                                "release_group": metadata.get("release_group"),
+                                "runtime": metadata.get("runtime"),
+                                # 使用 overview 作为 description
+                                "description": metadata.get("overview") or metadata.get("description"),
+                                "poster_path": metadata.get("poster_path"),
+                                "backdrop_path": metadata.get("backdrop_path"),
+                                "genres": metadata.get("genres"),
+                                "origin_country": metadata.get("origin_country"),
+                                "vote_average": metadata.get("rating") or metadata.get("vote_average"),
+                                # 添加原始标题
+                                "origin_title": metadata.get("original_name") or metadata.get("original_title"),
+                                # 添加演员和导演信息
+                                "peoples": {
+                                    "cast": metadata.get("cast", []),
+                                    "crew": metadata.get("crew", []),
+                                },
+                                # 添加剧集详细信息
+                                "episode_title": metadata.get("episode_name"),
+                                "still_path": metadata.get("still_path"),
+                                "air_date": metadata.get("air_date"),
+                                # 添加季信息（包含季海报）
+                                "seasons_info": metadata.get("seasons_info", []),
+                                # 文件信息
+                                "file_size": os.path.getsize(file_path) if os.path.exists(file_path) else None,
+                                "container": os.path.splitext(file_path)[1].lstrip('.'),
+                            }
+
+                            # 获取或创建默认媒体库
+                            from .emya_models import VideoType
+                            library_name = (
+                                self.emya_db_config.get("default_tv_library", "电视剧")
+                                if media_type == VideoType.TV
+                                else self.emya_db_config.get("default_movie_library", "电影")
+                            )
+
+                            # 执行入库
+                            result = self.emya_controller.import_from_metadata(
+                                metadata=import_metadata,
+                                library_id=0,  # 0 表示自动创建/获取默认媒体库
+                                media_url=str(media_url),
+                            )
+
+                            if result.success:
+                                emya_import_result = result.data
+                                print(f"✅ [线程#{worker_id}] emya 入库成功!")
+                                print(f"   视频ID: {result.data.get('video_id')}")
+                                self.logger.info(f"emya 入库成功: {result.data}")
+                            else:
+                                print(f"❌ [线程#{worker_id}] emya 入库失败: {result.message}")
+                                self.logger.warning(f"emya 入库失败: {result.message}")
+                        else:
+                            print(f"⚠️ [线程#{worker_id}] 未获取到媒体URL，跳过 emya 入库")
+                            self.logger.warning("未获取到媒体URL，跳过 emya 入库")
+
+                    except Exception as e:
+                        print(f"❌ [线程#{worker_id}] emya 入库异常: {e}")
+                        self.logger.error(f"emya 入库异常: {e}")
 
                 # 如果配置了上传后删除文件，执行删除操作
                 deleted = False
