@@ -951,8 +951,12 @@ class VideoRenamer:
             # 但对于电影类型，不设置默认值
             media_type = metadata.get("media_type", "")
             if media_type != "movie":
+                # 标记 season 是否是从文件名明确提取的（用于后续集数映射判断）
                 if metadata.get("season") is None:
                     metadata["season"] = 1
+                    metadata["season_is_default"] = True  # 标记为默认值
+                else:
+                    metadata["season_is_default"] = False  # 从文件名明确提取
                 if metadata.get("episode") is None:
                     metadata["episode"] = 1
             else:
@@ -1847,6 +1851,7 @@ class VideoRenamer:
             # 无论是否有显式的季号标识（Sxx或第x季），只要是TV类型且有集号，就应该有季号
             if metadata.get("episode") and not metadata.get("season"):
                 metadata["season"] = "1"
+                metadata["season_is_default"] = True  # 标记为默认值
         else:  # movie类型
             # 对于电影，清空season和episode
             metadata["season"] = None
@@ -3136,6 +3141,92 @@ class VideoRenamer:
                         if s.get("season_number", 0) > 0  # 排除特别篇
                     ]
                     logger.debug(f"获取到 {len(metadata['seasons_info'])} 个季信息")
+
+                    # 集数到季集映射：
+                    # 情况1：文件名中没有明确的季号（season_is_default=True），集数可能是累计的
+                    # 情况2：文件名有明确季号，但集号超过该季的集数，说明集号是累计的
+                    # 情况3：文件名有明确季号，但 TMDB 没有该季信息
+                    #        - 如果集号=1，可能是新季刚开播，TMDB还没更新，不做映射
+                    #        - 如果集号>1，可能是字幕组自定义季号，尝试映射到实际存在的季
+                    need_mapping = False
+                    original_episode = 0
+                    
+                    try:
+                        original_episode = int(str(metadata.get("episode", "1")).split("-")[0])
+                        current_season = int(metadata.get("season", 1))
+                        seasons_info = metadata["seasons_info"]
+                        
+                        # 边界检查：
+                        # 1. 集号必须 >= 1 才进行映射（E00 通常是特别篇或第0集）
+                        # 2. 季号必须 >= 1 才进行映射（S00 通常是特别篇）
+                        if original_episode < 1:
+                            logger.debug(f"集号 {original_episode} < 1，跳过集数映射")
+                        elif current_season < 1:
+                            logger.debug(f"季号 {current_season} < 1（特别篇），跳过集数映射")
+                        else:
+                            # 按季号排序
+                            seasons_info_sorted = sorted(seasons_info, key=lambda x: x.get("season_number", 0))
+                            max_season = max([s.get("season_number", 0) for s in seasons_info_sorted]) if seasons_info_sorted else 1
+                            
+                            # 情况1：无明确季号
+                            if metadata.get("season_is_default", False):
+                                need_mapping = True
+                            # 情况3：文件名季号超过 TMDB 最大季号
+                            elif current_season > max_season:
+                                # 文件名明确标注了季号，但TMDB还没有这个季的数据
+                                # 不应该进行错误的集数映射（S03E11 ≠ S01E11）
+                                # 保留原始季号，让用户知道TMDB数据可能不完整
+                                logger.warning(
+                                    f"文件名季号 S{current_season:02d} 超过 TMDB 最大季 S{max_season:02d}，"
+                                    f"TMDB 数据可能不完整，保留原始季号 S{current_season:02d}E{original_episode:02d}"
+                                )
+                                # 不进行映射，保留原始季号
+                            else:
+                                # 情况2：有明确季号，但集号超过该季集数
+                                for season_info in seasons_info_sorted:
+                                    if season_info.get("season_number") == current_season:
+                                        season_episode_count = season_info.get("episode_count", 0)
+                                        if original_episode > season_episode_count:
+                                            need_mapping = True
+                                            logger.info(
+                                                f"检测到累计集数: 集号 {original_episode} 超过 S{current_season:02d} 的集数 {season_episode_count}，"
+                                                f"将进行集数映射"
+                                            )
+                                        break
+                        
+                        if need_mapping:
+                            # 计算累计集数，找到对应的季和集
+                            cumulative_episodes = 0
+                            found_season = None
+                            found_episode = None
+                            
+                            for season_info in seasons_info_sorted:
+                                season_num = season_info.get("season_number", 0)
+                                episode_count = season_info.get("episode_count", 0)
+                                
+                                if original_episode <= cumulative_episodes + episode_count:
+                                    # 找到了对应的季
+                                    found_season = season_num
+                                    found_episode = original_episode - cumulative_episodes
+                                    break
+                                
+                                cumulative_episodes += episode_count
+                            
+                            # 如果找到了映射且与原来不同，更新 season 和 episode
+                            if found_season is not None and found_episode is not None:
+                                old_season = metadata.get("season")
+                                old_episode = metadata.get("episode")
+                                
+                                # 只有当映射结果与原来不同时才更新
+                                if found_season != current_season or found_episode != original_episode:
+                                    metadata["season"] = found_season
+                                    metadata["episode"] = found_episode
+                                    logger.info(
+                                        f"集数映射: 原始 S{current_season:02d}E{original_episode:02d} -> "
+                                        f"映射为 S{found_season:02d}E{found_episode:02d}"
+                                    )
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"集数映射失败: {e}")
 
                 # 获取演职人员信息
                 credits = self.tmdb_client.get_tv_credits(best_match["id"])

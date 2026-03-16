@@ -1139,35 +1139,59 @@ class Cloud189Client:
         part_number: int,
         data: bytes,
         md5: str,
-        family_id: Optional[str] = None
+        family_id: Optional[str] = None,
+        max_retries: int = 5
     ) -> Tuple[int, bool, str]:
-        """上传单个分片，返回 (part_number, success, error_msg)"""
-        try:
-            # 获取上传 URL
-            urls_result = self.get_multi_upload_urls(
-                upload_file_id, part_number, md5, family_id
-            )
-            
-            if urls_result.get('code') != 'SUCCESS':
-                return (part_number, False, f"获取上传URL失败: {urls_result.get('msg')}")
-            
-            upload_info = urls_result['uploadUrls'][f'partNumber_{part_number}']
-            request_url = upload_info['requestURL']
-            request_header = upload_info['requestHeader']
-            
-            # 解析 headers
-            headers = {}
-            for pair in request_header.split('&'):
-                idx = pair.index('=')
-                headers[pair[:idx]] = pair[idx + 1:]
-            
-            # PUT 上传
-            resp = requests.put(request_url, data=data, headers=headers)
-            resp.raise_for_status()
-            
-            return (part_number, True, '')
-        except Exception as e:
-            return (part_number, False, str(e))
+        """上传单个分片（带重试机制），返回 (part_number, success, error_msg)"""
+        last_error = None
+        
+        for retry in range(max_retries):
+            try:
+                # 获取上传 URL（每次重试都重新获取）
+                urls_result = self.get_multi_upload_urls(
+                    upload_file_id, part_number, md5, family_id
+                )
+                
+                if urls_result.get('code') != 'SUCCESS':
+                    raise Exception(f"获取上传URL失败: {urls_result.get('msg')}")
+                
+                upload_info = urls_result['uploadUrls'][f'partNumber_{part_number}']
+                request_url = upload_info['requestURL']
+                request_header = upload_info['requestHeader']
+                
+                # 解析 headers
+                headers = {}
+                for pair in request_header.split('&'):
+                    idx = pair.index('=')
+                    headers[pair[:idx]] = pair[idx + 1:]
+                
+                # PUT 上传（增加超时时间和重试配置）
+                resp = requests.put(
+                    request_url, 
+                    data=data, 
+                    headers=headers, 
+                    timeout=(30, 300),  # 连接超时30s，读取超时300s
+                )
+                resp.raise_for_status()
+                
+                return (part_number, True, '')
+                
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                
+                if retry < max_retries - 1:
+                    # SSL错误使用更长等待时间
+                    if 'ssl' in error_str or 'connection' in error_str:
+                        wait_time = 5 + retry * 3  # 5, 8, 11, 14 秒
+                    else:
+                        wait_time = 2 ** retry  # 指数退避: 1, 2, 4, 8 秒
+                    
+                    print(f'\n[上传] 分片 {part_number} 上传失败 (尝试 {retry + 1}/{max_retries}): {e}')
+                    print(f'[上传] {wait_time}秒后重试...')
+                    time.sleep(wait_time)
+        
+        return (part_number, False, str(last_error))
     
     def _upload_chunk_with_file(
         self,
@@ -1177,7 +1201,8 @@ class Cloud189Client:
         slice_size: int,
         file_size: int,
         md5: str,
-        family_id: Optional[str] = None
+        family_id: Optional[str] = None,
+        max_retries: int = 5
     ) -> Tuple[int, bool, str]:
         """从文件读取并上传分片，返回 (part_number, success, error_msg)"""
         try:
@@ -1188,7 +1213,7 @@ class Cloud189Client:
                 f.seek(start)
                 data = f.read(chunk_size)
             
-            return self._upload_chunk(upload_file_id, part_number, data, md5, family_id)
+            return self._upload_chunk(upload_file_id, part_number, data, md5, family_id, max_retries)
         except Exception as e:
             return (part_number, False, str(e))
     
@@ -1315,7 +1340,8 @@ class Cloud189Client:
             uploaded_bytes = [0]
             start_time = time.time()
             lock = threading.Lock()
-            errors = []
+            failed_parts = []  # 记录失败的分片号
+            success_parts = set()  # 记录成功的分片号
             
             def upload_single_chunk(part_number: int) -> Tuple[int, bool, str]:
                 """上传单个分片的包装函数"""
@@ -1333,14 +1359,19 @@ class Cloud189Client:
                     family_id=family_id
                 )
                 
+                part_number, success, error_msg = result
                 with lock:
-                    uploaded_bytes[0] += chunk_size
-                    if upload_pbar:
-                        upload_pbar.update(chunk_size)
-                    if on_progress:
-                        on_progress(int(uploaded_bytes[0] / file_size * 100))
-                    if on_chunk_complete:
-                        on_chunk_complete(part_number - 1, total_chunks)
+                    if success:
+                        success_parts.add(part_number)
+                        uploaded_bytes[0] += chunk_size
+                        if upload_pbar:
+                            upload_pbar.update(chunk_size)
+                        if on_progress:
+                            on_progress(int(uploaded_bytes[0] / file_size * 100))
+                        if on_chunk_complete:
+                            on_chunk_complete(part_number - 1, total_chunks)
+                    else:
+                        failed_parts.append((part_number, error_msg))
                 
                 return result
             
@@ -1352,9 +1383,47 @@ class Cloud189Client:
                 }
                 
                 for future in as_completed(futures):
-                    part_number, success, error_msg = future.result()
-                    if not success:
-                        errors.append(f"分片 {part_number}: {error_msg}")
+                    future.result()  # 等待完成，结果已在回调中处理
+            
+            # 失败分片重传（最多2轮）
+            max_retry_rounds = 2
+            retry_round = 0
+            
+            while failed_parts and retry_round < max_retry_rounds:
+                retry_round += 1
+                retry_parts = failed_parts[:]
+                failed_parts = []
+                
+                print(f'\n[上传] 第{retry_round}轮重传失败分片，共 {len(retry_parts)} 个分片')
+                time.sleep(3)  # 等待网络恢复
+                
+                for part_number, _ in retry_parts:
+                    start_offset = (part_number - 1) * slice_size
+                    chunk_size = min(slice_size, file_size - start_offset)
+                    
+                    result = self._upload_chunk_with_file(
+                        upload_file_id=upload_file_id,
+                        part_number=part_number,
+                        file_path=abs_path,
+                        slice_size=slice_size,
+                        file_size=file_size,
+                        md5=slice_md5s[part_number - 1],
+                        family_id=family_id,
+                        max_retries=5  # 重传时增加重试次数
+                    )
+                    
+                    part_number, success, error_msg = result
+                    with lock:
+                        if success:
+                            print(f'[上传] 分片 {part_number} 重传成功')
+                            success_parts.add(part_number)
+                            uploaded_bytes[0] += chunk_size
+                            if upload_pbar:
+                                upload_pbar.update(chunk_size)
+                            if on_progress:
+                                on_progress(int(uploaded_bytes[0] / file_size * 100))
+                        else:
+                            failed_parts.append((part_number, error_msg))
             
             if upload_pbar:
                 upload_pbar.close()
@@ -1363,7 +1432,8 @@ class Cloud189Client:
                 speed = file_size / elapsed / 1024 / 1024  # MB/s
                 print(f'[上传] 完成，平均速度: {speed:.2f} MB/s，耗时: {elapsed:.1f} 秒')
             
-            if errors:
+            if failed_parts:
+                errors = [f"分片 {pn}: {err}" for pn, err in failed_parts]
                 raise RuntimeError(f"上传失败:\n" + "\n".join(errors))
             
             # 6. 提交上传

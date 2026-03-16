@@ -811,11 +811,12 @@ class Yun139Uploader:
             )
             upload_part_infos.extend(more_result['data']['partInfos'])
 
-        # 上传分片（带进度条）
+        # 上传分片（带进度条和重试机制）
         # 注意：139云盘要求分片按顺序上传，不支持并行
         print(f"\n📤 开始上传分片，共 {len(upload_part_infos)} 个分片")
         
         uploaded_parts = []  # 记录已上传的分片
+        max_retries = 3  # 每个分片最大重试次数
         
         with open(file_path, 'rb') as f:
             with tqdm(total=file_size, unit='B', unit_scale=True, desc="上传进度", ncols=80) as pbar:
@@ -826,7 +827,7 @@ class Yun139Uploader:
                     f.seek(part_num * part_size)
                     chunk_data = f.read(part_size)
                     
-                    # 上传分片
+                    # 上传分片（带重试）
                     headers = {
                         "Content-Type": "application/octet-stream",
                         "Content-Length": str(len(chunk_data)),
@@ -834,16 +835,54 @@ class Yun139Uploader:
                         "Referer": "https://yun.139.com/"
                     }
                     
-                    try:
-                        response = requests.put(upload_url, data=chunk_data, headers=headers, timeout=300)
-                        response.raise_for_status()
-                        uploaded_parts.append({
-                            "partNumber": part_info['partNumber'],
-                            "partSize": part_info['partSize'],
-                            "etag": response.headers.get('ETag', '')
-                        })
-                    except Exception as e:
-                        print(f"\n  [ERROR] 分片 {part_info['partNumber']} 上传失败: {e}")
+                    upload_success = False
+                    last_error = None
+                    
+                    for retry in range(max_retries):
+                        try:
+                            response = requests.put(upload_url, data=chunk_data, headers=headers, timeout=300)
+                            response.raise_for_status()
+                            uploaded_parts.append({
+                                "partNumber": part_info['partNumber'],
+                                "partSize": len(chunk_data),
+                                "etag": response.headers.get('ETag', '')
+                            })
+                            upload_success = True
+                            break
+                        except Exception as e:
+                            last_error = e
+                            if retry < max_retries - 1:
+                                wait_time = 2 ** retry  # 指数退避
+                                print(f"\n  [WARNING] 分片 {part_info['partNumber']} 上传失败 (尝试 {retry + 1}/{max_retries}): {e}")
+                                print(f"  [RETRY] {wait_time}秒后重试...")
+                                time.sleep(wait_time)
+                                # 重新获取上传URL（使用原始 part_infos 中的完整信息）
+                                try:
+                                    # 从原始 part_infos 获取该分片的完整信息
+                                    original_part_info = part_infos[part_num]
+                                    refresh_data = {
+                                        "fileId": file_id,
+                                        "uploadId": upload_id,
+                                        "partInfos": [original_part_info],  # 使用包含 parallelHashCtx 的完整信息
+                                        "commonAccountInfo": {
+                                            "account": self.client.account,
+                                            "accountType": 1
+                                        }
+                                    }
+                                    refresh_result = self.client._request(
+                                        "/hcy/file/getUploadUrl",
+                                        refresh_data,
+                                        is_personal=True
+                                    )
+                                    new_part_infos = refresh_result.get('data', {}).get('partInfos', [])
+                                    if new_part_infos:
+                                        upload_url = new_part_infos[0]['uploadUrl']
+                                        print(f"  [RETRY] 已重新获取上传URL")
+                                except Exception as refresh_error:
+                                    print(f"  [WARNING] 重新获取上传URL失败: {refresh_error}")
+                    
+                    if not upload_success:
+                        print(f"\n  [ERROR] 分片 {part_info['partNumber']} 上传失败，已重试{max_retries}次: {last_error}")
                         return None
                     
                     pbar.update(len(chunk_data))
