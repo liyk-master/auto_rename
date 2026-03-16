@@ -1,5 +1,6 @@
 import os
 import shutil
+import re
 import requests
 import threading
 from queue import Queue, Empty
@@ -756,6 +757,7 @@ class VideoFileHandler:
                         f"&season_number={season_num}"
                         f"&episode_number={episode_num}"
                         f"&video_id_value={tmdb_id}"
+                        f"&tmdb_type={media_type}"
                     )
                 else:
                     # 电影不需要 season 和 episode
@@ -763,6 +765,7 @@ class VideoFileHandler:
                         f"{self.emos_base_url}/api/video/getVideoId"
                         f"?video_id_type=tmdb"
                         f"&video_id_value={tmdb_id}"
+                        f"&tmdb_type={media_type}"
                     )
 
                 print(f"[线程#{worker_id}] 正在请求 Emos API: {item_id_url}")

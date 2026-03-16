@@ -93,6 +93,24 @@ class EmosClient:
         season = meta.get('begin_season')
         episode = meta.get('begin_episode')
         
+        # 如果 season 或 episode 为空，尝试从 season_episode 字符串中解析
+        season_episode_str = meta.get('season_episode', '')
+        if season_episode_str:
+            import re
+            # 支持 "S01E09" 和 "S01 E09" 两种格式
+            match = re.search(r'S\s*(\d+)\s*E\s*(\d+)', season_episode_str, re.IGNORECASE)
+            if match:
+                if not season:
+                    season = match.group(1)
+                if not episode:
+                    episode = match.group(2)
+            else:
+                # 调试：打印无法匹配的 season_episode 格式
+                print(f"[DEBUG] season_episode 格式无法解析: '{season_episode_str}'")
+        
+        # 调试：打印解析后的 season/episode 值
+        print(f"[DEBUG] Emos 解析: begin_season={meta.get('begin_season')}, begin_episode={meta.get('begin_episode')}, season_episode={season_episode_str}, 最终 season={season}, episode={episode}")
+        
         # 构建标准化的媒体信息
         media_info = {
             'title': meta.get('cn_name') or meta.get('name') or meta.get('org_string', ''),
