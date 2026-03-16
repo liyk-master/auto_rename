@@ -85,6 +85,10 @@ DEFAULT_CONFIG = {
         "enabled": False,
     },
     "llm_fallback": {"enabled": False, "max_concurrent": 2},
+    "guessit": {
+        "enabled": True,  # 是否启用 GuessIt 增强识别
+        "prefer_guessit": False,  # 是否优先使用 GuessIt 结果
+    },
     "downloaders": [],
     "emya_db": {
         "enabled": False,

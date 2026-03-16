@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Union
 
 from jinja2 import Template
 from src.video_organizer.core.tmdb_client import TMDBClient
+from src.video_organizer.core.guessit_parser import GuessItParser, GUESSIT_AVAILABLE
 from src.video_organizer.utils.llm_translator import LLMTranslator
 
 logger = logging.getLogger(__name__)
@@ -767,6 +768,33 @@ class VideoRenamer:
                 f"VideoRenamer: LLM 兜底识别已启用 (max_concurrent={max_concurrent})"
             )
 
+        # 初始化 GuessIt 解析器（增强视频文件名识别）
+        self._guessit_parser = None
+        self._guessit_enabled = False
+        self._guessit_prefer = False
+        if config and isinstance(config, dict):
+            guessit_config = config.get("guessit", {})
+            self._guessit_enabled = guessit_config.get("enabled", True)
+            self._guessit_prefer = guessit_config.get("prefer_guessit", False)
+
+        if self._guessit_enabled:
+            self._guessit_parser = GuessItParser(enabled=True)
+            if self._guessit_parser.enabled:
+                logger.info(
+                    f"VideoRenamer: GuessIt 解析器已启用 (prefer_guessit={self._guessit_prefer})"
+                )
+            else:
+                logger.warning("VideoRenamer: GuessIt 库未安装，将使用正则表达式识别")
+        else:
+            logger.info("VideoRenamer: GuessIt 解析器已禁用")
+
+        # TMDB 缓存：避免同一剧集的每一集都重复请求 TMDB
+        # 缓存键: show_name (或 tmdb_id)，值: 完整的元数据
+        self._tmdb_cache: Dict[str, Dict] = {}
+        # 缓存键到 tmdb_id 的映射（用于同一剧集不同集数的快速查找）
+        self._tmdb_name_to_id: Dict[str, int] = {}
+        logger.info("VideoRenamer: TMDB 缓存已初始化")
+
     def extract_metadata(
         self, file_path: Union[str, Path], media_type_hint: Optional[str] = None
     ) -> Dict:
@@ -791,7 +819,22 @@ class VideoRenamer:
             # 1. 首先尝试从文件名提取
             metadata = self._extract_with_regex(file_path.name)
 
+            # 1.5 使用 GuessIt 增强识别（如果已启用）
+            if self._guessit_enabled and self._guessit_parser:
+                try:
+                    metadata = self._guessit_parser.parse_with_fallback(
+                        str(file_path),
+                        metadata,
+                        prefer_guessit=self._guessit_prefer
+                    )
+                    logger.debug(f"GuessIt 增强识别完成: show_name={metadata.get('show_name')}, "
+                                f"season={metadata.get('season')}, episode={metadata.get('episode')}")
+                except Exception as e:
+                    logger.warning(f"GuessIt 解析失败，使用正则表达式结果: {e}")
+
             # 2. 判断是否需要从父目录补全信息
+            # 注意：GuessIt 本身支持传入完整路径进行解析，已经能利用父目录信息
+            # 所以当 GuessIt 已启用且识别到有效剧名时，跳过父目录补全
             fragment_keywords = [
                 "OP",
                 "ED",
@@ -820,6 +863,14 @@ class VideoRenamer:
                 or is_invalid_name 
                 or is_season_episode_only
             )
+
+            # 如果 GuessIt 已启用且识别到有效剧名，跳过父目录补全
+            if self._guessit_enabled and self._guessit_parser and metadata.get("show_name"):
+                # 检查 GuessIt 识别的剧名是否合理
+                guessit_show_name = metadata.get("show_name", "")
+                if guessit_show_name and not guessit_show_name.isdigit():
+                    should_lookup_parent = False
+                    logger.debug(f"GuessIt 已正确识别剧名 '{guessit_show_name}'，跳过父目录补全")
 
             if should_lookup_parent:
                 try:
@@ -951,12 +1002,8 @@ class VideoRenamer:
             # 但对于电影类型，不设置默认值
             media_type = metadata.get("media_type", "")
             if media_type != "movie":
-                # 标记 season 是否是从文件名明确提取的（用于后续集数映射判断）
                 if metadata.get("season") is None:
                     metadata["season"] = 1
-                    metadata["season_is_default"] = True  # 标记为默认值
-                else:
-                    metadata["season_is_default"] = False  # 从文件名明确提取
                 if metadata.get("episode") is None:
                     metadata["episode"] = 1
             else:
@@ -1851,7 +1898,6 @@ class VideoRenamer:
             # 无论是否有显式的季号标识（Sxx或第x季），只要是TV类型且有集号，就应该有季号
             if metadata.get("episode") and not metadata.get("season"):
                 metadata["season"] = "1"
-                metadata["season_is_default"] = True  # 标记为默认值
         else:  # movie类型
             # 对于电影，清空season和episode
             metadata["season"] = None
@@ -2383,6 +2429,56 @@ class VideoRenamer:
     # 添加缓存机制，避免重复搜索
     _search_cache = {}
 
+    def _save_to_tmdb_cache(self, metadata: Dict) -> None:
+        """
+        将元数据保存到 TMDB 缓存，供同一剧集的其他集数使用
+        
+        Args:
+            metadata: 已获取完整元数据的字典
+        """
+        show_name = metadata.get("show_name") or metadata.get("title", "")
+        tmdb_id = metadata.get("tmdb_id")
+        media_type = metadata.get("media_type", "")
+        year = metadata.get("year", "")
+        
+        if not show_name or not tmdb_id:
+            return
+        
+        # 保存 name -> tmdb_id 映射
+        name_key = show_name.lower().strip()
+        if name_key and name_key not in self._tmdb_name_to_id:
+            self._tmdb_name_to_id[name_key] = tmdb_id
+            logger.debug(f"TMDB 缓存: 保存名称映射 {show_name} -> TMDB ID {tmdb_id}")
+        
+        # 保存完整元数据缓存
+        cache_key = f"tmdb_{tmdb_id}"
+        if cache_key not in self._tmdb_cache:
+            # 只保存基础信息，不保存集数等变化的信息
+            cache_data = {}
+            for key in ["show_name", "title", "year", "tmdb_id", "genres", "origin_country",
+                       "original_name", "poster_path", "backdrop_path", "networks",
+                       "number_of_seasons", "number_of_episodes", "first_air_date",
+                       "last_air_date", "status", "original_language", "overview", "rating",
+                       "media_type"]:
+                if key in metadata:
+                    cache_data[key] = metadata[key]
+            self._tmdb_cache[cache_key] = cache_data
+            logger.info(f"TMDB 缓存: 保存元数据 {show_name} (TMDB ID: {tmdb_id})")
+        
+        # 同时保存名称键的缓存
+        name_cache_key = f"{show_name}_{year}_{media_type}".lower().strip()
+        if name_cache_key and name_cache_key not in self._tmdb_cache:
+            cache_data = {}
+            for key in ["show_name", "title", "year", "tmdb_id", "genres", "origin_country",
+                       "original_name", "poster_path", "backdrop_path", "networks",
+                       "number_of_seasons", "number_of_episodes", "first_air_date",
+                       "last_air_date", "status", "original_language", "overview", "rating",
+                       "media_type"]:
+                if key in metadata:
+                    cache_data[key] = metadata[key]
+            self._tmdb_cache[name_cache_key] = cache_data
+            logger.debug(f"TMDB 缓存: 保存名称键缓存 {name_cache_key}")
+
     def _enrich_with_tmdb(self, metadata: Dict) -> Dict:
         """使用TMDB API丰富元数据信息，获取更完整的视频详情"""
         # 确保metadata是字典类型
@@ -2391,13 +2487,53 @@ class VideoRenamer:
             return {}
 
         try:
+            # ========== 缓存检查 ==========
+            # 检查是否已有缓存（同一剧集的元数据）
+            show_name = metadata.get("show_name", metadata.get("title", ""))
+            existing_tmdb_id = metadata.get("tmdb_id")
+            media_type = metadata.get("media_type", "")
+            year = metadata.get("year", "")
+            
+            # 构建缓存键：优先使用 tmdb_id，否则使用 show_name + year + media_type
+            cache_key = None
+            if existing_tmdb_id:
+                cache_key = f"tmdb_{existing_tmdb_id}"
+            elif show_name:
+                cache_key = f"{show_name}_{year}_{media_type}".lower().strip()
+            
+            # 检查缓存命中
+            if cache_key and cache_key in self._tmdb_cache:
+                logger.info(f"TMDB 缓存命中: {cache_key}，跳过 TMDB 查询")
+                cached_metadata = self._tmdb_cache[cache_key].copy()
+                # 保留当前文件的特定信息（集数、质量标签等），只使用缓存的基础信息
+                for key in ["show_name", "title", "year", "tmdb_id", "genres", "origin_country",
+                           "original_name", "poster_path", "backdrop_path", "networks",
+                           "number_of_seasons", "number_of_episodes", "first_air_date",
+                           "last_air_date", "status", "original_language", "overview", "rating"]:
+                    if key in cached_metadata:
+                        metadata[key] = cached_metadata[key]
+                # 恢复当前文件的质量标签
+                metadata["quality_tags"] = metadata.get("quality_tags", "")
+                metadata["release_group"] = metadata.get("release_group", "")
+                return metadata
+            
+            # 检查是否已有 name -> tmdb_id 的映射（用于同一剧集不同集数）
+            if show_name and show_name.lower().strip() in self._tmdb_name_to_id:
+                cached_tmdb_id = self._tmdb_name_to_id[show_name.lower().strip()]
+                logger.info(f"TMDB 名称缓存命中: {show_name} -> TMDB ID {cached_tmdb_id}")
+                # 使用缓存的 tmdb_id 直接获取详情
+                metadata["tmdb_id"] = cached_tmdb_id
+                existing_tmdb_id = cached_tmdb_id
+            
             logger.info(f"开始TMDB搜索: metadata={metadata}")
             # 保存原始的quality_tags和release_group，避免被覆盖
             original_quality_tags = metadata.get("quality_tags", "")
             original_release_group = metadata.get("release_group", "")
 
-            # 优先使用已有的 tmdb_id，如果文件名中已经包含 {tmdbid-xxx}
-            existing_tmdb_id = metadata.get("tmdb_id")
+            # 注意：existing_tmdb_id 已在上面缓存检查时定义，这里不再重复声明
+            # 如果通过名称缓存获取到了 tmdb_id，直接使用
+            if existing_tmdb_id and not metadata.get("tmdb_id"):
+                metadata["tmdb_id"] = existing_tmdb_id
             if existing_tmdb_id:
                 logger.info(f"文件名中已包含TMDB ID: {existing_tmdb_id}，直接使用该ID获取元数据")
                 media_type_hint = metadata.get("media_type", metadata.get("type", ""))
@@ -2486,6 +2622,9 @@ class VideoRenamer:
                             metadata["quality_tags"] = original_quality_tags
                             metadata["release_group"] = original_release_group
                             
+                            # 保存到缓存
+                            self._save_to_tmdb_cache(metadata)
+                            
                             logger.info(f"使用TMDB ID成功丰富元数据: show_name={metadata.get('show_name')}, year={metadata.get('year')}")
                             return metadata
                     else:
@@ -2558,6 +2697,9 @@ class VideoRenamer:
                             # 恢复原始的quality_tags和release_group
                             metadata["quality_tags"] = original_quality_tags
                             metadata["release_group"] = original_release_group
+                            
+                            # 保存到缓存
+                            self._save_to_tmdb_cache(metadata)
                             
                             logger.info(f"使用TMDB ID成功丰富元数据: title={metadata.get('title')}, year={metadata.get('year')}")
                             return metadata
@@ -3142,92 +3284,6 @@ class VideoRenamer:
                     ]
                     logger.debug(f"获取到 {len(metadata['seasons_info'])} 个季信息")
 
-                    # 集数到季集映射：
-                    # 情况1：文件名中没有明确的季号（season_is_default=True），集数可能是累计的
-                    # 情况2：文件名有明确季号，但集号超过该季的集数，说明集号是累计的
-                    # 情况3：文件名有明确季号，但 TMDB 没有该季信息
-                    #        - 如果集号=1，可能是新季刚开播，TMDB还没更新，不做映射
-                    #        - 如果集号>1，可能是字幕组自定义季号，尝试映射到实际存在的季
-                    need_mapping = False
-                    original_episode = 0
-                    
-                    try:
-                        original_episode = int(str(metadata.get("episode", "1")).split("-")[0])
-                        current_season = int(metadata.get("season", 1))
-                        seasons_info = metadata["seasons_info"]
-                        
-                        # 边界检查：
-                        # 1. 集号必须 >= 1 才进行映射（E00 通常是特别篇或第0集）
-                        # 2. 季号必须 >= 1 才进行映射（S00 通常是特别篇）
-                        if original_episode < 1:
-                            logger.debug(f"集号 {original_episode} < 1，跳过集数映射")
-                        elif current_season < 1:
-                            logger.debug(f"季号 {current_season} < 1（特别篇），跳过集数映射")
-                        else:
-                            # 按季号排序
-                            seasons_info_sorted = sorted(seasons_info, key=lambda x: x.get("season_number", 0))
-                            max_season = max([s.get("season_number", 0) for s in seasons_info_sorted]) if seasons_info_sorted else 1
-                            
-                            # 情况1：无明确季号
-                            if metadata.get("season_is_default", False):
-                                need_mapping = True
-                            # 情况3：文件名季号超过 TMDB 最大季号
-                            elif current_season > max_season:
-                                # 文件名明确标注了季号，但TMDB还没有这个季的数据
-                                # 不应该进行错误的集数映射（S03E11 ≠ S01E11）
-                                # 保留原始季号，让用户知道TMDB数据可能不完整
-                                logger.warning(
-                                    f"文件名季号 S{current_season:02d} 超过 TMDB 最大季 S{max_season:02d}，"
-                                    f"TMDB 数据可能不完整，保留原始季号 S{current_season:02d}E{original_episode:02d}"
-                                )
-                                # 不进行映射，保留原始季号
-                            else:
-                                # 情况2：有明确季号，但集号超过该季集数
-                                for season_info in seasons_info_sorted:
-                                    if season_info.get("season_number") == current_season:
-                                        season_episode_count = season_info.get("episode_count", 0)
-                                        if original_episode > season_episode_count:
-                                            need_mapping = True
-                                            logger.info(
-                                                f"检测到累计集数: 集号 {original_episode} 超过 S{current_season:02d} 的集数 {season_episode_count}，"
-                                                f"将进行集数映射"
-                                            )
-                                        break
-                        
-                        if need_mapping:
-                            # 计算累计集数，找到对应的季和集
-                            cumulative_episodes = 0
-                            found_season = None
-                            found_episode = None
-                            
-                            for season_info in seasons_info_sorted:
-                                season_num = season_info.get("season_number", 0)
-                                episode_count = season_info.get("episode_count", 0)
-                                
-                                if original_episode <= cumulative_episodes + episode_count:
-                                    # 找到了对应的季
-                                    found_season = season_num
-                                    found_episode = original_episode - cumulative_episodes
-                                    break
-                                
-                                cumulative_episodes += episode_count
-                            
-                            # 如果找到了映射且与原来不同，更新 season 和 episode
-                            if found_season is not None and found_episode is not None:
-                                old_season = metadata.get("season")
-                                old_episode = metadata.get("episode")
-                                
-                                # 只有当映射结果与原来不同时才更新
-                                if found_season != current_season or found_episode != original_episode:
-                                    metadata["season"] = found_season
-                                    metadata["episode"] = found_episode
-                                    logger.info(
-                                        f"集数映射: 原始 S{current_season:02d}E{original_episode:02d} -> "
-                                        f"映射为 S{found_season:02d}E{found_episode:02d}"
-                                    )
-                    except (ValueError, TypeError) as e:
-                        logger.debug(f"集数映射失败: {e}")
-
                 # 获取演职人员信息
                 credits = self.tmdb_client.get_tv_credits(best_match["id"])
                 if credits:
@@ -3366,6 +3422,10 @@ class VideoRenamer:
             # 恢复原始的quality_tags和release_group
             metadata["quality_tags"] = original_quality_tags
             metadata["release_group"] = original_release_group
+            
+            # 保存到缓存（供同一剧集的其他集数使用）
+            self._save_to_tmdb_cache(metadata)
+            
             return metadata
         except Exception as e:
             logger.error(f"TMDB enrichment failed: {e}")
