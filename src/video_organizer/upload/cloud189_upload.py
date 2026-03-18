@@ -901,6 +901,46 @@ class Cloud189Client:
         
         return result
     
+    def empty_recycle(
+        self,
+        familyId: str = "0",
+        _retry: bool = True
+    ) -> Dict[str, Any]:
+        """
+        清空回收站
+        
+        Args:
+            familyId: 家庭云ID，默认为 "0"（个人云）
+            _retry: 是否允许重试
+        
+        Returns:
+            API 返回结果
+        """
+        url = f'{WEB_URL}/api/open/batch/createBatchTask.action'
+        
+        data = {
+            'type': 'EMPTY_RECYCLE',
+            'taskInfos': '[]',
+            'targetFolderId': ''
+        }
+        
+        if familyId and familyId != "0":
+            data["familyId"] = familyId
+        
+        headers = self._sign_web_request(url)
+        headers['Content-Type'] = 'application/x-www-form-urlencoded'
+        
+        resp = self.session.post(url, data=data, headers=headers)
+        result = resp.json()
+        
+        print(f'[Cloud189] empty_recycle 返回: {result}')
+        
+        # 如果是 token 失效，清除缓存并重试一次
+        if _retry and self._handle_api_error(result):
+            return self.empty_recycle(familyId, _retry=False)
+        
+        return result
+    
     def get_family_list(self, _retry: bool = True) -> List[Dict[str, Any]]:
         """
         获取家庭云列表

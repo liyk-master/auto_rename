@@ -6,9 +6,11 @@
 
 import os
 import re
+import json
 import time
 import base64
 import hashlib
+import tempfile
 import requests
 import threading
 from pathlib import Path
@@ -24,6 +26,9 @@ class Yun139Uploader:
 
     # 字幕扩展名
     SUBTITLE_EXTENSIONS = {'.srt', '.ass', '.ssa', '.sub', '.vtt'}
+
+    # 断点续传状态目录
+    UPLOAD_STATE_DIR = os.path.join(tempfile.gettempdir(), "139", "upload_progress")
 
     def __init__(
         self,
@@ -87,6 +92,7 @@ class Yun139Uploader:
         # TG 通知相关
         self.tg_bot_token = self.telegram_config.get("bot_token", "")
         self.tg_chat_id = self.telegram_config.get("chat_id", "")
+        self.tg_channel_chat_id = self.telegram_config.get("channel_chat_id", "")  # 频道ID，用于发送JSON消息
         self._tg_message_ids: Dict[str, Optional[int]] = {}
         self.tg_last_update_time = 0
         self.tg_update_interval = 2
@@ -95,11 +101,133 @@ class Yun139Uploader:
         self._folder_cache = {}
         self._folder_lock = threading.Lock()  # 文件夹操作锁，防止多线程重复创建
 
+        # 断点续传状态目录
+        self._ensure_state_dir()
+
         # 刷新令牌
         try:
             self.client.refresh_token()
         except Exception as e:
             print(f"[WARNING] 刷新139云盘令牌失败: {e}")
+
+    def _ensure_state_dir(self):
+        """确保断点续传状态目录存在"""
+        try:
+            os.makedirs(self.UPLOAD_STATE_DIR, exist_ok=True)
+        except Exception as e:
+            print(f"[WARNING] 创建上传状态目录失败: {e}")
+
+    def _get_state_file_path(self, file_path: str) -> str:
+        """
+        获取断点续传状态文件路径
+        
+        使用文件路径MD5作为文件名
+        
+        Args:
+            file_path: 本地文件路径
+            
+        Returns:
+            状态文件路径
+        """
+        path_md5 = hashlib.md5(file_path.encode()).hexdigest()
+        return os.path.join(self.UPLOAD_STATE_DIR, f"{path_md5}.json")
+
+    def _get_state_lock(self, file_path: str) -> threading.Lock:
+        """
+        获取状态文件对应的锁
+        
+        Args:
+            file_path: 本地文件路径
+            
+        Returns:
+            线程锁
+        """
+        path_md5 = hashlib.md5(file_path.encode()).hexdigest()
+        if not hasattr(self, '_state_locks'):
+            self._state_locks = {}
+        if path_md5 not in self._state_locks:
+            self._state_locks[path_md5] = threading.Lock()
+        return self._state_locks[path_md5]
+
+    def _save_upload_state(
+        self,
+        file_path: str,
+        file_id: str,
+        upload_id: str,
+        content_hash: str,
+        uploaded_parts: List[int]
+    ):
+        """
+        保存上传状态到文件（线程安全）
+        
+        Args:
+            file_path: 本地文件路径
+            file_id: 云盘文件ID
+            upload_id: 上传任务ID
+            content_hash: 文件 SHA256 哈希值
+            uploaded_parts: 已上传的分片号列表
+        """
+        try:
+            with self._get_state_lock(file_path):
+                state_file = self._get_state_file_path(file_path)
+                state = {
+                    "fileId": file_id,
+                    "uploadId": upload_id,
+                    "contentHash": content_hash,
+                    "uploadedParts": uploaded_parts
+                }
+                
+                with open(state_file, 'w', encoding='utf-8') as f:
+                    json.dump(state, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"  [WARNING] 保存上传状态失败: {e}")
+
+    def _load_upload_state(self, file_path: str, content_hash: str) -> Optional[Dict[str, Any]]:
+        """
+        加载上传状态（线程安全）
+        
+        Args:
+            file_path: 本地文件路径
+            content_hash: 当前文件 SHA256 哈希值
+            
+        Returns:
+            上传状态字典，不存在或哈希不匹配返回 None
+        """
+        try:
+            with self._get_state_lock(file_path):
+                state_file = self._get_state_file_path(file_path)
+                
+                if not os.path.exists(state_file):
+                    return None
+                
+                with open(state_file, 'r', encoding='utf-8') as f:
+                    state = json.load(f)
+                
+                # 验证 SHA256 是否一致（确保是同一文件）
+                if state.get("contentHash") != content_hash:
+                    print(f"  [断点续传] 文件内容已变化，放弃断点续传")
+                    self._clear_upload_state(file_path)
+                    return None
+                
+                return state
+        except Exception as e:
+            print(f"  [WARNING] 加载上传状态失败: {e}")
+            return None
+
+    def _clear_upload_state(self, file_path: str):
+        """
+        清除上传状态文件（线程安全）
+        
+        Args:
+            file_path: 本地文件路径
+        """
+        try:
+            with self._get_state_lock(file_path):
+                state_file = self._get_state_file_path(file_path)
+                if os.path.exists(state_file):
+                    os.remove(state_file)
+        except Exception as e:
+            print(f"  [WARNING] 清除上传状态失败: {e}")
 
     def _get_or_create_folder(self, folder_name: str, parent_id: str) -> Optional[str]:
         """
@@ -227,6 +355,107 @@ class Yun139Uploader:
                     )
         except Exception:
             pass
+
+    def _send_tg_channel_message(self, message: str) -> bool:
+        """
+        发送消息到 TG 频道
+
+        Args:
+            message: 要发送的消息文本
+
+        Returns:
+            发送成功返回 True
+        """
+        if not self.tg_bot_token:
+            print(f"[DEBUG] TG频道: bot_token 未配置")
+            return False
+        if not self.tg_channel_chat_id:
+            print(f"[DEBUG] TG频道: channel_chat_id 未配置")
+            return False
+
+        # 格式化频道ID（参考123云盘实现）
+        tg_channel = self.tg_channel_chat_id
+        if tg_channel:
+            # 去除行尾注释（分号或井号后面的内容）
+            for sep in [';', '#']:
+                if sep in tg_channel:
+                    tg_channel = tg_channel.split(sep)[0]
+            tg_channel = tg_channel.strip()
+            # 自动添加 @ 前缀
+            if not tg_channel.startswith(('@', '-')):
+                tg_channel = f"@{tg_channel}"
+
+        try:
+            url = f"https://api.telegram.org/bot{self.tg_bot_token}/sendMessage"
+            
+            # 使用 data 参数（form-urlencoded）而不是 json，更兼容
+            data = {
+                "chat_id": tg_channel,
+                "text": message,
+            }
+            
+            # 打印完整的调试信息
+            print(f"\n{'='*60}")
+            print(f"[DEBUG] TG API 请求:")
+            print(f"URL: {url}")
+            print(f"chat_id: {tg_channel}")
+            print(f"text 长度: {len(message)} 字符")
+            print(f"text 内容:\n{message}")
+            print(f"{'='*60}\n")
+            
+            # 使用 data 参数发送 form-urlencoded 请求
+            response = requests.post(url, data=data, timeout=10)
+            print(f"[DEBUG] TG频道响应状态: {response.status_code}")
+            print(f"[DEBUG] TG频道响应内容: {response.text}")
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("ok"):
+                    print(f"[DEBUG] ✅ 发送成功!")
+                    return True
+                else:
+                    print(f"[DEBUG] TG频道错误: {result.get('description', 'unknown')}")
+                return result.get("ok", False)
+            else:
+                print(f"[提示] 请确保 Bot 已添加到频道并具有管理员权限")
+        except Exception as e:
+            print(f"[WARNING] 发送 TG 频道消息失败: {e}")
+            import traceback
+            traceback.print_exc()
+        return False
+
+    def _send_upload_complete_to_channel(
+        self,
+        sha256: str,
+        size: int,
+        name: str,
+        cloud_type: str = "139",
+        folder_path: str = ""
+    ) -> bool:
+        """
+        发送上传完成的 JSON 消息到 TG 频道
+
+        Args:
+            sha256: 文件 SHA256 哈希值
+            size: 文件大小（字节）
+            name: 文件名
+            cloud_type: 云盘类型标识
+            folder_path: 文件夹路径（如 "TV Shows/Show Name/Season 01"）
+
+        Returns:
+            发送成功返回 True
+        """
+        # 构建完整文件路径
+        full_path = f"{folder_path}/{name}" if folder_path else name
+        
+        # 构建 JSON 格式消息（纯文本，不用 Markdown）
+        message = f'''{{
+    "sha256": "{sha256}",
+    "size": {size},
+    "name": "{full_path}",
+    "cloud": "{cloud_type}"
+}}'''
+        return self._send_tg_channel_message(message)
 
     def generate_strm_url(
         self,
@@ -447,6 +676,21 @@ class Yun139Uploader:
 
                 # 将字幕信息也返回
                 result['subtitles'] = subtitles
+
+                # 发送上传完成消息到 TG 频道
+                if self.tg_channel_chat_id:
+                    success = self._send_upload_complete_to_channel(
+                        sha256=result.get('content_hash', ''),
+                        size=result.get('size', 0),
+                        name=target_filename,
+                        cloud_type="139",
+                        folder_path=folder_path
+                    )
+                    if success:
+                        print(f"   📢 已发送上传完成消息到 TG 频道")
+                    else:
+                        print(f"   ⚠️ 发送 TG 频道消息失败")
+
                 return result
             else:
                 print(f"\n❌ 139云盘上传失败!")
@@ -698,6 +942,47 @@ class Yun139Uploader:
         if self.cloud_type != CloudType.PERSONAL_NEW:
             raise NotImplementedError("目前仅支持新版个人云上传")
 
+        # 外层重试：失败3次后清除状态重新上传
+        max_full_retries = 3
+        for full_retry in range(max_full_retries):
+            if full_retry > 0:
+                print(f"\n  [重试] 第 {full_retry + 1} 次重新上传，已清除断点记录")
+                self._clear_upload_state(file_path)
+            
+            result = self._do_upload(
+                parent_id, file_path, target_filename, progress_callback
+            )
+            
+            if result is not None:
+                return result
+            
+            print(f"\n  [ERROR] 上传失败，准备重试...")
+        
+        print(f"\n  [ERROR] 上传失败，已重试 {max_full_retries} 次")
+        return None
+
+    def _do_upload(
+        self,
+        parent_id: str,
+        file_path: str,
+        target_filename: Optional[str] = None,
+        progress_callback=None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        执行实际的上传操作（单次尝试）
+
+        Args:
+            parent_id: 目标父文件夹ID
+            file_path: 本地文件路径
+            target_filename: 上传后的目标文件名
+            progress_callback: 进度回调函数
+
+        Returns:
+            上传结果字典，失败返回 None
+        """
+        import json
+        from tqdm import tqdm
+
         # 使用目标文件名或原文件名
         file_name = target_filename if target_filename else os.path.basename(file_path)
         file_size = os.path.getsize(file_path)
@@ -729,100 +1014,138 @@ class Yun139Uploader:
                 "parallelHashCtx": {"partOffset": start}
             })
 
-        # 创建上传任务
-        # 秒传时只需传一个分片信息，上传时会获取所有分片的上传地址
-        data = {
-            "contentHash": content_hash,
-            "contentHashAlgorithm": "SHA256",
-            "contentType": "application/octet-stream",
-            "parallelUpload": False,
-            "partInfos": part_infos[:1],  # 秒传时只需一个分片
-            "size": file_size,
-            "parentFileId": parent_id if parent_id else "",
-            "name": file_name,
-            "type": "file",
-            "fileRenameMode": "auto_rename"
-        }
-
-        result = self.client._request("/hcy/file/create", data, is_personal=True)
-        upload_data = result.get('data', {})
-
-        # 打印上传任务信息
-        print(f"\n{'='*50}")
-        print(f"文件名: {file_name}")
-        print(f"文件大小: {file_size} bytes")
-        print(f"SHA256: {content_hash}")
-        print(f"exist: {upload_data.get('exist', False)}")
-        print(f"rapidUpload: {upload_data.get('rapidUpload', False)}")
-        print(f"fileId: {upload_data.get('fileId', '')}")
-        print(f"fileName: {upload_data.get('fileName', '')}")
-        print(f"parts_encoded: {base64.b64encode(json.dumps(part_infos[:1]).encode()).decode()}")
-        print(f"{'='*50}")
-
-        # 文件已存在相同内容
-        if upload_data.get('exist', False):
-            print(f"✓ 文件已存在相同内容，跳过上传")
-            return {
-                "file_id": upload_data.get('fileId', ''),
-                "name": upload_data.get('fileName', file_name),
+        # 检查断点续传状态
+        saved_state = self._load_upload_state(file_path, content_hash)
+        file_id = None
+        upload_id = None
+        uploaded_part_numbers = []
+        
+        if saved_state:
+            # 断点续传：复用已有的 fileId 和 uploadId
+            file_id = saved_state.get("fileId")
+            upload_id = saved_state.get("uploadId")
+            uploaded_part_numbers = saved_state.get("uploadedParts", [])
+            print(f"  [断点续传] 恢复上传: fileId={file_id}, 已完成 {len(uploaded_part_numbers)}/{part_count} 分片")
+        else:
+            # 创建新的上传任务
+            data = {
+                "contentHash": content_hash,
+                "contentHashAlgorithm": "SHA256",
+                "contentType": "application/octet-stream",
+                "parallelUpload": False,
+                "partInfos": part_infos[:1],  # 秒传时只需一个分片
                 "size": file_size,
-                "content_hash": content_hash,
-                "part_infos": part_infos,
-                "url": "",
-                "existed": True,
+                "parentFileId": parent_id if parent_id else "",
+                "name": file_name,
+                "type": "file",
+                "fileRenameMode": "auto_rename"
             }
 
-        # 支持秒传
-        if upload_data.get('rapidUpload', False):
-            print(f"✓ 秒传成功")
-            return {
-                "file_id": upload_data.get('fileId', ''),
-                "name": upload_data.get('fileName', file_name),
-                "size": file_size,
-                "content_hash": content_hash,
-                "part_infos": part_infos,
-                "url": "",
-                "rapid_upload": True,
-            }
+            result = self.client._request("/hcy/file/create", data, is_personal=True)
+            upload_data = result.get('data', {})
 
-        # 获取所有分片上传地址
-        upload_part_infos = upload_data.get('partInfos', [])
-        file_id = upload_data['fileId']
-        upload_id = upload_data['uploadId']
+            # 打印上传任务信息
+            print(f"\n{'='*50}")
+            print(f"文件名: {file_name}")
+            print(f"文件大小: {file_size} bytes")
+            print(f"SHA256: {content_hash}")
+            print(f"exist: {upload_data.get('exist', False)}")
+            print(f"rapidUpload: {upload_data.get('rapidUpload', False)}")
+            print(f"fileId: {upload_data.get('fileId', '')}")
+            print(f"fileName: {upload_data.get('fileName', '')}")
+            print(f"parts_encoded: {base64.b64encode(json.dumps(part_infos[:1]).encode()).decode()}")
+            print(f"{'='*50}")
 
-        # 获取剩余分片的上传地址（从第2个分片开始，因为第1个已经在partInfos中）
-        # AList 的做法：每批获取 100 个
-        for i in range(1, len(part_infos), 100):
-            batch = part_infos[i:i+100]
-            more_data = {
-                "fileId": file_id,
-                "uploadId": upload_id,
-                "partInfos": batch,
-                "commonAccountInfo": {
-                    "account": self.client.account,
-                    "accountType": 1
+            # 文件已存在相同内容
+            if upload_data.get('exist', False):
+                print(f"✓ 文件已存在相同内容，跳过上传")
+                self._clear_upload_state(file_path)
+                return {
+                    "file_id": upload_data.get('fileId', ''),
+                    "name": upload_data.get('fileName', file_name),
+                    "size": file_size,
+                    "content_hash": content_hash,
+                    "part_infos": part_infos[:1],
+                    "url": "",
+                    "existed": True,
                 }
-            }
-            print(f"  [DEBUG] 获取分片 {i+1}-{min(i+100, len(part_infos))} 的上传地址")
-            more_result = self.client._request(
-                "/hcy/file/getUploadUrl",
-                more_data,
-                is_personal=True
-            )
-            upload_part_infos.extend(more_result['data']['partInfos'])
+
+            # 支持秒传
+            if upload_data.get('rapidUpload', False):
+                print(f"✓ 秒传成功")
+                self._clear_upload_state(file_path)
+                return {
+                    "file_id": upload_data.get('fileId', ''),
+                    "name": upload_data.get('fileName', file_name),
+                    "size": file_size,
+                    "content_hash": content_hash,
+                    "part_infos": part_infos[:1],
+                    "url": "",
+                    "rapid_upload": True,
+                }
+
+            file_id = upload_data['fileId']
+            upload_id = upload_data['uploadId']
+            
+            # 保存初始状态
+            self._save_upload_state(file_path, file_id, upload_id, content_hash, [])
+
+        # 获取未上传分片的上传地址
+        upload_part_infos = []
+        
+        # 过滤出未上传的分片
+        pending_part_infos = [p for p in part_infos if p['partNumber'] not in uploaded_part_numbers]
+        
+        if not pending_part_infos:
+            print(f"  [断点续传] 所有分片已上传，直接完成上传")
+        else:
+            print(f"  [断点续传] 需要上传 {len(pending_part_infos)}/{part_count} 个分片")
+            
+            # 获取未上传分片的上传地址（每批获取 100 个）
+            for i in range(0, len(pending_part_infos), 100):
+                batch = pending_part_infos[i:i+100]
+                more_data = {
+                    "fileId": file_id,
+                    "uploadId": upload_id,
+                    "partInfos": batch,
+                    "commonAccountInfo": {
+                        "account": self.client.account,
+                        "accountType": 1
+                    }
+                }
+                print(f"  [DEBUG] 获取分片上传地址: 第 {batch[0]['partNumber']}-{batch[-1]['partNumber']} 个")
+                more_result = self.client._request(
+                    "/hcy/file/getUploadUrl",
+                    more_data,
+                    is_personal=True
+                )
+                upload_part_infos.extend(more_result['data']['partInfos'])
+            
+            upload_part_infos = sorted(upload_part_infos, key=lambda x: x['partNumber'])
 
         # 上传分片（带进度条和重试机制）
         # 注意：139云盘要求分片按顺序上传，不支持并行
         print(f"\n📤 开始上传分片，共 {len(upload_part_infos)} 个分片")
         
-        uploaded_parts = []  # 记录已上传的分片
+        uploaded_parts = []  # 记录已上传的分片信息（用于complete）
         max_retries = 3  # 每个分片最大重试次数
         
+        # 计算已上传字节数（用于进度条初始位置）
+        initial_uploaded = 0
+        for part_num in uploaded_part_numbers:
+            part_idx = part_num - 1
+            if 0 <= part_idx < len(part_infos):
+                initial_uploaded += part_infos[part_idx]['partSize']
+        
         with open(file_path, 'rb') as f:
-            with tqdm(total=file_size, unit='B', unit_scale=True, desc="上传进度", ncols=80) as pbar:
+            with tqdm(total=file_size, unit='B', unit_scale=True, desc="上传进度", ncols=80, initial=initial_uploaded) as pbar:
                 for part_info in upload_part_infos:
                     part_num = part_info['partNumber'] - 1
                     upload_url = part_info['uploadUrl']
+                    
+                    # 跳过已上传的分片
+                    if part_info['partNumber'] in uploaded_part_numbers:
+                        continue
                     
                     f.seek(part_num * part_size)
                     chunk_data = f.read(part_size)
@@ -883,7 +1206,11 @@ class Yun139Uploader:
                     
                     if not upload_success:
                         print(f"\n  [ERROR] 分片 {part_info['partNumber']} 上传失败，已重试{max_retries}次: {last_error}")
-                        return None
+                        return None  # 返回 None，让外层重试
+                    
+                    # 更新已上传分片列表并保存进度
+                    uploaded_part_numbers.append(part_info['partNumber'])
+                    self._save_upload_state(file_path, file_id, upload_id, content_hash, uploaded_part_numbers)
                     
                     pbar.update(len(chunk_data))
                     if progress_callback:
@@ -901,6 +1228,9 @@ class Yun139Uploader:
         
         self.client._request("/hcy/file/complete", complete_data, is_personal=True)
 
+        # 上传完成，清除断点续传状态文件
+        self._clear_upload_state(file_path)
+
         print(f"上传完成: {file_name}")
 
         return {
@@ -908,6 +1238,6 @@ class Yun139Uploader:
             "name": file_name,
             "size": file_size,
             "content_hash": content_hash,
-            "part_infos": part_infos,
+            "part_infos": part_infos[:1],
             "url": "",
         }

@@ -4,6 +4,7 @@
 """
 
 import os
+import json
 import time
 import requests
 from pathlib import Path
@@ -55,6 +56,7 @@ class Cloud189Uploader:
         # TG 通知相关
         self.tg_bot_token = self.telegram_config.get("bot_token", "")
         self.tg_chat_id = self.telegram_config.get("chat_id", "")
+        self.tg_channel_chat_id = self.telegram_config.get("channel_chat_id", "")  # 频道ID
         self._tg_message_ids: Dict[str, Optional[int]] = {}
         self.tg_last_update_time = 0
         self.tg_update_interval = 2
@@ -242,6 +244,110 @@ class Cloud189Uploader:
 
         return message_id
 
+    def _send_tg_channel_message(self, message: str) -> bool:
+        """
+        发送消息到 TG 频道
+
+        Args:
+            message: 要发送的消息文本
+
+        Returns:
+            发送成功返回 True
+        """
+        if not self.tg_bot_token:
+            print(f"[Cloud189] TG频道: bot_token 未配置")
+            return False
+        if not self.tg_channel_chat_id:
+            print(f"[Cloud189] TG频道: channel_chat_id 未配置")
+            return False
+
+        # 格式化频道ID（参考123云盘实现）
+        tg_channel = self.tg_channel_chat_id
+        if tg_channel:
+            # 去除行尾注释（分号或井号后面的内容）
+            for sep in [';', '#']:
+                if sep in tg_channel:
+                    tg_channel = tg_channel.split(sep)[0]
+            tg_channel = tg_channel.strip()
+            # 自动添加 @ 前缀
+            if not tg_channel.startswith(('@', '-')):
+                tg_channel = f"@{tg_channel}"
+
+        try:
+            url = f"https://api.telegram.org/bot{self.tg_bot_token}/sendMessage"
+            
+            # 使用 data 参数（form-urlencoded）而不是 json
+            data = {
+                "chat_id": tg_channel,
+                "text": message,
+            }
+            
+            # 打印完整的调试信息
+            print(f"\n{'='*60}")
+            print(f"[Cloud189] TG API 请求:")
+            print(f"URL: {url}")
+            print(f"chat_id: {tg_channel}")
+            print(f"text 长度: {len(message)} 字符")
+            print(f"text 内容:\n{message}")
+            print(f"{'='*60}\n")
+            
+            # 使用 data 参数发送 form-urlencoded 请求
+            response = requests.post(url, data=data, timeout=10)
+            print(f"[Cloud189] TG频道响应状态: {response.status_code}")
+            print(f"[Cloud189] TG频道响应内容: {response.text}")
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("ok"):
+                    print(f"[Cloud189] ✅ 发送成功!")
+                    return True
+                else:
+                    print(f"[Cloud189] TG频道错误: {result.get('description', 'unknown')}")
+                return result.get("ok", False)
+            else:
+                print(f"[提示] 请确保 Bot 已添加到频道并具有管理员权限")
+        except Exception as e:
+            print(f"[Cloud189] 发送 TG 频道消息失败: {e}")
+            import traceback
+            traceback.print_exc()
+        return False
+
+    def _send_upload_complete_to_channel(
+        self,
+        md5: str,
+        slice_md5: str,
+        size: int,
+        name: str,
+        cloud_type: str = "189",
+        folder_path: str = ""
+    ) -> bool:
+        """
+        发送上传完成的 JSON 消息到 TG 频道
+
+        Args:
+            md5: 文件 MD5 哈希值
+            slice_md5: 文件分片 MD5 哈希值
+            size: 文件大小（字节）
+            name: 文件名
+            cloud_type: 云盘类型标识
+            folder_path: 文件夹路径（如 "TV Shows/Show Name/Season 01"）
+
+        Returns:
+            发送成功返回 True
+        """
+        # 构建完整文件路径
+        full_path = f"{folder_path}/{name}" if folder_path else name
+        
+        # 构建 JSON 格式消息（纯文本，不用 Markdown）
+        message = f'''{{
+    "md5": "{md5}",
+    "slice_md5": "{slice_md5}",
+    "size": {size},
+    "name": "{full_path}",
+    "cloud": "{cloud_type}"
+}}'''
+        return self._send_tg_channel_message(message)
+
     def upload_video(
         self,
         file_path: str,
@@ -385,6 +491,23 @@ class Cloud189Uploader:
                                 print(f"[Cloud189] 删除云端文件异常: {e}")
                     except Exception as e:
                         print(f"[Cloud189] 生成 STRM 文件失败: {e}")
+
+            # 发送上传完成消息到 TG 频道
+            if self.tg_channel_chat_id and result.file_md5:
+                # 构建文件夹路径
+                folder_path = "/".join(folder_structure) if folder_structure else ""
+                success = self._send_upload_complete_to_channel(
+                    md5=result.file_md5,
+                    slice_md5=result.slice_md5,
+                    size=result.file_size,
+                    name=strm_file_name,
+                    cloud_type="189",
+                    folder_path=folder_path
+                )
+                if success:
+                    print(f"[Cloud189] 已发送上传完成消息到 TG 频道")
+                else:
+                    print(f"[Cloud189] ⚠️ 发送 TG 频道消息失败")
 
             return {
                 "file_id": result.user_file_id,

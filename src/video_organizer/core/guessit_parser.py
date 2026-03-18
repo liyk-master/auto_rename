@@ -305,10 +305,74 @@ class GuessItParser:
                 if self._is_invalid_show_name(regex_value):
                     merged[field] = guessit_value
                     logger.debug(f"正则剧名 '{regex_value}' 不合理，使用 GuessIt 结果: {guessit_value}")
+                # 检查是否 GuessIt 结果包含续集编号（如 "Lethal Weapon 2"）
+                # 而正则结果丢失了续集编号（如 "Lethal Weapon"）
+                elif regex_value and guessit_value:
+                    guessit_stripped = guessit_value.strip()
+                    regex_stripped = regex_value.strip()
+                    
+                    # 情况1：空格分隔的续集编号（如 "Lethal Weapon 2"）
+                    match_space = re.match(r'^(.+?)\s+(\d+)$', guessit_stripped)
+                    if match_space:
+                        # GuessIt 结果以空格+数字结尾
+                        base_name = match_space.group(1).strip()
+                        sequel_num = match_space.group(2)
+                        # 如果正则结果等于去掉续集编号的基础名称，使用 GuessIt 结果
+                        if regex_stripped == base_name:
+                            merged[field] = guessit_value
+                            logger.debug(f"GuessIt 标题 '{guessit_value}' 包含续集编号，正则 '{regex_value}' 丢失了编号，使用 GuessIt 结果")
+                            continue
+                    
+                    # 情况2：直接连接的数字（如 "唐探1900"）
+                    # 正则可能把标题中的数字误识别为年份，导致 show_name 被截断
+                    match_direct = re.match(r'^(.+?)(\d+)$', guessit_stripped)
+                    if match_direct:
+                        base_name_direct = match_direct.group(1).strip()
+                        # 如果正则结果正好是 GuessIt 标题去掉数字后的部分
+                        # 说明正则可能把数字误识别为年份
+                        if regex_stripped == base_name_direct:
+                            merged[field] = guessit_value
+                            logger.debug(f"GuessIt 标题 '{guessit_value}' 以数字结尾，正则 '{regex_value}' 可能误把数字识别为年份，使用 GuessIt 结果")
+            elif field == 'season' and guessit_value is not None:
+                # 特殊处理：如果正则 season 是默认值 1，而 GuessIt 有明确的 season，使用 GuessIt
+                # 检查文件名中是否有明确的季号标识（如 [S2]、S02 等）
+                has_explicit_season = bool(
+                    re.search(r'\[S\d+\]|\(S\d+\)|\.S\d+\.|-S\d+-', filename, re.IGNORECASE) or
+                    re.search(r'S\d+E\d+', filename, re.IGNORECASE) or
+                    re.search(r'第\d+季', filename)
+                )
+                # 转换为整数进行比较（regex_value 可能是字符串）
+                try:
+                    regex_season = int(regex_value) if regex_value else None
+                    guessit_season = int(guessit_value) if guessit_value else None
+                except (ValueError, TypeError):
+                    regex_season = None
+                    guessit_season = None
+                
+                if regex_season == 1 and has_explicit_season and guessit_season and guessit_season > 1:
+                    merged[field] = guessit_value
+                    logger.debug(f"正则 season={regex_value} 可能是默认值，文件名有明确季号标识，使用 GuessIt 结果: {guessit_value}")
 
         # 媒体类型：如果正则没有识别，使用 guessit 结果
         if not merged.get('media_type') and guessit_metadata.get('media_type'):
             merged['media_type'] = guessit_metadata['media_type']
+
+        # 年份特殊处理：如果 show_name 被修正（正则结果与合并结果不同）
+        # 说明正则可能把标题中的数字误识别为年份，此时应使用 GuessIt 的年份
+        regex_show_name = regex_metadata.get('show_name', '')
+        merged_show_name = merged.get('show_name', '')
+        regex_year = regex_metadata.get('year')
+        guessit_year = guessit_metadata.get('year')
+        
+        if regex_show_name != merged_show_name and guessit_year is not None:
+            # show_name 被修正了，检查正则的年份是否来自标题中的数字
+            # 例如：正则把 "唐探1900" 拆成 show_name="唐探", year="1900"
+            # 而 GuessIt 正确识别为 show_name="唐探1900", year="2025"
+            if regex_year:
+                # 检查正则年份是否在 GuessIt 标题末尾（被误提取）
+                if str(regex_year) in str(merged_show_name):
+                    merged['year'] = guessit_year
+                    logger.debug(f"正则年份 '{regex_year}' 来自标题中的数字，使用 GuessIt 年份: {guessit_year}")
 
         # 发布组：优先使用正则结果，如果没有则使用 guessit
         if not merged.get('release_group') and guessit_metadata.get('release_group'):

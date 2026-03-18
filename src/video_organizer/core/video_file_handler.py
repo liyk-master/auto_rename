@@ -120,6 +120,7 @@ class VideoFileHandler:
         raw_cloud189_strm_output = self.cloud189_config.get("strm_output_dir", "")
         self.cloud189_strm_output_dir = str(raw_cloud189_strm_output).split("#")[0].split(";")[0].strip()
         self.cloud189_delete_after_strm = self.cloud189_config.get("delete_after_strm", False)
+        self.cloud189_empty_recycle_bin = self.cloud189_config.get("empty_recycle_bin", False)
 
         # 初始化 139 云盘配置
         self.yun139_config = yun139_config or {}
@@ -1187,6 +1188,19 @@ class VideoFileHandler:
 
                         if upload_results["cloud189"]:
                             print(f"\n🎉 [线程#{worker_id}] 天翼云盘上传成功!")
+                            # 上传成功后清空回收站
+                            if self.cloud189_empty_recycle_bin:
+                                try:
+                                    print(f"🗑️ [线程#{worker_id}] 清空天翼云盘回收站...")
+                                    recycle_result = self.cloud189_uploader.client.empty_recycle(
+                                        familyId=self.cloud189_family_id
+                                    )
+                                    if recycle_result.get("res_code") == 0:
+                                        print(f"✓ [线程#{worker_id}] 回收站已清空")
+                                    else:
+                                        print(f"⚠️ [线程#{worker_id}] 清空回收站失败: {recycle_result.get('res_message', 'Unknown')}")
+                                except Exception as e:
+                                    print(f"⚠️ [线程#{worker_id}] 清空回收站异常: {e}")
                         else:
                             print(f"\n❌ [线程#{worker_id}] 天翼云盘上传失败!")
                     except Exception as e:

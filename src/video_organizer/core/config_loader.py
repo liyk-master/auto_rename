@@ -36,6 +36,7 @@ DEFAULT_CONFIG = {
         "strm_server": "",  # STRM 服务器地址，如 http://192.168.2.148:5000
         "strm_output_dir": "",  # STRM 文件输出目录
         "delete_after_strm": False,  # 生成 STRM 后删除云端文件
+        "empty_recycle_bin": False,  # 上传完成后清空回收站
     },
     "yun139": {
         "authorization": "",  # Base64编码的认证信息

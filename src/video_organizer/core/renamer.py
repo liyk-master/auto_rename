@@ -3364,16 +3364,21 @@ class VideoRenamer:
                     return metadata
                 # 保存原始标题，并处理None值情况
                 original_title = metadata.get("title")
+                original_show_name = metadata.get("show_name")
                 # 丰富元数据，优先使用中文标题
                 # 无论是否是中文标题，都设置所有元数据字段
                 if details.get("title") and is_chinese(details["title"]):
                     metadata["title"] = details["title"]
+                    # 同步更新 show_name，确保电影名称一致性
+                    metadata["show_name"] = details["title"]
                     logger.info(f"使用中文标题: {details['title']}")
                 else:
                     # 如果原始标题为None或空字符串，使用TMDB的原始标题
-                    metadata["title"] = original_title or details.get(
-                        "original_title", ""
-                    )
+                    tmdb_title = original_title or details.get("original_title", "")
+                    metadata["title"] = tmdb_title
+                    # 同步更新 show_name
+                    if tmdb_title:
+                        metadata["show_name"] = tmdb_title
                     logger.info(f"使用原始标题: {metadata['title']}")
 
                 # 始终设置其他元数据字段
@@ -3841,8 +3846,6 @@ class VideoRenamer:
                 else ""
             ),
         }
-
-        # 添加调试日志，追踪变量值和模板渲染
 
         try:
             # 提取后缀名：优先使用 original_path，其次使用 metadata 中的 extension 备份

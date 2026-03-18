@@ -884,13 +884,19 @@ class Yun139:
     # ==================== 上传 ====================
     
     def _get_part_size(self, size: int) -> int:
-        """计算分片大小"""
+        """计算分片大小
+        """
         if self.custom_part_size > 0:
             return self.custom_part_size
         
-        if size > 30 * self.GB:
-            return 512 * self.MB
-        return 100 * self.MB
+        if size < 100 * self.MB:
+            return 5 * self.MB
+        elif size < self.GB:
+            return 15 * self.MB
+        elif size < 10 * self.GB:
+            return 20 * self.MB
+        else:
+            return 50 * self.MB
     
     def upload(
         self,
