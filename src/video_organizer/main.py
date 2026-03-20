@@ -1,6 +1,7 @@
 import os
 import sys
 import signal
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -24,6 +25,9 @@ from .utils.logging_utils import get_logger, setup_logging
 # 导入命令行工具
 from .utils.cli_parser import get_cli_parser
 from .utils.cli_output import get_cli_output
+
+# 导入 Web 服务
+from .web.services.state import get_state_manager
 
 # 应用版本信息
 __version__ = "1.0.0"
@@ -379,6 +383,76 @@ def display_config(config: dict) -> None:
     cli_output.print_separator()
 
 
+def start_web_server(
+    host: str,
+    port: int,
+    video_handler: Optional[Any] = None,
+    config: Optional[dict] = None,
+    config_path: Optional[Path] = None,
+    downloader_monitors: Optional[list] = None,
+    reload: bool = False,
+) -> threading.Thread:
+    """
+    在后台线程启动 Web 服务器
+
+    Args:
+        host: 监听地址
+        port: 监听端口
+        video_handler: VideoFileHandler 实例
+        config: 配置字典
+        config_path: 配置文件路径
+        downloader_monitors: 下载器监控器列表
+        reload: 是否启用热重载
+
+    Returns:
+        Web 服务器线程
+    """
+    logger = get_logger(__name__)
+
+    def run_web():
+        try:
+            from .web.app import create_app
+            import uvicorn
+
+            # 初始化状态管理器
+            state = get_state_manager()
+            if video_handler is not None:
+                state.set_video_handler(video_handler)
+            if config is not None:
+                state.set_config(config, config_path)
+            if downloader_monitors is not None:
+                state.set_downloader_monitors(downloader_monitors)
+
+            # 创建应用
+            app = create_app()
+
+            logger.info(f"Web 管理后台启动于 http://{host}:{port}")
+            cli_output.print_success(f"Web 管理后台: http://{host}:{port}")
+
+            # 运行服务器
+            uvicorn.run(
+                app,
+                host=host,
+                port=port,
+                log_level="warning",  # 减少 uvicorn 日志输出
+            )
+
+        except ImportError as e:
+            logger.error(f"Web 服务依赖缺失: {e}")
+            cli_output.print_error(
+                "Web 服务依赖缺失，请安装: pip install fastapi uvicorn"
+            )
+        except Exception as e:
+            logger.error(f"Web 服务启动失败: {e}")
+            cli_output.print_error(f"Web 服务启动失败: {e}")
+
+    # 在后台线程启动
+    web_thread = threading.Thread(target=run_web, daemon=True, name="WebServer")
+    web_thread.start()
+
+    return web_thread
+
+
 def main() -> None:
     """
     主函数
@@ -500,23 +574,75 @@ def main() -> None:
         cli_output.print_header(f"视频文件自动重命名和组织工具 v{__version__}")
         cli_output.print_info("启动中...")
 
+        # 获取 logger 实例
+        logger = get_logger(__name__)
+
+        # 仅 Web 模式
+        if args.web_only:
+            cli_output.print_info("仅启动 Web 管理后台...")
+
+            # 初始化状态管理器
+            state = get_state_manager()
+            state.set_config(config, Path(config_path) if config_path else None)
+            state.set_system_running(False)
+
+            # 启动 Web 服务（主线程运行）
+            try:
+                from .web.app import create_app
+                import uvicorn
+
+                app = create_app()
+                cli_output.print_success(f"Web 管理后台启动于 http://{args.web_host}:{args.web_port}")
+                cli_output.print_info("按 Ctrl+C 停止服务")
+                cli_output.print_separator()
+
+                uvicorn.run(
+                    app,
+                    host=args.web_host,
+                    port=args.web_port,
+                    reload=args.web_reload,
+                )
+            except ImportError:
+                cli_output.print_error("Web 服务依赖缺失，请安装: pip install fastapi uvicorn")
+                sys.exit(1)
+            sys.exit(0)
+
         # 初始化监控器
         monitor = initialize_monitor(config, cli_options)
         if not monitor:
             cli_output.print_error("监控器初始化失败，程序退出")
             sys.exit(1)
 
+        # 启动 Web 服务（如果请求）
+        web_thread = None
+        if args.web:
+            # 获取视频处理器和下载器监控器
+            video_handler = getattr(monitor, "event_handler", None)
+            downloader_monitors = getattr(monitor, "downloader_monitors", [])
+
+            web_thread = start_web_server(
+                host=args.web_host,
+                port=args.web_port,
+                video_handler=video_handler,
+                config=config,
+                config_path=Path(config_path) if config_path else None,
+                downloader_monitors=downloader_monitors,
+                reload=args.web_reload,
+            )
+
         try:
             # 启动监控
             cli_output.print_separator()
-            # 获取logger实例
-            logger = get_logger(__name__)
             cli_output.print_info(
                 f"支持的文件类型: {', '.join(monitor.supported_extensions)}"
             )
             cli_output.print_success("监控服务已启动！")
             cli_output.print_info("按 Ctrl+C 停止监控")
             cli_output.print_separator()
+
+            # 设置系统运行状态
+            state = get_state_manager()
+            state.set_system_running(True)
 
             monitor.start()
 
@@ -532,6 +658,10 @@ def main() -> None:
                 pass
             sys.exit(1)
         finally:
+            # 设置系统停止状态
+            state = get_state_manager()
+            state.set_system_running(False)
+
             # 确保监控器被停止
             try:
                 monitor.stop()

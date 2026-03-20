@@ -6,6 +6,7 @@
 import os
 import sys
 import time
+import logging
 import requests
 import re
 from pathlib import Path
@@ -14,6 +15,37 @@ from colorama import Fore, init
 
 # 初始化 colorama
 init(autoreset=True)
+
+_logger = logging.getLogger(__name__)
+
+
+def _report_upload_progress(
+    file_path: str,
+    filename: str,
+    uploader: str,
+    progress: float,
+    uploaded_bytes: int,
+    total_bytes: int,
+    speed: str = "",
+    status: str = "uploading",
+    error: Optional[str] = None
+):
+    """报告上传进度到 Web 状态管理器"""
+    try:
+        from ..web.services.state import report_upload_progress
+        report_upload_progress(
+            file_path=file_path,
+            filename=filename,
+            uploader=uploader,
+            progress=progress,
+            uploaded_bytes=uploaded_bytes,
+            total_bytes=total_bytes,
+            speed=speed,
+            status=status,
+            error=error
+        )
+    except Exception:
+        pass  # Web 模块未加载时忽略
 
 # 导入 p123 客户端
 try:
@@ -350,6 +382,20 @@ class P123Uploader:
             import traceback
 
             traceback.print_exc()
+            
+            # 报告上传失败
+            _report_upload_progress(
+                file_path=file_path,
+                filename=Path(file_path).name,
+                uploader="p123",
+                progress=0,
+                uploaded_bytes=0,
+                total_bytes=0,
+                speed="",
+                status="failed",
+                error=str(e)
+            )
+            
             return None
 
     def upload_subtitles(
@@ -571,6 +617,18 @@ class P123Uploader:
         last_speed_update_time = 0  # 最后一次速度计算的时间
         final_progress_sent = False  # 标记是否已发送最终100%进度
 
+        # 报告上传开始
+        _report_upload_progress(
+            file_path=file_path,
+            filename=file_name,
+            uploader="p123",
+            progress=0,
+            uploaded_bytes=0,
+            total_bytes=file_size,
+            speed="",
+            status="uploading"
+        )
+
         # 定义进度回调函数
         def progress_callback(current_uploaded: int, total_size: int):
             nonlocal last_uploaded, last_time, current_speed, last_speed_update_time, final_progress_sent
@@ -590,6 +648,7 @@ class P123Uploader:
                 # 每0.5秒或当进度完成时计算一次速度
                 if time_diff >= 0.5 or is_complete:
                     bytes_diff = current_uploaded - last_uploaded
+                    speed_str = ""
                     if time_diff > 0:
                         new_speed = (bytes_diff / (1024 * 1024)) / time_diff
                         # 使用加权平均平滑速度
@@ -597,6 +656,19 @@ class P123Uploader:
                             current_speed = current_speed * 0.7 + new_speed * 0.3
                         else:
                             current_speed = new_speed
+                        speed_str = f"{current_speed:.2f} MB/s"
+
+                    # 报告上传进度到 Web
+                    _report_upload_progress(
+                        file_path=file_path,
+                        filename=file_name,
+                        uploader="p123",
+                        progress=progress,
+                        uploaded_bytes=current_uploaded,
+                        total_bytes=total_size,
+                        speed=speed_str,
+                        status="completed" if is_complete else "uploading"
+                    )
 
                     # 发送Telegram进度（如果是完成状态且尚未发送过，则发送）
                     if is_complete and not final_progress_sent:

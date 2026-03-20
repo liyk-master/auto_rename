@@ -4,11 +4,43 @@ import os
 from pathlib import Path
 import math
 import time
+import logging
 from typing import Optional, Dict, Any
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import datetime
 import hashlib
+
+_logger = logging.getLogger(__name__)
+
+
+def _report_upload_progress(
+    file_path: str,
+    filename: str,
+    uploader: str,
+    progress: float,
+    uploaded_bytes: int,
+    total_bytes: int,
+    speed: str = "",
+    status: str = "uploading",
+    error: Optional[str] = None
+):
+    """报告上传进度到 Web 状态管理器"""
+    try:
+        from ..web.services.state import report_upload_progress
+        report_upload_progress(
+            file_path=file_path,
+            filename=filename,
+            uploader=uploader,
+            progress=progress,
+            uploaded_bytes=uploaded_bytes,
+            total_bytes=total_bytes,
+            speed=speed,
+            status=status,
+            error=error
+        )
+    except Exception:
+        pass  # Web 模块未加载时忽略
 
 
 class RobustEmosVideoUploader:
@@ -254,6 +286,7 @@ class RobustEmosVideoUploader:
         average_speed,
         elapsed_time,
         file_name=None,
+        file_path=None,
     ):
         """打印上传进度信息"""
         progress_percent = (chunk_num + 1) / total_chunks * 100
@@ -270,6 +303,20 @@ class RobustEmosVideoUploader:
         bar_length = 40
         filled_length = int(bar_length * (chunk_num + 1) / total_chunks)
         bar = "█" * filled_length + "░" * (bar_length - filled_length)
+
+        # 报告上传进度到 Web
+        if file_path and file_name:
+            speed_str = self._format_speed(average_speed)
+            _report_upload_progress(
+                file_path=str(file_path) if isinstance(file_path, Path) else file_path,
+                filename=file_name,
+                uploader="emos",
+                progress=progress_percent,
+                uploaded_bytes=uploaded_size,
+                total_bytes=file_size,
+                speed=speed_str,
+                status="uploading"
+            )
 
         # 使用换行显示，确保在所有环境下都能看到
         print(f"\n{'='*80}")
@@ -618,6 +665,7 @@ class RobustEmosVideoUploader:
                         average_speed,
                         elapsed_time,
                         file_name=file_path.name,
+                        file_path=file_path,
                     )
                     # 发送/更新 Telegram 进度
                     self._send_tg_progress(
@@ -687,9 +735,24 @@ class RobustEmosVideoUploader:
 
     def upload_video(self, file_path, item_type, item_id, file_storage="internal", enable_resume=True):
         """完整的上传流程（支持断点续传）"""
+        file_path_obj = Path(file_path)
+        file_size = file_path_obj.stat().st_size
+        file_name = file_path_obj.name
+        
+        # 报告上传开始
+        _report_upload_progress(
+            file_path=str(file_path_obj),
+            filename=file_name,
+            uploader="emos",
+            progress=0,
+            uploaded_bytes=0,
+            total_bytes=file_size,
+            speed="",
+            status="uploading"
+        )
+        
         try:
-            file_path = Path(file_path)
-            cache_key = self._get_cache_key(item_type, item_id, file_path) if enable_resume else None
+            cache_key = self._get_cache_key(item_type, item_id, file_path_obj) if enable_resume else None
 
             print("=== 步骤1: 初始化视频信息 ===")
             step1_result = self.step1_init_video(item_type, item_id)
@@ -697,7 +760,7 @@ class RobustEmosVideoUploader:
             # 检查是否有有效的断点续传缓存
             cache_data = None
             if cache_key:
-                cache_data = self._load_upload_cache(cache_key, file_path)
+                cache_data = self._load_upload_cache(cache_key, file_path_obj)
 
             print("\n=== 步骤2: 获取上传凭证 ===")
             step2_result = None
@@ -708,7 +771,7 @@ class RobustEmosVideoUploader:
                 print("✓ 使用缓存的上传凭证（断点续传）")
             else:
                 # 重新获取上传凭证
-                step2_result = self.step2_get_upload_token(file_path, file_storage)
+                step2_result = self.step2_get_upload_token(file_path_obj, file_storage)
 
             # 检查是否因为资源已存在而跳过
             if step2_result.get("message") == "此资源您之前上传过":
@@ -717,17 +780,42 @@ class RobustEmosVideoUploader:
                 # 清除缓存（如果存在）
                 if cache_key:
                     self._clear_upload_cache(cache_key)
+                
+                # 报告上传完成（资源已存在）
+                _report_upload_progress(
+                    file_path=str(file_path_obj),
+                    filename=file_name,
+                    uploader="emos",
+                    progress=100,
+                    uploaded_bytes=file_size,
+                    total_bytes=file_size,
+                    speed="existing resource",
+                    status="completed"
+                )
+                
                 return {"media_uuid": "EXISTING_RESOURCE_SKIPPED", "skipped": True}
 
             file_id = step2_result["file_id"]
 
             print("\n=== 步骤3: 分片上传文件 ===")
             upload_success = self.step3_chunk_upload(
-                file_path, step2_result, cache_key=cache_key, resume_from_cache=enable_resume
+                file_path_obj, step2_result, cache_key=cache_key, resume_from_cache=enable_resume
             )
 
             if not upload_success:
                 print("分片上传未完成，无法进行步骤4")
+                # 报告上传失败
+                _report_upload_progress(
+                    file_path=str(file_path_obj),
+                    filename=file_name,
+                    uploader="emos",
+                    progress=0,
+                    uploaded_bytes=0,
+                    total_bytes=file_size,
+                    speed="",
+                    status="failed",
+                    error="分片上传未完成"
+                )
                 return None
 
             print("\n=== 步骤4: 确认上传完成 ===")
@@ -741,10 +829,36 @@ class RobustEmosVideoUploader:
             if cache_key:
                 self._clear_upload_cache(cache_key)
 
+            # 报告上传完成
+            _report_upload_progress(
+                file_path=str(file_path_obj),
+                filename=file_name,
+                uploader="emos",
+                progress=100,
+                uploaded_bytes=file_size,
+                total_bytes=file_size,
+                speed="",
+                status="completed"
+            )
+
             return step4_result
 
         except Exception as e:
             print(f"上传失败: {e}")
+            
+            # 报告上传失败
+            _report_upload_progress(
+                file_path=str(file_path_obj),
+                filename=file_name,
+                uploader="emos",
+                progress=0,
+                uploaded_bytes=0,
+                total_bytes=file_size,
+                speed="",
+                status="failed",
+                error=str(e)
+            )
+            
             return None
 
 

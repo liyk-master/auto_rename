@@ -12,6 +12,25 @@ from typing import Optional, Dict, Any
 
 from .cloud189_upload import Cloud189Client
 
+# 进度报告函数
+def _report_progress(file_path, filename, uploader, progress, uploaded_bytes, total_bytes, speed, status, error=None):
+    """报告上传进度到状态管理器"""
+    try:
+        from ..web.services.state import report_upload_progress
+        report_upload_progress(
+            file_path=file_path,
+            filename=filename,
+            uploader=uploader,
+            progress=progress,
+            uploaded_bytes=uploaded_bytes,
+            total_bytes=total_bytes,
+            speed=speed,
+            status=status,
+            error=error,
+        )
+    except Exception:
+        pass  # 忽略进度报告错误
+
 
 class Cloud189Uploader:
     """天翼云盘上传器"""
@@ -390,6 +409,18 @@ class Cloud189Uploader:
 
         print(f"[Cloud189] 开始上传到{location_str}: {original_file_name}, 大小: {file_size / 1024 / 1024:.2f} MB")
 
+        # 报告上传开始
+        _report_progress(
+            file_path=abs_path,
+            filename=original_file_name,
+            uploader="cloud189",
+            progress=0,
+            uploaded_bytes=0,
+            total_bytes=file_size,
+            speed="",
+            status="uploading",
+        )
+
         # 发送 TG 开始通知
         tg_text = f"☁️ [天翼云盘-{location_str}] 开始上传\n📁 {original_file_name}\n📊 {file_size / 1024 / 1024:.2f} MB"
         tg_msg_id = self._send_tg_message(tg_text)
@@ -403,9 +434,24 @@ class Cloud189Uploader:
             # 进度回调
             def on_progress(percent: int):
                 now = time.time()
+                elapsed = now - start_time
+                speed = file_size * percent / 100 / elapsed / 1024 / 1024 if elapsed > 0 else 0
+                
+                # 报告进度到 Web 后台
+                _report_progress(
+                    file_path=abs_path,
+                    filename=original_file_name,
+                    uploader="cloud189",
+                    progress=percent,
+                    uploaded_bytes=int(file_size * percent / 100),
+                    total_bytes=file_size,
+                    speed=f"{speed:.2f} MB/s",
+                    status="uploading",
+                )
+                
+                # 更新 Telegram 消息
                 if now - self.tg_last_update_time >= self.tg_update_interval:
                     self.tg_last_update_time = now
-                    speed = file_size * percent / 100 / (now - start_time) / 1024 / 1024
                     tg_text = (
                         f"☁️ [天翼云盘] 上传中...\n"
                         f"📁 {original_file_name}\n"
@@ -430,6 +476,18 @@ class Cloud189Uploader:
 
             elapsed = time.time() - start_time
             speed = file_size / elapsed / 1024 / 1024
+
+            # 报告上传完成
+            _report_progress(
+                file_path=abs_path,
+                filename=original_file_name,
+                uploader="cloud189",
+                progress=100,
+                uploaded_bytes=file_size,
+                total_bytes=file_size,
+                speed=f"{speed:.2f} MB/s",
+                status="completed",
+            )
 
             # 发送完成通知
             rapid_tag = "⚡秒传" if result.rapid_upload else "✅完成"
@@ -521,7 +579,81 @@ class Cloud189Uploader:
             }
 
         except Exception as e:
+            error_msg = str(e)
+            
+            # 检查是否是频率限制或服务暂时不可用，自动重试
+            retry_keywords = ['服务暂时不可用', '系统管理员', '频率', '限流', 'too many', 'rate limit']
+            should_retry = any(keyword in error_msg.lower() for keyword in retry_keywords)
+            
+            if should_retry:
+                max_retries = 3
+                for retry_count in range(max_retries):
+                    wait_time = 30 * (retry_count + 1)  # 30s, 60s, 90s
+                    print(f"[Cloud189] 服务暂时不可用，{wait_time}秒后重试 ({retry_count + 1}/{max_retries})...")
+                    time.sleep(wait_time)
+                    
+                    try:
+                        # 更新 TG 消息
+                        tg_text = f"🔄 [天翼云盘] 重试上传中...\n📁 {original_file_name}"
+                        self._send_tg_message(tg_text, self._tg_message_ids.get(file_path))
+                        
+                        start_time = time.time()
+                        result = self.client.upload_file(
+                            file_path=abs_path,
+                            parent_folder_id=self.parent_folder_id,
+                            family_id=self.family_id,
+                            max_workers=self.max_workers,
+                            show_progress=True,
+                            on_progress=on_progress,
+                        )
+                        
+                        if result.success:
+                            elapsed = time.time() - start_time
+                            speed = file_size / elapsed / 1024 / 1024
+                            print(f"[Cloud189] 重试上传成功！耗时: {elapsed:.1f}s")
+                            
+                            # 发送成功通知
+                            rapid_tag = "⚡秒传" if result.rapid_upload else "✅完成"
+                            tg_text = (
+                                f"{rapid_tag} [天翼云盘]\n"
+                                f"📁 {original_file_name}\n"
+                                f"📊 {file_size / 1024 / 1024:.2f} MB\n"
+                                f"⏱️ {elapsed:.1f}s @ {speed:.2f} MB/s"
+                            )
+                            self._send_tg_message(tg_text, self._tg_message_ids.get(file_path))
+                            
+                            return {
+                                "file_id": result.user_file_id,
+                                "file_name": result.file_name,
+                                "file_size": result.file_size,
+                                "file_md5": result.file_md5,
+                                "slice_md5": result.slice_md5,
+                                "url": None,
+                                "strm_url": None,
+                                "rapid_upload": result.rapid_upload,
+                            }
+                    except Exception as retry_e:
+                        error_msg = str(retry_e)
+                        should_retry_again = any(keyword in error_msg.lower() for keyword in retry_keywords)
+                        if not should_retry_again or retry_count == max_retries - 1:
+                            print(f"[Cloud189] 重试失败: {retry_e}")
+                            break
+            
             print(f"[Cloud189] 上传失败: {e}")
+            
+            # 报告上传失败
+            _report_progress(
+                file_path=abs_path,
+                filename=original_file_name,
+                uploader="cloud189",
+                progress=0,
+                uploaded_bytes=0,
+                total_bytes=file_size,
+                speed="",
+                status="failed",
+                error=str(e),
+            )
+            
             # 发送错误通知
             tg_text = f"❌ [天翼云盘] 上传失败\n📁 {original_file_name}\n⚠️ {e}"
             self._send_tg_message(tg_text, self._tg_message_ids.get(file_path))

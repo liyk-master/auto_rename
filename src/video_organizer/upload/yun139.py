@@ -9,6 +9,8 @@ import time
 import random
 import string
 import json
+import logging
+import os
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
@@ -16,6 +18,37 @@ from enum import Enum
 from urllib.parse import quote
 
 import requests
+
+_logger = logging.getLogger(__name__)
+
+
+def _report_upload_progress(
+    file_path: str,
+    filename: str,
+    uploader: str,
+    progress: float,
+    uploaded_bytes: int,
+    total_bytes: int,
+    speed: str = "",
+    status: str = "uploading",
+    error: Optional[str] = None
+):
+    """报告上传进度到 Web 状态管理器"""
+    try:
+        from ..web.services.state import report_upload_progress
+        report_upload_progress(
+            file_path=file_path,
+            filename=filename,
+            uploader=uploader,
+            progress=progress,
+            uploaded_bytes=uploaded_bytes,
+            total_bytes=total_bytes,
+            speed=speed,
+            status=status,
+            error=error
+        )
+    except Exception:
+        pass  # Web 模块未加载时忽略
 
 
 class CloudType(Enum):
@@ -885,18 +918,28 @@ class Yun139:
     
     def _get_part_size(self, size: int) -> int:
         """计算分片大小
+        
+        规则（参考网页端100MB分片，设置最大100MB）：
+        - 小于100MB：整文件上传（1个分片）
+        - 小于1GB：5个分片（每片约200MB，但限制最大100MB）
+        - 小于10GB：每片100MB
+        - 其他：每片100MB
         """
         if self.custom_part_size > 0:
             return self.custom_part_size
         
+        MAX_PART_SIZE = 100 * self.MB  # 最大分片100MB
+        
         if size < 100 * self.MB:
-            return 5 * self.MB
+            # 1个分片
+            return size
         elif size < self.GB:
-            return 15 * self.MB
-        elif size < 10 * self.GB:
-            return 20 * self.MB
+            # 最少5个分片，但每片最大100MB
+            part_size = (size + 4) // 5
+            return min(part_size, MAX_PART_SIZE)
         else:
-            return 50 * self.MB
+            # 每片100MB
+            return MAX_PART_SIZE
     
     def upload(
         self,
@@ -972,14 +1015,46 @@ class Yun139:
         print(f"fileName: {upload_data.get('fileName', '')}")
         print(f"parts_encoded: {encoded}")
         
+        # 报告上传开始
+        _report_upload_progress(
+            file_path=file_path,
+            filename=file_name,
+            uploader="yun139",
+            progress=0,
+            uploaded_bytes=0,
+            total_bytes=file_size,
+            speed="",
+            status="uploading"
+        )
+        
         # 文件已存在相同内容
         if upload_data.get('exist', False):
             print(f"✓ 文件已存在相同内容，跳过上传")
+            _report_upload_progress(
+                file_path=file_path,
+                filename=file_name,
+                uploader="yun139",
+                progress=100,
+                uploaded_bytes=file_size,
+                total_bytes=file_size,
+                speed="",
+                status="completed"
+            )
             return True
         
         # 支持秒传
         if upload_data.get('rapidUpload', False):
             print(f"✓ 秒传成功")
+            _report_upload_progress(
+                file_path=file_path,
+                filename=file_name,
+                uploader="yun139",
+                progress=100,
+                uploaded_bytes=file_size,
+                total_bytes=file_size,
+                speed="rapid upload",
+                status="completed"
+            )
             return True
         
         # 获取所有分片上传地址
@@ -1008,6 +1083,7 @@ class Yun139:
         
         # 上传分片
         uploaded = 0
+        upload_start_time = time.time()
         with open(file_path, 'rb') as f:
             for part_info in upload_part_infos:
                 part_num = part_info['partNumber'] - 1
@@ -1016,18 +1092,48 @@ class Yun139:
                 f.seek(part_num * part_size)
                 chunk_data = f.read(part_size)
                 
-                # 上传分片
+                # 上传分片（使用 session 复用连接，提升性能）
                 headers = {
-                    "Content-Type": "application/octet-stream",
+                    "Accept": "*/*",
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                    "Connection": "keep-alive",
                     "Content-Length": str(len(chunk_data)),
+                    "Content-Type": "application/octet-stream",
                     "Origin": "https://yun.139.com",
-                    "Referer": "https://yun.139.com/"
+                    "Referer": "https://yun.139.com/",
+                    "Sec-Fetch-Dest": "empty",
+                    "Sec-Fetch-Mode": "cors",
+                    "Sec-Fetch-Site": "same-site",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+                    "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": '"Windows"',
                 }
                 
-                response = requests.put(upload_url, data=chunk_data, headers=headers)
+                response = self.session.put(upload_url, data=chunk_data, headers=headers)
                 response.raise_for_status()
                 
                 uploaded += len(chunk_data)
+                
+                # 计算上传速度
+                elapsed = time.time() - upload_start_time
+                speed_str = ""
+                if elapsed > 0:
+                    speed = uploaded / elapsed / 1024 / 1024  # MB/s
+                    speed_str = f"{speed:.2f} MB/s"
+                
+                # 报告上传进度
+                _report_upload_progress(
+                    file_path=file_path,
+                    filename=file_name,
+                    uploader="yun139",
+                    progress=uploaded * 100 / file_size,
+                    uploaded_bytes=uploaded,
+                    total_bytes=file_size,
+                    speed=speed_str,
+                    status="uploading"
+                )
+                
                 if progress_callback:
                     progress_callback(uploaded, file_size)
         
@@ -1051,6 +1157,19 @@ class Yun139:
         self._request("/hcy/file/complete", complete_data, is_personal=True)
         
         print(f"上传完成: {file_name}")
+        
+        # 报告上传完成
+        _report_upload_progress(
+            file_path=file_path,
+            filename=file_name,
+            uploader="yun139",
+            progress=100,
+            uploaded_bytes=file_size,
+            total_bytes=file_size,
+            speed="",
+            status="completed"
+        )
+        
         return True
 
 

@@ -18,6 +18,8 @@ def get_cli_parser():
   python -m src.video_organizer.main --monitor-dir "D:\\Downloads"
   python -m src.video_organizer.main --process "D:\\videos\\sample.mp4"  # 强制处理文件
   python -m src.video_organizer.main --organize-p123  # 整理123网盘文件
+  python -m src.video_organizer.main --web  # 启动 Web 管理后台
+  python -m src.video_organizer.main --web --web-port 9000  # 指定端口启动 Web 后台
         """,
     )
 
@@ -47,6 +49,35 @@ def get_cli_parser():
 
     # 版本信息参数
     parser.add_argument("-v", "--version", action="store_true", help="显示版本信息")
+
+    # Web 管理后台参数
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="启动 Web 管理后台（可与监控模式同时运行）",
+    )
+    parser.add_argument(
+        "--web-host",
+        type=str,
+        default="0.0.0.0",
+        help="Web 服务监听地址（默认: 0.0.0.0）",
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=8080,
+        help="Web 服务监听端口（默认: 8080）",
+    )
+    parser.add_argument(
+        "--web-only",
+        action="store_true",
+        help="仅启动 Web 管理后台，不启动文件监控",
+    )
+    parser.add_argument(
+        "--web-reload",
+        action="store_true",
+        help="启用 Web 服务热重载（开发模式）",
+    )
 
     return parser
 

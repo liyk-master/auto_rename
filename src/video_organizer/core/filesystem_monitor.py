@@ -198,6 +198,10 @@ class FileSystemMonitor:
 
         Args:
             file_path: Path to the completed download file.
+            downloader_monitor: 下载器监控实例
+        
+        Returns:
+            bool: True 或 None 表示成功处理，False 表示需要重试
         """
         logger.info(f"Received download completion event for: {file_path}")
 
@@ -221,7 +225,7 @@ class FileSystemMonitor:
             file_name = os.path.basename(mapped_file_path).lower()
             if file_name.startswith("sample"):
                 logger.info(f"跳过 Sample 文件: {mapped_file_path}")
-                return
+                return True  # 跳过不需要重试
 
             # 使用锁保护检查和添加操作，防止竞态条件
             with self._processing_lock:
@@ -233,15 +237,19 @@ class FileSystemMonitor:
                     logger.debug(
                         f"File already processed or uploading: {mapped_file_path}"
                     )
-                    return
+                    return True  # 已处理不需要重试
 
                 # 检查文件是否存在
                 if not os.path.exists(mapped_file_path):
                     logger.warning(
                         f"Mapped file does not exist (will retry later): {mapped_file_path}"
                     )
-                    # 不再添加标记，允许下次重试
-                    return
+                    return False  # 文件不存在，需要重试
+
+                # 检查文件是否完整（下载完成且可访问）
+                if hasattr(self.event_handler, '_is_file_complete') and not self.event_handler._is_file_complete(mapped_file_path):
+                    logger.info(f"文件未完成或被锁定，稍后重试: {mapped_file_path}")
+                    return False  # 文件不完整，需要重试
 
                 # 标记为已处理，防止重复
                 self.processed_files.add(file_path_str)
@@ -251,8 +259,10 @@ class FileSystemMonitor:
             threading.Thread(
                 target=self.event_handler._process_file, args=(file_path_str,)
             ).start()
+            return True  # 已启动处理
         else:
             logger.debug(f"File is not a supported video type: {mapped_file_path}")
+            return True  # 非视频文件不需要重试
 
     def _apply_path_mapping(self, file_path: str) -> str:
         """

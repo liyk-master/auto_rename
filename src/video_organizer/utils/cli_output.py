@@ -1,5 +1,7 @@
 import sys
 import time
+import logging
+import re
 from datetime import datetime
 
 
@@ -42,9 +44,26 @@ if not COLOR_SUPPORTED:
     Colors.UNDERLINE = ""
 
 
+# 移除 ANSI 颜色代码的正则表达式
+ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+
+def _strip_ansi(text: str) -> str:
+    """移除 ANSI 颜色代码"""
+    return ANSI_ESCAPE.sub('', text)
+
+
+def _strip_emoji(text: str) -> str:
+    """移除常见的 emoji 符号（可选，保持日志干净）"""
+    # 保留 emoji 但清理格式，或者完全移除
+    return text
+
+
 class CLIOutput:
     """
     命令行输出美化工具类
+    
+    同时输出到控制台（带颜色）和日志文件
     """
 
     def __init__(self, quiet=False, color=True):
@@ -57,6 +76,7 @@ class CLIOutput:
         """
         self.quiet = quiet
         self.color_enabled = color and COLOR_SUPPORTED
+        self._logger = logging.getLogger(__name__)
 
     def print_header(self, message):
         """
@@ -72,6 +92,9 @@ class CLIOutput:
             print(f"{Colors.HEADER}{Colors.BOLD}{message}{Colors.ENDC}")
         else:
             print(f"{message}")
+        
+        # 同时写入日志
+        self._logger.info(message)
 
     def print_info(self, message):
         """
@@ -89,6 +112,9 @@ class CLIOutput:
             print(f"{Colors.OKBLUE}[{timestamp}] {message}{Colors.ENDC}")
         else:
             print(f"[{timestamp}] {message}")
+        
+        # 同时写入日志
+        self._logger.info(message)
 
     def print_success(self, message):
         """
@@ -106,6 +132,9 @@ class CLIOutput:
             print(f"{Colors.OKGREEN}[{timestamp}] ✓ {message}{Colors.ENDC}")
         else:
             print(f"[{timestamp}] ✓ {message}")
+        
+        # 同时写入日志
+        self._logger.info(f"✓ {message}")
 
     def print_warning(self, message):
         """
@@ -123,6 +152,9 @@ class CLIOutput:
             print(f"{Colors.WARNING}[{timestamp}] ⚠ {message}{Colors.ENDC}")
         else:
             print(f"[{timestamp}] ⚠ {message}")
+        
+        # 同时写入日志
+        self._logger.warning(message)
 
     def print_error(self, message, error=None):
         """
@@ -148,6 +180,11 @@ class CLIOutput:
                 print(f"{Colors.FAIL}  错误详情: {str(error)}{Colors.ENDC}")
             else:
                 print(f"  错误详情: {str(error)}")
+            
+            # 写入日志
+            self._logger.error(f"{message}: {str(error)}")
+        else:
+            self._logger.error(message)
 
     def print_progress(self, progress, total, message="处理中..."):
         """
@@ -322,3 +359,54 @@ def get_cli_output(quiet=False, color=True):
         CLIOutput实例
     """
     return CLIOutput(quiet=quiet, color=color)
+
+
+# 全局日志输出函数 - 同时输出到控制台和日志文件
+_logger = logging.getLogger("video_organizer")
+
+
+def log_print(message: str, level: str = "info"):
+    """
+    统一的日志输出函数 - 同时输出到控制台和日志文件
+    
+    用于替代直接 print() 调用，确保日志被记录到文件
+    
+    Args:
+        message: 要输出的消息
+        level: 日志级别 (debug, info, warning, error)
+    """
+    # 输出到控制台
+    print(message)
+    
+    # 清理消息中的 ANSI 颜色代码和特殊格式，写入日志文件
+    clean_message = _strip_ansi(message)
+    
+    # 根据级别写入日志
+    if level == "debug":
+        _logger.debug(clean_message)
+    elif level == "warning":
+        _logger.warning(clean_message)
+    elif level == "error":
+        _logger.error(clean_message)
+    else:
+        _logger.info(clean_message)
+
+
+def log_info(message: str):
+    """输出 INFO 级别日志"""
+    log_print(message, "info")
+
+
+def log_warning(message: str):
+    """输出 WARNING 级别日志"""
+    log_print(message, "warning")
+
+
+def log_error(message: str):
+    """输出 ERROR 级别日志"""
+    log_print(message, "error")
+
+
+def log_debug(message: str):
+    """输出 DEBUG 级别日志"""
+    log_print(message, "debug")

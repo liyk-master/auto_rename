@@ -57,8 +57,20 @@ def setup_logging(config: Optional[Dict[str, Any]] = None) -> None:
         root_logger.addHandler(console_handler)
 
     # 添加文件处理器
-    if default_config["file_log"] and default_config["log_file"]:
+    if default_config["file_log"]:
         log_file = default_config["log_file"]
+        
+        # 如果没有指定日志文件，使用默认路径
+        if not log_file:
+            # 尝试多个默认路径
+            default_paths = [
+                Path("logs/video-organizer.log"),
+                Path(__file__).parent.parent / "logs" / "video-organizer.log",
+            ]
+            for p in default_paths:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                log_file = str(p)
+                break
 
         # 确保日志目录存在
         log_dir = os.path.dirname(log_file)

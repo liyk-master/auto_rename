@@ -10,6 +10,7 @@ import json
 import time
 import base64
 import hashlib
+import logging
 import tempfile
 import requests
 import threading
@@ -19,6 +20,37 @@ from typing import Optional, Dict, Any, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .yun139 import Yun139, CloudType, FileInfo
+
+_logger = logging.getLogger(__name__)
+
+
+def _report_upload_progress(
+    file_path: str,
+    filename: str,
+    uploader: str,
+    progress: float,
+    uploaded_bytes: int,
+    total_bytes: int,
+    speed: str = "",
+    status: str = "uploading",
+    error: Optional[str] = None
+):
+    """报告上传进度到 Web 状态管理器"""
+    try:
+        from ..web.services.state import report_upload_progress
+        report_upload_progress(
+            file_path=file_path,
+            filename=filename,
+            uploader=uploader,
+            progress=progress,
+            uploaded_bytes=uploaded_bytes,
+            total_bytes=total_bytes,
+            speed=speed,
+            status=status,
+            error=error
+        )
+    except Exception:
+        pass  # Web 模块未加载时忽略
 
 
 class Yun139Uploader:
@@ -694,12 +726,36 @@ class Yun139Uploader:
                 return result
             else:
                 print(f"\n❌ 139云盘上传失败!")
+                # 报告上传失败
+                _report_upload_progress(
+                    file_path=str(file_path_obj),
+                    filename=target_filename,
+                    uploader="yun139",
+                    progress=0,
+                    uploaded_bytes=0,
+                    total_bytes=0,
+                    speed="",
+                    status="failed",
+                    error="上传失败"
+                )
                 return None
 
         except Exception as e:
             print(f"\n❌ 139云盘上传异常: {e}")
             import traceback
             traceback.print_exc()
+            # 报告上传异常
+            _report_upload_progress(
+                file_path=str(file_path_obj) if 'file_path_obj' in dir() else file_path,
+                filename=target_filename if 'target_filename' in dir() else Path(file_path).name,
+                uploader="yun139",
+                progress=0,
+                uploaded_bytes=0,
+                total_bytes=0,
+                speed="",
+                status="failed",
+                error=str(e)
+            )
             return None
 
     def upload_subtitles(
@@ -849,6 +905,18 @@ class Yun139Uploader:
         file_size = os.path.getsize(file_path)
         total_mb = file_size / (1000 * 1000)
 
+        # 报告上传开始
+        _report_upload_progress(
+            file_path=file_path,
+            filename=file_name,
+            uploader="yun139",
+            progress=0,
+            uploaded_bytes=0,
+            total_bytes=file_size,
+            speed="",
+            status="uploading"
+        )
+
         # 重置进度跟踪
         self._tg_message_ids[file_path] = None
         self.tg_last_update_time = 0
@@ -872,12 +940,26 @@ class Yun139Uploader:
 
                 if time_diff >= 0.5 or is_complete:
                     bytes_diff = uploaded - last_uploaded
+                    speed_str = ""
                     if time_diff > 0:
                         new_speed = (bytes_diff / (1024 * 1024)) / time_diff
                         if current_speed > 0:
                             current_speed = current_speed * 0.7 + new_speed * 0.3
                         else:
                             current_speed = new_speed
+                        speed_str = f"{current_speed:.2f} MB/s"
+
+                    # 报告上传进度到 Web
+                    _report_upload_progress(
+                        file_path=file_path,
+                        filename=file_name,
+                        uploader="yun139",
+                        progress=progress,
+                        uploaded_bytes=uploaded,
+                        total_bytes=total,
+                        speed=speed_str,
+                        status="completed" if is_complete else "uploading"
+                    )
 
                     if is_complete and not final_progress_sent:
                         self._send_tg_progress(

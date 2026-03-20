@@ -253,12 +253,18 @@ class Aria2Monitor(DownloaderMonitor):
                                 logger.debug(
                                     f"Aria2: Calling callback for file: {file_path}"
                                 )
-                                self.callback(file_path, downloader_monitor=self)
-                                # 标记文件为已处理
-                                self._processed_files.add(file_path)
-                                logger.debug(
-                                    f"Aria2: Marked file as processed: {file_path}"
-                                )
+                                # 回调返回 True 或 None 表示成功，False 表示需要重试
+                                result = self.callback(file_path, downloader_monitor=self)
+                                if result is not False:
+                                    # 标记文件为已处理
+                                    self._processed_files.add(file_path)
+                                    logger.debug(
+                                        f"Aria2: Marked file as processed: {file_path}"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"Aria2: File not processed (will retry): {file_path}"
+                                    )
                             else:
                                 logger.debug(
                                     f"Aria2: File {file_path} has unsupported extension, skipping"
@@ -766,11 +772,18 @@ class QBittorrentMonitor(DownloaderMonitor):
                             )
                             # 调用回调处理文件
                             try:
-                                self.callback(file_path, downloader_monitor=self)
-                                self._processed_files.add(file_path)
-                                logger.debug(
-                                    f"qBittorrent: Marked file as processed: {file_path}"
-                                )
+                                # 回调返回 True 表示成功处理，False 表示跳过（需要重试）
+                                result = self.callback(file_path, downloader_monitor=self)
+                                if result is not False:  # None 或 True 都视为成功
+                                    self._processed_files.add(file_path)
+                                    logger.debug(
+                                        f"qBittorrent: Marked file as processed: {file_path}"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"qBittorrent: File not processed (will retry): {file_path}"
+                                    )
+                                    torrent_fully_processed = False
                             except Exception as e:
                                 logger.error(
                                     f"qBittorrent: Failed to process file {file_path}: {e}"
