@@ -1259,6 +1259,9 @@ class VideoRenamer:
             r"(?P<show_name>.*?)\s*(?P<season>\d+)(?:st|nd|rd|th)\s*Season",
             r"(?P<show_name>.*?)\s*第(?P<season_cn>[一二三四五六七八九十\d]+)季",
             r"\[(?P<show_name>[^\]]+?)\s+第(?P<season_cn>[一二三四五六七八九十\d]+)季\]",
+            # 日文"之章"格式（如"炎炎消防隊 參之章"、"进击的巨人 二之章"）
+            # 支持简体数字、繁体大写数字（壹贰參肆伍陆柒捌玖拾）和阿拉伯数字
+            r"(?P<show_name>.*?)\s*(?P<season_jp>[壹贰參肆伍陆柒捌玖拾一二三四五六七八九十\d]+)之章",
             # 2.5 匹配 "赘婿.第1季.E02" 格式（中文季号 + 点 + E集号）
             r"^(?P<show_name>.+?)第(?P<season_cn>\d+)季\.[Ee][Pp]?(?P<episode>\d+)",
             # 模式 A: 较长的或不常见的罗马数字 (II-IX, V, VI...) 允许后随空格、中横杠、下划线或中文附属标题
@@ -1337,9 +1340,16 @@ class VideoRenamer:
                     if digit:
                         match_data["season"] = str(digit)
 
+                # 处理日文季号转换（如"參之章"中的"參"）
+                if "season_jp" in match_data and match_data["season_jp"]:
+                    jp_val = match_data["season_jp"]
+                    digit = self._chinese_to_digit(jp_val)
+                    if digit:
+                        match_data["season"] = str(digit)
+
                 # 补全元数据
                 for key, value in match_data.items():
-                    if value and key != "season_cn" and not metadata.get(key):
+                    if value and key not in ("season_cn", "season_jp") and not metadata.get(key):
                         # 清理show_name：移除末尾点号，将点替换为空格（用于日文/英文剧名）
                         if key == "show_name":
                             value = value.rstrip(".").replace(".", " ")
@@ -2126,8 +2136,9 @@ class VideoRenamer:
         return roman_dict.get(roman.upper())
 
     def _chinese_to_digit(self, cn_str: str) -> Optional[int]:
-        """将中文数字转换为阿拉伯数字 (1-99)"""
+        """将中文数字转换为阿拉伯数字 (1-99)，支持简体、繁体大写数字"""
         cn_map = {
+            # 简体数字
             "一": 1,
             "二": 2,
             "两": 2,
@@ -2139,6 +2150,18 @@ class VideoRenamer:
             "八": 8,
             "九": 9,
             "十": 10,
+            # 繁体大写数字（用于日文"之章"等格式）
+            "壹": 1,
+            "贰": 2,
+            "參": 3,  # "三"的大写形式，常见于日文"參之章"
+            "肆": 4,
+            "伍": 5,
+            "陆": 6,
+            "柒": 7,
+            "捌": 8,
+            "玖": 9,
+            "拾": 10,
+            # 阿拉伯数字
             "0": 0,
             "1": 1,
             "2": 2,
