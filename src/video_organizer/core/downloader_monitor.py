@@ -340,7 +340,7 @@ class QBittorrentMonitor(DownloaderMonitor):
         self.username = username
         self.password = password
         self.supported_extensions = supported_extensions
-        self.session_cookie = None
+        self.session = requests.Session()  # 使用 Session 自动管理 Cookie
         self._processed_torrents = set()  # 存储已处理的种子哈希，避免重复处理
         self._processed_files = set()  # 存储已处理的文件路径，避免重复回调同一文件
 
@@ -375,20 +375,9 @@ class QBittorrentMonitor(DownloaderMonitor):
             bool: True if connected, False otherwise.
         """
         try:
-            import requests
-
             # 尝试获取应用版本信息
             url = f"{self.rpc_url}/app/version"
-            headers = {"Cookie": self.session_cookie} if self.session_cookie else {}
-
-            response = requests.get(
-                url,
-                headers=headers,
-                auth=(
-                    (self.username, self.password) if not self.session_cookie else None
-                ),
-                timeout=30,
-            )
+            response = self.session.get(url, timeout=30)
             return response.status_code == 200
         except Exception as e:
             logger.error(f"Failed to connect to qBittorrent: {e}")
@@ -474,8 +463,7 @@ class QBittorrentMonitor(DownloaderMonitor):
             delete_url = f"{self.rpc_url}/torrents/delete"
             data = {"hashes": torrent_hash, "deleteFiles": "false"}
 
-            headers = {"Cookie": self.session_cookie}
-            response = requests.post(delete_url, data=data, timeout=30, headers=headers)
+            response = self.session.post(delete_url, data=data, timeout=30)
             if response.status_code == 200:
                 logger.info(
                     f"🎉 种子内所有视频已处理完毕，已删除 qBittorrent 任务: {target_torrent.get('name')} ({torrent_hash})"
@@ -504,8 +492,7 @@ class QBittorrentMonitor(DownloaderMonitor):
         try:
             # 获取所有种子 (包括未完成的)
             url = f"{self.rpc_url}/torrents/info"
-            headers = {"Cookie": self.session_cookie}
-            response = requests.get(url, headers=headers, timeout=30)
+            response = self.session.get(url, timeout=30)
 
             if response.status_code != 200:
                 logger.error(f"获取种子列表失败: {response.status_code}")
@@ -574,7 +561,7 @@ class QBittorrentMonitor(DownloaderMonitor):
             # 所有视频都已处理，执行删除 (包含文件)
             delete_url = f"{self.rpc_url}/torrents/delete"
             data = {"hashes": torrent_hash, "deleteFiles": "true"}
-            response = requests.post(delete_url, data=data, timeout=30, headers=headers)
+            response = self.session.post(delete_url, data=data, timeout=30)
 
             if response.status_code == 200:
                 logger.info(
@@ -604,8 +591,7 @@ class QBittorrentMonitor(DownloaderMonitor):
         try:
             # 获取所有种子
             url = f"{self.rpc_url}/torrents/info"
-            headers = {"Cookie": self.session_cookie}
-            response = requests.get(url, headers=headers, timeout=30)
+            response = self.session.get(url, timeout=30)
 
             if response.status_code != 200:
                 return False
@@ -638,8 +624,8 @@ class QBittorrentMonitor(DownloaderMonitor):
                         torrent_hash = torrent["hash"]
                         pause_url = f"{self.rpc_url}/torrents/pause"
                         data = {"hashes": torrent_hash}
-                        pause_response = requests.post(
-                            pause_url, data=data, timeout=30, headers=headers
+                        pause_response = self.session.post(
+                            pause_url, data=data, timeout=30
                         )
 
                         if pause_response.status_code == 200:
@@ -654,88 +640,43 @@ class QBittorrentMonitor(DownloaderMonitor):
             logger.error(f"暂停种子时发生错误: {e}")
             return False
 
-            all_torrents = response.json()
-
-            # 标准化输入路径
-            norm_input_path = os.path.normpath(file_path).lower()
-
-            # 查找包含该文件的种子
-            target_torrent = None
-            for torrent in all_torrents:
-                save_path = torrent.get("save_path", "")
-                files = self._get_torrent_files(torrent["hash"])
-
-                for f in files:
-                    f_name = f["name"]
-                    full_torrent_file_path = os.path.normpath(
-                        os.path.join(save_path, f_name)
-                    ).lower()
-
-                    if (
-                        full_torrent_file_path == norm_input_path
-                        or norm_input_path.endswith(os.path.normpath(f_name).lower())
-                    ):
-                        target_torrent = torrent
-                        break
-                if target_torrent:
-                    break
-
-            if not target_torrent:
-                logger.debug(f"在 qBittorrent 中未找到对应文件的任务: {file_path}")
-                return False
-
-            torrent_hash = target_torrent["hash"]
-            torrent_name = target_torrent.get("name", "")
-
-            # 强制删除种子和文件
-            delete_url = f"{self.rpc_url}/torrents/delete"
-            data = {
-                "hashes": torrent_hash,
-                "deleteFiles": "true",
-            }  # true = 同时删除文件
-            response = requests.post(delete_url, data=data, timeout=30, headers=headers)
-
-            if response.status_code == 200:
-                logger.info(
-                    f"已强制删除 qBittorrent 任务及文件: {torrent_name} ({torrent_hash})"
-                )
-                return True
-            else:
-                logger.warning(
-                    f"强制删除 qBittorrent 任务失败: {torrent_hash}, 状态码: {response.status_code}"
-                )
-                return False
-
-        except Exception as e:
-            logger.error(f"强制从 qBittorrent 删除任务时发生错误: {e}")
-            return False
-
     def _monitor_loop(self):
         """
         Main monitoring loop for qBittorrent.
         """
         while self.running:
             try:
+                logger.debug("qBittorrent monitor loop iteration started")
+                
                 # 检查会话是否有效，如果无效则重新登录
                 if not self.is_connected():
+                    logger.info("qBittorrent session invalid, attempting to re-login")
                     if not self._login():
+                        logger.warning("qBittorrent re-login failed, will retry in 10s")
                         time.sleep(10)
                         continue
+                    logger.info("qBittorrent re-login successful")
 
                 # 获取所有已完成的种子
                 all_completed_torrents = self._get_completed_torrents()
+                logger.debug(f"qBittorrent: Got {len(all_completed_torrents)} total torrents")
 
                 for torrent in all_completed_torrents:
                     torrent_hash = torrent["hash"]
+                    torrent_name = torrent.get("name", "unknown")
+                    torrent_progress = torrent.get("progress", 0)
 
                     # 1. 核心改进：跳过已处理完毕的种子，极大提升大种子库处理性能
                     if torrent_hash in self._processed_torrents:
+                        logger.debug(f"Skip already processed torrent: {torrent_name}")
                         continue
 
                     # 2. 核心改进：通过进度判断是否完成，比 filter 更稳健
-                    if torrent.get("progress", 0) < 1:
-                        # 虽然 filter 过滤了完成，但双重保险
+                    if torrent_progress < 1:
+                        logger.debug(f"Skip incomplete torrent: {torrent_name} (progress: {torrent_progress:.2%})")
                         continue
+
+                    logger.info(f"Processing completed torrent: {torrent_name} ({torrent_hash})")
 
                     # 检查种子的保存路径
                     save_path = torrent.get("save_path", "")
@@ -747,6 +688,7 @@ class QBittorrentMonitor(DownloaderMonitor):
 
                     # 获取种子中的文件
                     files = self._get_torrent_files(torrent_hash)
+                    logger.debug(f"Torrent {torrent_name} has {len(files)} files")
 
                     # 记录种子是否完全处理完毕
                     torrent_fully_processed = True
@@ -820,11 +762,11 @@ class QBittorrentMonitor(DownloaderMonitor):
             url = f"{self.rpc_url}/auth/login"
             data = {"username": self.username, "password": self.password}
 
-            response = requests.post(url, data=data, timeout=30)
+            # 使用 session 登录，Cookie 会自动管理
+            response = self.session.post(url, data=data, timeout=30)
             if response.status_code == 200 and response.text == "Ok.":
-                # 获取会话cookie
-                self.session_cookie = response.headers.get("Set-Cookie", "")
-                logger.info(f"Login successful, session cookie: {self.session_cookie}")
+                # Session 会自动保存 Cookie
+                logger.info(f"Login successful, cookies: {dict(self.session.cookies)}")
                 return True
             logger.error(
                 f"Login failed with status {response.status_code}: {response.text}"
@@ -843,14 +785,19 @@ class QBittorrentMonitor(DownloaderMonitor):
         """
         url = f"{self.rpc_url}/torrents/info"
         params = {"filter": "all"}  # 改用 all，手动过滤进度，避免状态误判
-        headers = {"Cookie": self.session_cookie}
 
         max_retries = 3
         for i in range(max_retries):
             try:
-                response = requests.get(url, params=params, headers=headers, timeout=30)
+                logger.debug(f"Requesting qBittorrent torrents/info (attempt {i+1}/{max_retries})")
+                response = self.session.get(url, params=params, timeout=30)
+                logger.debug(f"qBittorrent response status: {response.status_code}")
+                if response.status_code != 200:
+                    logger.warning(f"qBittorrent returned non-200 status: {response.status_code}, body: {response.text[:200]}")
                 response.raise_for_status()
-                return response.json()
+                result = response.json()
+                logger.debug(f"qBittorrent returned {len(result)} torrents")
+                return result
             except Exception as e:
                 logger.warning(
                     f"获取 qBittorrent 种子列表失败 ({i+1}/{max_retries}): {e}"
@@ -872,11 +819,14 @@ class QBittorrentMonitor(DownloaderMonitor):
         """
         url = f"{self.rpc_url}/torrents/files"
         params = {"hash": torrent_hash}
-        headers = {"Cookie": self.session_cookie}
 
-        response = requests.get(url, params=params, headers=headers, timeout=30)
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = self.session.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Failed to get files for torrent {torrent_hash}: {e}")
+            raise
 
 
 class DownloaderMonitorFactory:
