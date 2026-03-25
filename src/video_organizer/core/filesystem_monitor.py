@@ -14,7 +14,7 @@ from typing import Dict, Optional, List
 
 # 导入更新后的VideoFileHandler
 from .video_file_handler import VideoFileHandler
-from .downloader_monitor import DownloaderMonitorFactory
+from .downloader_monitor import DownloaderMonitorFactory, decode_file_path, resolve_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -204,18 +204,28 @@ class FileSystemMonitor:
             bool: True 或 None 表示成功处理，False 表示需要重试
         """
         logger.info(f"Received download completion event for: {file_path}")
+        
+        # 解码 URL 编码的文件路径
+        decoded_file_path = decode_file_path(file_path)
+        logger.debug(f"Decoded file path from {file_path} to {decoded_file_path}")
 
         # 保存文件到下载器的映射关系
         if downloader_monitor and hasattr(self.event_handler, "_file_downloader_map"):
             # 先应用路径映射
-            mapped_file_path = self._apply_path_mapping(file_path)
+            mapped_file_path = self._apply_path_mapping(decoded_file_path)
             self.event_handler._file_downloader_map[str(Path(mapped_file_path))] = (
                 downloader_monitor
             )
 
         # 应用路径映射，将下载器返回的路径转换为主机实际路径
-        mapped_file_path = self._apply_path_mapping(file_path)
-        logger.debug(f"Mapped file path from {file_path} to {mapped_file_path}")
+        mapped_file_path = self._apply_path_mapping(decoded_file_path)
+        logger.debug(f"Mapped file path from {decoded_file_path} to {mapped_file_path}")
+        
+        # 智能解析文件路径（处理 aria2 返回解码路径但文件名实际是 URL 编码的情况）
+        resolved_file_path = resolve_file_path(mapped_file_path)
+        if resolved_file_path != mapped_file_path:
+            logger.info(f"Resolved file path: {mapped_file_path} -> {resolved_file_path}")
+            mapped_file_path = resolved_file_path
 
         # 检查文件是否是支持的视频文件
         if Path(mapped_file_path).suffix.lower() in self.supported_extensions:
