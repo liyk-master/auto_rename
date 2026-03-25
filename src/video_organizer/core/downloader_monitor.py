@@ -787,7 +787,7 @@ class QBittorrentMonitor(DownloaderMonitor):
         self.password = password
         self.supported_extensions = supported_extensions
         self.path_mappings = path_mappings or {}
-        self.session_cookie = None
+        self.session = requests.Session()  # 使用 Session 管理 Cookie
         self._processed_torrents = set()  # 存储已处理的种子哈希，避免重复处理
         self._processed_files = set()  # 存储已处理的文件路径，避免重复回调同一文件
     
