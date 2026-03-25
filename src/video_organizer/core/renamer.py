@@ -6,6 +6,7 @@ import os
 import re
 import logging
 import threading
+import urllib.parse
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
@@ -15,6 +16,33 @@ from src.video_organizer.core.guessit_parser import GuessItParser, GUESSIT_AVAIL
 from src.video_organizer.utils.llm_translator import LLMTranslator
 
 logger = logging.getLogger(__name__)
+
+
+def decode_filename(filename: str) -> str:
+    """
+    解码 URL 编码的文件名。
+    
+    Args:
+        filename: 可能是 URL 编码的文件名
+        
+    Returns:
+        str: 解码后的文件名
+    """
+    if not filename:
+        return filename
+    
+    # 检测是否包含 URL 编码
+    if not re.search(r'%[0-9A-Fa-f]{2}', filename):
+        return filename
+    
+    try:
+        decoded = urllib.parse.unquote(filename)
+        # 处理双重编码
+        if re.search(r'%[0-9A-Fa-f]{2}', decoded):
+            decoded = urllib.parse.unquote(decoded)
+        return decoded
+    except Exception:
+        return filename
 
 
 class VideoRenamer:
@@ -815,15 +843,22 @@ class VideoRenamer:
             if not hasattr(file_path, "name"):
                 logger.error(f"无效的file_path参数: {file_path}")
                 return {}
+            
+            # 解码文件名（处理 URL 编码的中文文件名）
+            decoded_filename = decode_filename(file_path.name)
+            if decoded_filename != file_path.name:
+                logger.debug(f"解码文件名: {file_path.name} -> {decoded_filename}")
 
-            # 1. 首先尝试从文件名提取
-            metadata = self._extract_with_regex(file_path.name)
+            # 1. 首先尝试从文件名提取（使用解码后的文件名）
+            metadata = self._extract_with_regex(decoded_filename)
 
             # 1.5 使用 GuessIt 增强识别（如果已启用）
             if self._guessit_enabled and self._guessit_parser:
                 try:
+                    # 创建解码后的路径用于 GuessIt 解析
+                    decoded_path = str(file_path.parent / decoded_filename)
                     metadata = self._guessit_parser.parse_with_fallback(
-                        str(file_path),
+                        decoded_path,
                         metadata,
                         prefer_guessit=self._guessit_prefer
                     )
@@ -890,7 +925,9 @@ class VideoRenamer:
                             break
 
                     for p_dir in parent_dirs:
-                        parent_metadata = self._extract_with_regex(p_dir.name)
+                        # 解码父目录名
+                        decoded_parent_name = decode_filename(p_dir.name)
+                        parent_metadata = self._extract_with_regex(decoded_parent_name)
                         # 如果父目录能提取到剧名
                         if parent_metadata.get("show_name"):
                             # 补全缺失字段（只补全 show_name 和 year，不覆盖 season 和 episode）

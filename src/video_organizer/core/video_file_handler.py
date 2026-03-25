@@ -13,6 +13,7 @@ from ..upload.upload_emos import RobustEmosVideoUploader
 from .renamer import VideoRenamer
 from .tmdb_client import TMDBClient
 from .subtitle_handler import SubtitleHandler
+from .downloader_monitor import decode_file_path
 from ..utils.logging_utils import get_logger, log_success, log_failure, log_exception
 
 
@@ -1639,24 +1640,39 @@ class VideoFileHandler:
         """
         # 反向映射路径，因为下载器使用的是它自己的路径系统
         downloader_file_path = self._reverse_apply_path_mapping(file_path)
+        
+        # 解码路径用于查找 _file_downloader_map（因为 map 的 key 是解码形式）
+        decoded_file_path = decode_file_path(file_path)
+        decoded_downloader_path = decode_file_path(downloader_file_path)
 
         task_removed = False
 
-        # 1. 尝试从映射中查找下载器
-        if file_path in self._file_downloader_map:
+        # 1. 尝试从映射中查找下载器（同时尝试编码和解码路径）
+        map_key = None
+        for key in [file_path, decoded_file_path, downloader_file_path, decoded_downloader_path]:
+            if key in self._file_downloader_map:
+                map_key = key
+                break
+        
+        if map_key:
             try:
-                downloader = self._file_downloader_map[file_path]
+                downloader = self._file_downloader_map[map_key]
                 if hasattr(downloader, "remove_download"):
-                    # 尝试使用原始路径和映射后的路径
-                    if downloader.remove_download(file_path) or (
-                        file_path != downloader_file_path
-                        and downloader.remove_download(downloader_file_path)
-                    ):
-                        console_log(f"✅ 已从下载器中删除任务")
-                        self.logger.info(f"已从下载器中删除任务: {file_path}")
-                        task_removed = True
+                    # 尝试多种路径格式
+                    paths_to_try = [
+                        file_path,
+                        decoded_file_path,
+                        downloader_file_path,
+                        decoded_downloader_path
+                    ]
+                    for path in paths_to_try:
+                        if path and downloader.remove_download(path):
+                            console_log(f"✅ 已从下载器中删除任务")
+                            self.logger.info(f"已从下载器中删除任务: {path}")
+                            task_removed = True
+                            break
                 # 清理映射
-                del self._file_downloader_map[file_path]
+                del self._file_downloader_map[map_key]
             except Exception as e:
                 self.logger.error(f"从映射的下载器删除任务失败: {e}")
 
@@ -1669,12 +1685,20 @@ class VideoFileHandler:
             for downloader in self.downloaders:
                 try:
                     if hasattr(downloader, "remove_download"):
-                        if downloader.remove_download(downloader_file_path):
-                            console_log(f"✅ 已从下载器中删除任务 (遍历查找)")
-                            self.logger.info(
-                                f"已从下载器中删除任务 (遍历查找): {downloader_file_path}"
-                            )
-                            return
+                        # 尝试多种路径格式
+                        paths_to_try = [
+                            downloader_file_path,
+                            decoded_downloader_path,
+                            file_path,
+                            decoded_file_path
+                        ]
+                        for path in paths_to_try:
+                            if path and downloader.remove_download(path):
+                                console_log(f"✅ 已从下载器中删除任务 (遍历查找)")
+                                self.logger.info(
+                                    f"已从下载器中删除任务 (遍历查找): {path}"
+                                )
+                                return
                 except Exception as e:
                     self.logger.warning(f"尝试从下载器删除任务时出错: {e}")
 
@@ -1693,20 +1717,35 @@ class VideoFileHandler:
         """
         # 反向映射路径
         downloader_file_path = self._reverse_apply_path_mapping(file_path)
+        
+        # 解码路径用于查找
+        decoded_file_path = decode_file_path(file_path)
+        decoded_downloader_path = decode_file_path(downloader_file_path)
 
-        # 1. 首先尝试从映射中查找下载器
-        if file_path in self._file_downloader_map:
+        # 1. 首先尝试从映射中查找下载器（同时尝试编码和解码路径）
+        map_key = None
+        for key in [file_path, decoded_file_path, downloader_file_path, decoded_downloader_path]:
+            if key in self._file_downloader_map:
+                map_key = key
+                break
+        
+        if map_key:
             try:
-                downloader = self._file_downloader_map[file_path]
+                downloader = self._file_downloader_map[map_key]
                 if hasattr(downloader, "force_remove_download"):
-                    if downloader.force_remove_download(file_path) or (
-                        file_path != downloader_file_path
-                        and downloader.force_remove_download(downloader_file_path)
-                    ):
-                        console_log(f"✅ 已强制从下载器中删除任务及文件")
-                        self.logger.info(f"已强制从下载器中删除任务及文件: {file_path}")
-                        del self._file_downloader_map[file_path]
-                        return
+                    # 尝试多种路径格式
+                    paths_to_try = [
+                        file_path,
+                        decoded_file_path,
+                        downloader_file_path,
+                        decoded_downloader_path
+                    ]
+                    for path in paths_to_try:
+                        if path and downloader.force_remove_download(path):
+                            console_log(f"✅ 已强制从下载器中删除任务及文件")
+                            self.logger.info(f"已强制从下载器中删除任务及文件: {path}")
+                            del self._file_downloader_map[map_key]
+                            return
             except Exception as e:
                 self.logger.error(f"从映射的下载器强制删除失败: {e}")
 
@@ -1715,12 +1754,19 @@ class VideoFileHandler:
             for downloader in self.downloaders:
                 try:
                     if hasattr(downloader, "force_remove_download"):
-                        if downloader.force_remove_download(downloader_file_path):
-                            console_log(f"✅ 已强制从下载器中删除任务及文件 (遍历查找)")
-                            self.logger.info(
-                                f"已强制从下载器中删除任务及文件 (遍历查找): {downloader_file_path}"
-                            )
-                            return
+                        paths_to_try = [
+                            downloader_file_path,
+                            decoded_downloader_path,
+                            file_path,
+                            decoded_file_path
+                        ]
+                        for path in paths_to_try:
+                            if path and downloader.force_remove_download(path):
+                                console_log(f"✅ 已强制从下载器中删除任务及文件 (遍历查找)")
+                                self.logger.info(
+                                    f"已强制从下载器中删除任务及文件 (遍历查找): {path}"
+                                )
+                                return
                 except Exception as e:
                     self.logger.warning(f"尝试从下载器强制删除时出错: {e}")
 
