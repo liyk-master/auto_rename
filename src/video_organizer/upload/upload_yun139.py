@@ -72,7 +72,7 @@ class Yun139Uploader:
         telegram_config: Optional[Dict[str, Any]] = None,
         strm_server: str = "",
         strm_output_dir: str = "",
-        delete_after_strm: bool = False,
+        delete_after: bool = False,
     ):
         """
         初始化 139 云盘上传器
@@ -86,7 +86,7 @@ class Yun139Uploader:
             telegram_config: Telegram 配置
             strm_server: STRM 服务器地址，如 http://192.168.2.148:5010
             strm_output_dir: STRM 文件输出目录
-            delete_after_strm: 生成 STRM 后删除云端文件
+            delete_after: 上传完成后删除云端文件
         """
         self.authorization = authorization
         # 处理 parent_id：保留原始值，/ 表示根目录
@@ -94,7 +94,7 @@ class Yun139Uploader:
         self.telegram_config = telegram_config or {}
         self.strm_server = strm_server.rstrip('/') if strm_server else ""
         self.strm_output_dir = strm_output_dir
-        self.delete_after_strm = delete_after_strm
+        self.delete_after = delete_after
 
         # 映射云盘类型
         cloud_type_map = {
@@ -695,10 +695,10 @@ class Yun139Uploader:
                     )
                     result['strm_path'] = strm_path
 
-                    # 如果配置了生成 STRM 后删除云端文件
-                    # 注意：139云盘暂不支持直接删除云端文件，这里只做标记
-                    if self.delete_after_strm and strm_path:
-                        print(f"   ⚠️ delete_after_strm 已启用，但139云盘暂不支持删除云端文件")
+                # 上传完成后删除云端文件（不依赖 STRM 生成）
+                # 注意：139云盘暂不支持直接删除云端文件
+                if self.delete_after:
+                    print(f"   ⚠️ delete_after 已启用，但139云盘暂不支持删除云端文件")
 
                 # 上传同目录下的字幕文件
                 print(f"\n📝 开始上传字幕文件...")

@@ -329,6 +329,7 @@ async def websocket_log_stream(websocket: WebSocket, filename: str):
         # 打开文件并移动到末尾
         with open(target_file, "r", encoding="utf-8", errors="replace") as f:
             f.seek(0, 2)  # 移动到文件末尾
+            heartbeat_counter = 0  # 心跳计数器
             
             while True:
                 line = f.readline()
@@ -340,13 +341,15 @@ async def websocket_log_stream(websocket: WebSocket, filename: str):
                 else:
                     # 没有新行，短暂等待
                     await asyncio.sleep(0.1)
+                    heartbeat_counter += 1
                     
-                    # 检查连接状态
-                    try:
-                        # 发送心跳
-                        await websocket.send_json({"type": "heartbeat"})
-                    except:
-                        break
+                    # 每 50 次循环（约 5 秒）发送一次心跳
+                    if heartbeat_counter >= 50:
+                        heartbeat_counter = 0
+                        try:
+                            await websocket.send_json({"type": "heartbeat"})
+                        except:
+                            break
                         
     except WebSocketDisconnect:
         logger.info("WebSocket 连接已断开")

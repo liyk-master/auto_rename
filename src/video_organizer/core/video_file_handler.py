@@ -140,7 +140,7 @@ class VideoFileHandler:
         self.cloud189_strm_server = str(raw_cloud189_strm_server).split("#")[0].split(";")[0].strip()
         raw_cloud189_strm_output = self.cloud189_config.get("strm_output_dir", "")
         self.cloud189_strm_output_dir = str(raw_cloud189_strm_output).split("#")[0].split(";")[0].strip()
-        self.cloud189_delete_after_strm = self.cloud189_config.get("delete_after_strm", False)
+        self.cloud189_delete_after = self.cloud189_config.get("delete_after", False)
         self.cloud189_empty_recycle_bin = self.cloud189_config.get("empty_recycle_bin", False)
 
         # 初始化 139 云盘配置
@@ -158,7 +158,7 @@ class VideoFileHandler:
         self.yun139_strm_server = str(raw_yun139_strm_server).split("#")[0].split(";")[0].strip()
         raw_yun139_strm_output = self.yun139_config.get("strm_output_dir", "")
         self.yun139_strm_output_dir = str(raw_yun139_strm_output).split("#")[0].split(";")[0].strip()
-        self.yun139_delete_after_strm = self.yun139_config.get("delete_after_strm", False)
+        self.yun139_delete_after = self.yun139_config.get("delete_after", False)
 
         # 初始化 Telegram 配置
         self.telegram_config = telegram_config or {}
@@ -208,7 +208,7 @@ class VideoFileHandler:
                     max_workers=self.cloud189_max_workers,
                     strm_server=self.cloud189_strm_server,
                     strm_output_dir=self.cloud189_strm_output_dir,
-                    delete_after_strm=self.cloud189_delete_after_strm,
+                    delete_after=self.cloud189_delete_after,
                 )
                 self.logger.info("天翼云盘上传器初始化成功")
             except Exception as e:
@@ -229,7 +229,7 @@ class VideoFileHandler:
                     telegram_config=self.telegram_config,
                     strm_server=self.yun139_strm_server,
                     strm_output_dir=self.yun139_strm_output_dir,
-                    delete_after_strm=self.yun139_delete_after_strm,
+                    delete_after=self.yun139_delete_after,
                 )
                 # 如果 yun139 配置了 max_workers，则覆盖全局设置
                 if self.yun139_max_workers > 0:

@@ -15,6 +15,13 @@ from src.video_organizer.core.tmdb_client import TMDBClient
 from src.video_organizer.core.guessit_parser import GuessItParser, GUESSIT_AVAILABLE
 from src.video_organizer.utils.llm_translator import LLMTranslator
 
+# 繁简转换支持
+try:
+    import zhconv
+    ZHCONV_AVAILABLE = True
+except ImportError:
+    ZHCONV_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -2813,6 +2820,16 @@ class VideoRenamer:
             # 定义缓存键
             cache_key = (prepared_search_term, media_type_hint, search_year)
 
+            # 繁简转换函数（在缓存检查之前定义，确保缓存命中时也能访问）
+            def normalize_chinese(text):
+                """标准化中文：繁体转简体"""
+                if ZHCONV_AVAILABLE and text:
+                    try:
+                        return zhconv.convert(text, 'zh-cn')
+                    except Exception:
+                        pass
+                return text
+
             # 检查缓存
             if cache_key in self._search_cache:
                 logger.info(f"使用缓存的搜索结果: {cache_key}")
@@ -2840,6 +2857,8 @@ class VideoRenamer:
 
                     # 提前翻译目标术语，避免在循环中重复翻译
                     target_term_lower = target_term.lower()
+                    # 繁简转换
+                    target_term_normalized = normalize_chinese(target_term_lower)
 
                     for result in search_results:
                         result_title = result.get(
@@ -2847,10 +2866,16 @@ class VideoRenamer:
                         ).lower()
                         original_name = result.get("original_name", "").lower()
 
-                        # 1. 直接匹配（标题完全相同）
+                        # 繁简转换后的标题
+                        result_title_normalized = normalize_chinese(result_title)
+                        original_name_normalized = normalize_chinese(original_name)
+
+                        # 1. 直接匹配（标题完全相同，支持繁简转换）
                         if (
                             result_title == target_term_lower
                             or original_name == target_term_lower
+                            or result_title_normalized == target_term_normalized
+                            or original_name_normalized == target_term_normalized
                         ):
                             # 如果没有指定目标年份，或者结果有匹配年份，则认为完全匹配
                             if not target_year:
@@ -2867,12 +2892,6 @@ class VideoRenamer:
                             )
                             if result_year == str(target_year):
                                 return True, result
-
-                        # 2. 简繁基础兼容 (针对 Dragon Raja)
-                        if (target_term_lower == "龍族" and result_title == "龙族") or (
-                            target_term_lower == "龙族" and result_title == "龍族"
-                        ):
-                            return True, result
 
                     return False, None
 
@@ -3186,6 +3205,11 @@ class VideoRenamer:
                     r"[^\w\s\u4e00-\u9fff]", "", original_name
                 )
                 normalized_original = re.sub(r"\s+", "", normalized_original)
+
+                # 繁简转换：确保繁体和简体可以正确匹配
+                normalized_search = normalize_chinese(normalized_search)
+                normalized_title = normalize_chinese(normalized_title)
+                normalized_original = normalize_chinese(normalized_original)
 
                 # 定义通用数字字符集（用于模糊匹配）
                 # 包括：阿拉伯数字(0-9)、中文数字(一二三四五六七八九十)、罗马数字(Ⅰ-Ⅹ, ⅰ-ⅹ)

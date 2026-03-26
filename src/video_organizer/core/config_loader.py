@@ -35,7 +35,7 @@ DEFAULT_CONFIG = {
         "max_workers": 5,
         "strm_server": "",  # STRM 服务器地址，如 http://192.168.2.148:5000
         "strm_output_dir": "",  # STRM 文件输出目录
-        "delete_after_strm": False,  # 生成 STRM 后删除云端文件
+        "delete_after": False,  # 上传完成后删除云端文件
         "empty_recycle_bin": False,  # 上传完成后清空回收站
     },
     "yun139": {
@@ -47,7 +47,7 @@ DEFAULT_CONFIG = {
         "max_workers": 3,  # 并行上传视频数量（每个视频内分片串行上传）
         "strm_server": "",  # STRM 服务器地址，如 http://192.168.2.148:5010
         "strm_output_dir": "",  # STRM 文件输出目录
-        "delete_after_strm": False,  # 生成 STRM 后删除云端文件
+        "delete_after": False,  # 上传完成后删除云端文件
     },
     "naming": {
         "tv_show_format": "{show_name}/Season {season:02d}/{show_name} {season_episode} {quality_tags}",

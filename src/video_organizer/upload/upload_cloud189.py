@@ -47,7 +47,7 @@ class Cloud189Uploader:
         telegram_config: Optional[Dict[str, Any]] = None,
         strm_server: Optional[str] = None,
         strm_output_dir: Optional[str] = None,
-        delete_after_strm: bool = False,
+        delete_after: bool = False,
     ):
         """
         初始化天翼云盘上传器
@@ -62,7 +62,7 @@ class Cloud189Uploader:
             telegram_config: Telegram 通知配置
             strm_server: STRM 服务器地址，如 http://192.168.2.148:5000
             strm_output_dir: STRM 文件输出目录
-            delete_after_strm: 生成 STRM 后是否删除云端文件
+            delete_after: 上传完成后是否删除云端文件
         """
         self.parent_folder_id = parent_folder_id
         self.family_id = family_id
@@ -70,7 +70,7 @@ class Cloud189Uploader:
         self.telegram_config = telegram_config or {}
         self.strm_server = strm_server.rstrip("/") if strm_server else None
         self.strm_output_dir = strm_output_dir
-        self.delete_after_strm = delete_after_strm
+        self.delete_after = delete_after
 
         # TG 通知相关
         self.tg_bot_token = self.telegram_config.get("bot_token", "")
@@ -530,25 +530,25 @@ class Cloud189Uploader:
                             file_name=strm_file_name,
                             folder_structure=folder_structure,
                         )
-
-                        # 生成 STRM 后删除云端文件
-                        if self.delete_after_strm and result.user_file_id:
-                            try:
-                                delete_result = self.client.delete_file(
-                                    file_id=result.user_file_id,
-                                    file_name=result.file_name,
-                                    is_folder=False,
-                                    srcParentId=self.parent_folder_id,
-                                    familyId=self.family_id
-                                )
-                                if delete_result.get("res_code") == 0:
-                                    print(f"[Cloud189] 云端文件已删除: {result.file_name}")
-                                else:
-                                    print(f"[Cloud189] 删除云端文件失败: {delete_result.get('res_message', 'Unknown')}")
-                            except Exception as e:
-                                print(f"[Cloud189] 删除云端文件异常: {e}")
                     except Exception as e:
                         print(f"[Cloud189] 生成 STRM 文件失败: {e}")
+
+            # 上传完成后删除云端文件（不依赖 STRM 生成）
+            if self.delete_after and result.user_file_id:
+                try:
+                    delete_result = self.client.delete_file(
+                        file_id=result.user_file_id,
+                        file_name=result.file_name,
+                        is_folder=False,
+                        srcParentId=self.parent_folder_id,
+                        familyId=self.family_id
+                    )
+                    if delete_result.get("res_code") == 0:
+                        print(f"[Cloud189] 云端文件已删除: {result.file_name}")
+                    else:
+                        print(f"[Cloud189] 删除云端文件失败: {delete_result.get('res_message', 'Unknown')}")
+                except Exception as e:
+                    print(f"[Cloud189] 删除云端文件异常: {e}")
 
             # 发送上传完成消息到 TG 频道
             if self.tg_channel_chat_id and result.file_md5:

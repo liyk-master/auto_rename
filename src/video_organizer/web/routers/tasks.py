@@ -269,11 +269,11 @@ async def websocket_progress(websocket: WebSocket):
                         await websocket.send_json(msg)
                     progress_queue.clear()
             
-            # 发送心跳
+            # 发送心跳（5秒间隔）
             await websocket.send_json({"type": "heartbeat"})
             
-            # 等待一小段时间
-            await asyncio.sleep(0.5)
+            # 等待
+            await asyncio.sleep(5)
             
     except WebSocketDisconnect:
         logger.debug("进度 WebSocket 连接已断开")
