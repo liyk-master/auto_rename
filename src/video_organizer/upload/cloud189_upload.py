@@ -841,6 +841,95 @@ class Cloud189Client:
         
         return result
     
+    def get_folder_id_by_name(
+        self,
+        folder_name: str,
+        parent_folder_id: str = '-11',
+        family_id: Optional[str] = None,
+        _retry: bool = True
+    ) -> Optional[str]:
+        """根据文件夹名称获取文件夹 ID
+        
+        Args:
+            folder_name: 文件夹名称
+            parent_folder_id: 父文件夹ID
+            family_id: 家庭云ID（可选）
+        
+        Returns:
+            文件夹ID，如果不存在返回 None
+        """
+        print(f'[Cloud189] 获取文件夹ID: {folder_name}, 父目录: {parent_folder_id}')
+        
+        # 获取文件列表
+        result = self.list_files(parent_folder_id, family_id=family_id)
+        
+        if result.get('res_code') != 0:
+            print(f'[Cloud189] 获取文件列表失败: {result.get("res_message")}')
+            return None
+        
+        # 查找匹配的文件夹
+        folder_list = result.get('fileListAO', {}).get('folderList', [])
+        for folder in folder_list:
+            if folder.get('name') == folder_name:
+                folder_id = str(folder.get('id', ''))
+                print(f'[Cloud189] 找到文件夹: {folder_name} -> {folder_id}')
+                return folder_id
+        
+        print(f'[Cloud189] 未找到文件夹: {folder_name}')
+        return None
+    
+    def ensure_folder_path(
+        self,
+        dir_path: str,
+        root_folder_id: str = '-11',
+        family_id: Optional[str] = None
+    ) -> str:
+        """确保目录路径存在，自动创建不存在的目录
+        
+        Args:
+            dir_path: 目录路径（如 "media/TV Shows/剧集名"）
+            root_folder_id: 根目录ID
+            family_id: 家庭云ID（可选）
+        
+        Returns:
+            最终目录ID
+        """
+        if not dir_path or dir_path.strip() == '':
+            return root_folder_id
+        
+        print(f'[Cloud189] 确保目录路径存在: {dir_path}, 根目录: {root_folder_id}')
+        
+        # 分割路径
+        path_parts = [p for p in dir_path.split('/') if p.strip()]
+        
+        current_folder_id = root_folder_id
+        
+        for folder_name in path_parts:
+            # 先尝试获取已存在的文件夹
+            folder_id = self.get_folder_id_by_name(folder_name, current_folder_id, family_id)
+            
+            if not folder_id:
+                # 文件夹不存在，创建它
+                print(f'[Cloud189] 创建文件夹: {folder_name}')
+                result = self.create_folder(folder_name, current_folder_id, family_id)
+                
+                # 检查创建结果
+                if result.get('res_code') == 0:
+                    folder_id = str(result.get('id', ''))
+                elif '已存在' in str(result.get('res_message', '')) or 'already' in str(result.get('res_message', '')).lower():
+                    # 文件夹已存在，重新获取
+                    folder_id = self.get_folder_id_by_name(folder_name, current_folder_id, family_id)
+                else:
+                    raise RuntimeError(f'创建文件夹失败: {result.get("res_message", result.get("res_code"))}')
+            
+            if not folder_id:
+                raise RuntimeError(f'无法创建或获取文件夹: {folder_name}')
+            
+            current_folder_id = folder_id
+        
+        print(f'[Cloud189] 最终目录ID: {current_folder_id}')
+        return current_folder_id
+    
     def delete_file(
         self,
         file_id: str,
@@ -1266,7 +1355,8 @@ class Cloud189Client:
         show_progress: bool = True,
         on_md5_progress: Optional[Callable[[int], None]] = None,
         on_progress: Optional[Callable[[int], None]] = None,
-        on_chunk_complete: Optional[Callable[[int, int], None]] = None
+        on_chunk_complete: Optional[Callable[[int, int], None]] = None,
+        dir_path: Optional[str] = None
     ) -> UploadResult:
         """上传文件（支持多线程和进度条）
         
@@ -1279,14 +1369,24 @@ class Cloud189Client:
             on_md5_progress: MD5 计算进度回调
             on_progress: 上传进度回调
             on_chunk_complete: 分片完成回调
+            dir_path: 目录路径（如 "media/TV Shows/剧集名"），会自动创建不存在的目录
         """
         abs_path = os.path.abspath(file_path)
         file_name = os.path.basename(abs_path)
         file_size = os.path.getsize(abs_path)
         
         print(f'[上传] 开始上传: {file_name}, 大小: {file_size / 1024 / 1024:.2f} MB')
+        if dir_path:
+            print(f'[上传] 目录路径: {dir_path}')
         
         try:
+            # 如果有目录路径，自动创建目录
+            target_folder_id = parent_folder_id
+            if dir_path and dir_path.strip():
+                print(f'[上传] 自动创建目录路径: {dir_path}')
+                target_folder_id = self.ensure_folder_path(dir_path, parent_folder_id, family_id)
+                print(f'[上传] 目标文件夹ID: {target_folder_id}')
+            
             # 1. 计算分片大小
             slice_size = self._part_size(file_size)
             total_chunks = (file_size + slice_size - 1) // slice_size
@@ -1316,7 +1416,7 @@ class Cloud189Client:
             # 3. 初始化上传
             print('[上传] 初始化上传...')
             init_result = self.init_multi_upload(
-                parent_folder_id=parent_folder_id,
+                parent_folder_id=target_folder_id,
                 file_name=file_name,
                 file_size=file_size,
                 slice_size=slice_size,
@@ -1519,18 +1619,38 @@ class Cloud189Client:
         slice_md5: str,
         file_name: str,
         parent_folder_id: str = '-11',
-        family_id: Optional[str] = None
+        family_id: Optional[str] = None,
+        dir_path: Optional[str] = None
     ) -> UploadResult:
-        """秒传文件（不实际上传，直接通过 MD5 创建文件）"""
+        """秒传文件（不实际上传，直接通过 MD5 创建文件）
+        
+        Args:
+            file_md5: 文件 MD5
+            file_size: 文件大小
+            slice_md5: 分片 MD5
+            file_name: 文件名
+            parent_folder_id: 目标文件夹ID，-11 为根目录
+            family_id: 家庭云ID（可选）
+            dir_path: 目录路径（如 "media/TV Shows/剧集名"），会自动创建不存在的目录
+        """
         print(f'[秒传] {file_name}, fileMd5: {file_md5}, sliceMd5: {slice_md5}')
+        if dir_path:
+            print(f'[秒传] 目录路径: {dir_path}')
         
         try:
+            # 如果有目录路径，自动创建目录
+            target_folder_id = parent_folder_id
+            if dir_path and dir_path.strip():
+                print(f'[秒传] 自动创建目录路径: {dir_path}')
+                target_folder_id = self.ensure_folder_path(dir_path, parent_folder_id, family_id)
+                print(f'[秒传] 目标文件夹ID: {target_folder_id}')
+            
             # 1. 计算分片大小
             slice_size = self._part_size(file_size)
             
             # 2. 初始化上传
             init_result = self.init_multi_upload(
-                parent_folder_id=parent_folder_id,
+                parent_folder_id=target_folder_id,
                 file_name=file_name,
                 file_size=file_size,
                 slice_size=slice_size,

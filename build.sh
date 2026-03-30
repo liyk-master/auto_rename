@@ -52,16 +52,56 @@ build_executable() {
         exit 1
     fi
     
-    # 使用 pyinstaller 构建
+    # 使用 PyInstaller 的 collect_data_files 自动收集数据文件
+    # 创建临时 spec 文件以支持更复杂的数据收集
+    cat > VideoOrganizer.spec << 'EOF'
+# -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_data_files
+
+# 收集 babelfish 和 guessit 的数据文件
+datas = [('config.ini', '.')]
+datas += collect_data_files('babelfish')
+datas += collect_data_files('guessit')
+
+a = Analysis(
+    ['run_organizer.py'],
+    pathex=[],
+    binaries=[],
+    datas=datas,
+    hiddenimports=[
+        'src.video_organizer',
+        'babelfish',
+        'guessit',
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+)
+pyz = PYZ(a.pure)
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.datas,
+    [],
+    name='VideoOrganizer',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=True,
+)
+EOF
+    
+    echo "创建 spec 文件完成，开始构建..."
+    
+    # 使用 spec 文件构建
     pyinstaller \
         --noconfirm \
-        --onefile \
-        --console \
-        --name "VideoOrganizer" \
         --clean \
-        --hidden-import=src.video_organizer \
-        --add-data "config.ini:." \
-        run_organizer.py
+        VideoOrganizer.spec
     
     if [ $? -eq 0 ]; then
         echo ""

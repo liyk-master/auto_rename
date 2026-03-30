@@ -19,3 +19,7 @@
 - Organize imports: stdlib first, then third-party, then project imports
 - Use PascalCase for classes, snake_case for functions/variables
 - Use absolute imports from package root (e.g., `from src.video_organizer.core.renamer import VideoRenamer`)
+
+## 语言规范
+- 所有对话和文档都使用中文
+- 文档使用 markdown 格式

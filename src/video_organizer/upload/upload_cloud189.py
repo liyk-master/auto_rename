@@ -428,8 +428,13 @@ class Cloud189Uploader:
             self._tg_message_ids[file_path] = tg_msg_id
 
         try:
-            # 直接上传到配置的目录，不创建子文件夹
-            print(f"[Cloud189] 上传目录: {self.parent_folder_id}")
+            # 构建目录路径
+            dir_path = None
+            if folder_structure and len(folder_structure) > 0:
+                dir_path = "/".join(folder_structure)
+                print(f"[Cloud189] 目标目录路径: {dir_path}")
+            else:
+                print(f"[Cloud189] 上传目录: {self.parent_folder_id}")
 
             # 进度回调
             def on_progress(percent: int):
