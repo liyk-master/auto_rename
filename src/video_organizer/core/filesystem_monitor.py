@@ -652,8 +652,14 @@ class FileSystemMonitor:
         cast = metadata.get('cast', [])
         for actor in cast:
             nfo_content += f'  <actor>\n'
-            nfo_content += f'    <name>{actor.get("name", "")}</name>\n'
-            nfo_content += f'    <role>{actor.get("character", "")}</role>\n'
+            # 兼容 actor 是字典或字符串的情况
+            if isinstance(actor, dict):
+                nfo_content += f'    <name>{actor.get("name", "")}</name>\n'
+                nfo_content += f'    <role>{actor.get("character", "")}</role>\n'
+            else:
+                # 如果 actor 是字符串，直接作为名字
+                nfo_content += f'    <name>{str(actor)}</name>\n'
+                nfo_content += f'    <role></role>\n'
             nfo_content += f'  </actor>\n'
 
         # 添加季集信息（仅电视剧）

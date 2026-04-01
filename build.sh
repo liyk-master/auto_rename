@@ -56,23 +56,33 @@ build_executable() {
     # 创建临时 spec 文件以支持更复杂的数据收集
     cat > VideoOrganizer.spec << 'EOF'
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 # 收集 babelfish 和 guessit 的数据文件
 datas = [('config.ini', '.')]
 datas += collect_data_files('babelfish')
 datas += collect_data_files('guessit')
 
+# 收集所有子模块
+hiddenimports = [
+    'src.video_organizer',
+    'babelfish',
+    'guessit',
+    'rebulk',
+    'rebulk.rules',
+    'rebulk.patterns',
+    'rebulk.match',
+]
+hiddenimports += collect_submodules('babelfish')
+hiddenimports += collect_submodules('guessit')
+hiddenimports += collect_submodules('rebulk')
+
 a = Analysis(
     ['run_organizer.py'],
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=[
-        'src.video_organizer',
-        'babelfish',
-        'guessit',
-    ],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

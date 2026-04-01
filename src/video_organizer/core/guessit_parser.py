@@ -79,11 +79,18 @@ class GuessItParser:
             return {}
 
         try:
+            # 中文剧集格式预处理
+            # 如果文件名是纯中文格式（如 "第1集.strm"），尝试从父目录提取剧名
+            preprocessed_filename = self._preprocess_chinese_filename(filename)
+            
             # 使用 guessit 解析
-            result = guessit(filename, options or {})
+            result = guessit(preprocessed_filename, options or {})
 
             # 转换为项目内部格式
             metadata = self._convert_result(result, filename)
+            
+            # 后处理：修正中文剧集的识别结果
+            metadata = self._postprocess_chinese_result(metadata, filename)
 
             logger.debug(f"GuessIt 解析结果: {metadata}")
             return metadata
@@ -91,6 +98,306 @@ class GuessItParser:
         except Exception as e:
             logger.error(f"GuessIt 解析失败: {e}")
             return {}
+
+    # 中文数字映射
+    CHINESE_NUM_MAP = {
+        '零': 0, '一': 1, '二': 2, '三': 3, '四': 4,
+        '五': 5, '六': 6, '七': 7, '八': 8, '九': 9,
+        '十': 10, '十一': 11, '十二': 12, '十三': 13, '十四': 14,
+        '十五': 15, '十六': 16, '十七': 17, '十八': 18, '十九': 19,
+        '二十': 20, '二十一': 21, '二十二': 22, '二十三': 23, '二十四': 24,
+        '二十五': 25, '二十六': 26, '二十七': 27, '二十八': 28, '二十九': 29,
+        '三十': 30,
+    }
+
+    def _preprocess_chinese_filename(self, filename: str) -> str:
+        """
+        预处理中文文件名，改善 guessit 对中文格式的识别
+
+        支持的格式：
+        - 纯集号格式：第1集、第01话、第一集、第1-2集（连集）
+        - 带季目录：第一季/第1集、Season 1/第1集、S01/第1集
+        - 字幕组格式：【字幕组】剧名 第1集
+
+        Args:
+            filename: 原始文件名或路径
+
+        Returns:
+            预处理后的文件名
+        """
+        path = Path(filename)
+        stem = path.stem
+        
+        # 1. 尝试从文件名中提取集号信息
+        episode_info = self._extract_episode_from_chinese(stem)
+        
+        if episode_info:
+            episode_num, episode_end = episode_info  # episode_end 用于连集
+            
+            # 尝试从路径中提取剧名和季号
+            show_name, season = self._extract_show_info_from_path(path)
+            
+            if show_name:
+                # 构造标准格式
+                if episode_end and episode_end != episode_num:
+                    # 连集格式
+                    new_filename = f"{show_name} E{episode_num:02d}-E{episode_end:02d}{path.suffix}"
+                else:
+                    new_filename = f"{show_name} E{episode_num:02d}{path.suffix}"
+                
+                # 如果有季号，添加季号
+                if season:
+                    new_filename = f"{show_name} S{season:02d}E{episode_num:02d}{path.suffix}"
+                    if episode_end and episode_end != episode_num:
+                        new_filename = f"{show_name} S{season:02d}E{episode_num:02d}-E{episode_end:02d}{path.suffix}"
+                
+                logger.debug(f"中文格式预处理: '{filename}' -> '{new_filename}'")
+                return new_filename
+        
+        # 2. 处理字幕组格式：【字幕组】剧名 第1集 或 【字幕组】剧名 第N集
+        subtitle_match = re.match(r'^【[^】]+】(.+)$', stem)
+        if subtitle_match:
+            remaining = subtitle_match.group(1).strip()
+            
+            # 尝试从剩余部分提取剧名和集号
+            # 格式1：剧名 第1集、剧名 第01话、剧名 第1話
+            match = re.match(r'^(.+?)\s*第(\d+)[集话話]$', remaining)
+            if match:
+                show_name = match.group(1).strip()
+                episode_num = int(match.group(2))
+                new_filename = f"{show_name} E{episode_num:02d}{path.suffix}"
+                logger.debug(f"字幕组格式预处理: '{filename}' -> '{new_filename}'")
+                return new_filename
+            
+            # 格式2：剧名 第一集、剧名 第二集（中文数字）
+            for chinese_num, num in self.CHINESE_NUM_MAP.items():
+                cn_match = re.match(rf'^(.+?)\s*第{chinese_num}[集话話]$', remaining)
+                if cn_match:
+                    show_name = cn_match.group(1).strip()
+                    new_filename = f"{show_name} E{num:02d}{path.suffix}"
+                    logger.debug(f"字幕组格式预处理: '{filename}' -> '{new_filename}'")
+                    return new_filename
+            
+            # 格式3：剧名 - 01、剧名 E01
+            match = re.match(r'^(.+?)\s*[-\s]+[Ee]?(\d+)$', remaining)
+            if match:
+                show_name = match.group(1).strip()
+                episode_num = int(match.group(2))
+                new_filename = f"{show_name} E{episode_num:02d}{path.suffix}"
+                logger.debug(f"字幕组格式预处理: '{filename}' -> '{new_filename}'")
+                return new_filename
+            
+            # 格式4：纯集号（已在前面的逻辑处理）
+            episode_info = self._extract_episode_from_chinese(remaining)
+            if episode_info:
+                episode_num, episode_end = episode_info
+                # 提取剧名（去掉集号部分）
+                show_name = re.sub(r'\s*第?\d+[-\d]*[集话話]?\s*$', '', remaining)
+                show_name = re.sub(r'\s*[Ee][Pp]?\d+(-\d+)?\s*$', '', show_name)
+                show_name = show_name.strip()
+                
+                if show_name:
+                    if episode_end and episode_end != episode_num:
+                        new_filename = f"{show_name} E{episode_num:02d}-E{episode_end:02d}{path.suffix}"
+                    else:
+                        new_filename = f"{show_name} E{episode_num:02d}{path.suffix}"
+                    logger.debug(f"字幕组格式预处理: '{filename}' -> '{new_filename}'")
+                    return new_filename
+        
+        return filename
+
+    def _extract_episode_from_chinese(self, stem: str) -> Optional[tuple]:
+        """
+        从中文文件名中提取集号
+
+        Args:
+            stem: 文件名（不含扩展名）
+
+        Returns:
+            (集号, 结束集号) 元组，如果不是中文集号格式则返回 None
+            对于单集，两个值相同；对于连集，返回范围
+        """
+        # 中文数字集号：第一集、第二集...（精确匹配）
+        for chinese_num, num in self.CHINESE_NUM_MAP.items():
+            if stem == f'第{chinese_num}集' or stem == f'第{chinese_num}话' or stem == f'第{chinese_num}話':
+                return (num, num)
+        
+        # 数字集号：第1集、第01集、第1话、第01话、第1話（精确匹配）
+        match = re.match(r'^第(\d+)[集话話]$', stem)
+        if match:
+            return (int(match.group(1)), int(match.group(1)))
+        
+        # 带额外文本的数字集号：第1集 4K、第01集.HDR、第1话.1080p 等
+        # 匹配以 "第N集" 或 "第N话" 开头的文件名
+        match = re.match(r'^第(\d+)[集话話](?:\s|\.|$)', stem)
+        if match:
+            return (int(match.group(1)), int(match.group(1)))
+        
+        # 带额外文本的中文数字集号：第一集 4K、第二集.HDR 等
+        for chinese_num, num in self.CHINESE_NUM_MAP.items():
+            if re.match(rf'^第{chinese_num}[集话話](?:\s|\.|$)', stem):
+                return (num, num)
+        
+        # 连集格式：第1-2集、第01-02话、第1-2話
+        match = re.match(r'^第(\d+)-(\d+)[集话話]', stem)
+        if match:
+            return (int(match.group(1)), int(match.group(2)))
+        
+        # 英文格式：EP01, E01, ep01
+        match = re.match(r'^[Ee][Pp]?(\d+)$', stem)
+        if match:
+            return (int(match.group(1)), int(match.group(1)))
+        
+        # 纯数字：01, 001（两位及以上数字）
+        match = re.match(r'^(\d{2,})$', stem)
+        if match:
+            return (int(match.group(1)), int(match.group(1)))
+        
+        return None
+
+    def _extract_show_info_from_path(self, path: Path) -> tuple:
+        """
+        从路径中提取剧名和季号
+
+        Args:
+            path: 文件路径对象
+
+        Returns:
+            (剧名, 季号) 元组，季号可能为 None
+        """
+        show_name = None
+        season = None
+        
+        # 遍历路径的父目录
+        current = path.parent
+        parent_parts = list(current.parts)
+        
+        # 从后向前查找剧名和季号
+        for i, part in enumerate(reversed(parent_parts)):
+            part_str = str(part)
+            
+            # 检查是否是季目录
+            if season is None:
+                # 中文季：第一季、第二季...
+                for chinese_num, num in self.CHINESE_NUM_MAP.items():
+                    if part_str == f'第{chinese_num}季':
+                        season = num
+                        continue
+                
+                # 数字季：第1季、Season 1、S01、S1
+                match = re.match(r'^第(\d+)季$', part_str)
+                if match:
+                    season = int(match.group(1))
+                    continue
+                
+                match = re.match(r'^Season\s*(\d+)$', part_str, re.IGNORECASE)
+                if match:
+                    season = int(match.group(1))
+                    continue
+                
+                match = re.match(r'^S(\d+)$', part_str, re.IGNORECASE)
+                if match:
+                    season = int(match.group(1))
+                    continue
+            
+            # 如果还没找到剧名，检查当前部分
+            if show_name is None:
+                # 清理父目录名中的年份和其他干扰信息
+                clean_name = re.sub(r'[（\(]\d{4}[）\)]', '', part_str)
+                clean_name = re.sub(r'\s*\d{4}\s*$', '', clean_name)
+                clean_name = clean_name.strip()
+                
+                # 排除纯季目录名
+                if not clean_name or re.match(r'^(第\d+季|Season\s*\d+|S\d+)$', clean_name, re.IGNORECASE):
+                    continue
+                
+                # 检查名称中是否包含嵌入的季号信息
+                # 格式1：剧名 第N季（如 "修罗武神 第二季"）
+                embedded_season_match = re.search(r'\s*第(\d+)季\s*$', clean_name)
+                if embedded_season_match and season is None:
+                    season = int(embedded_season_match.group(1))
+                    clean_name = clean_name[:embedded_season_match.start()].strip()
+                
+                # 格式2：剧名 第N季（中文数字，如 "修罗武神 第二季"）
+                for chinese_num, num in self.CHINESE_NUM_MAP.items():
+                    cn_match = re.search(rf'\s*第{chinese_num}季\s*$', clean_name)
+                    if cn_match and season is None:
+                        season = num
+                        clean_name = clean_name[:cn_match.start()].strip()
+                        break
+                
+                # 格式3：剧名 Season N（如 "Show Name Season 2"）
+                embedded_season_match_en = re.search(r'\s+Season\s*(\d+)\s*$', clean_name, re.IGNORECASE)
+                if embedded_season_match_en and season is None:
+                    season = int(embedded_season_match_en.group(1))
+                    clean_name = clean_name[:embedded_season_match_en.start()].strip()
+                
+                # 格式4：剧名 SN 或 S0N（如 "Show Name S02"）
+                embedded_s_match = re.search(r'\s+S(\d+)\s*$', clean_name, re.IGNORECASE)
+                if embedded_s_match and season is None:
+                    season = int(embedded_s_match.group(1))
+                    clean_name = clean_name[:embedded_s_match.start()].strip()
+                
+                if clean_name:
+                    show_name = clean_name
+        
+        return (show_name, season)
+
+    def _postprocess_chinese_result(self, metadata: Dict, original_filename: str) -> Dict:
+        """
+        后处理中文剧集的识别结果
+
+        Args:
+            metadata: guessit 解析结果
+            original_filename: 原始文件名
+
+        Returns:
+            修正后的元数据
+        """
+        path = Path(original_filename)
+        stem = path.stem
+        
+        # 如果 show_name 被识别为 "第1集" 或类似的集号格式
+        show_name = metadata.get('show_name', '')
+        
+        # 检查 show_name 是否是无效的集号格式
+        invalid_patterns = [
+            r'^第\d+集',
+            r'^第\d+话',
+            r'^第\d+話',
+            r'^第[一二三四五六七八九十]+集',
+            r'^第[一二三四五六七八九十]+话',
+            r'^[Ee][Pp]?\d+',
+        ]
+        
+        is_invalid_show_name = any(re.match(p, show_name) for p in invalid_patterns)
+        
+        if is_invalid_show_name:
+            # 尝试从父目录获取剧名
+            show_name_from_path, season_from_path = self._extract_show_info_from_path(path)
+            
+            if show_name_from_path:
+                metadata['show_name'] = show_name_from_path
+                logger.debug(f"修正剧名: '{show_name}' -> '{show_name_from_path}' (来自父目录)")
+                
+                # 如果没有季号但从路径中提取到了季号，也添加
+                if metadata.get('season') is None and season_from_path is not None:
+                    metadata['season'] = season_from_path
+                    logger.debug(f"从路径补充季号: {season_from_path}")
+        
+        # 处理字幕组格式：【字幕组】剧名 第1集
+        if '【' in show_name and '】' in show_name:
+            # 移除字幕组标记
+            cleaned_name = re.sub(r'^【[^】]+】\s*', '', show_name)
+            # 移除可能的集号部分
+            cleaned_name = re.sub(r'\s*第?\d+[-\d]*[集话話]?\s*$', '', cleaned_name)
+            cleaned_name = cleaned_name.strip()
+            
+            if cleaned_name:
+                metadata['show_name'] = cleaned_name
+                logger.debug(f"清理字幕组格式剧名: '{show_name}' -> '{cleaned_name}'")
+        
+        return metadata
 
     def _convert_result(self, result: Dict, filename: str) -> Dict[str, Any]:
         """
@@ -242,6 +549,15 @@ class GuessItParser:
         if re.match(r'^S\d+E\d+$', show_name.upper()):
             return True
 
+        # 中文集号格式（如 "第7集"、"第01话"、"第1話"）
+        if re.match(r'^第\d+[集话話]$', show_name):
+            return True
+
+        # 中文数字集号（如 "第一集"、"第二话"）
+        for chinese_num in self.CHINESE_NUM_MAP.keys():
+            if re.match(rf'^第{chinese_num}[集话話]$', show_name):
+                return True
+
         # 太短（如单字母或单个汉字）
         if len(show_name.strip()) <= 1:
             return True
@@ -335,11 +651,13 @@ class GuessItParser:
                             logger.debug(f"GuessIt 标题 '{guessit_value}' 以数字结尾，正则 '{regex_value}' 可能误把数字识别为年份，使用 GuessIt 结果")
             elif field == 'season' and guessit_value is not None:
                 # 特殊处理：如果正则 season 是默认值 1，而 GuessIt 有明确的 season，使用 GuessIt
-                # 检查文件名中是否有明确的季号标识（如 [S2]、S02 等）
+                # 检查文件名或路径中是否有明确的季号标识
                 has_explicit_season = bool(
                     re.search(r'\[S\d+\]|\(S\d+\)|\.S\d+\.|-S\d+-', filename, re.IGNORECASE) or
                     re.search(r'S\d+E\d+', filename, re.IGNORECASE) or
-                    re.search(r'第\d+季', filename)
+                    re.search(r'第\d+季', filename) or
+                    re.search(r'第[一二三四五六七八九十]+季', filename) or
+                    re.search(r'Season\s*\d+', filename, re.IGNORECASE)
                 )
                 # 转换为整数进行比较（regex_value 可能是字符串）
                 try:
@@ -349,9 +667,11 @@ class GuessItParser:
                     regex_season = None
                     guessit_season = None
                 
-                if regex_season == 1 and has_explicit_season and guessit_season and guessit_season > 1:
-                    merged[field] = guessit_value
-                    logger.debug(f"正则 season={regex_value} 可能是默认值，文件名有明确季号标识，使用 GuessIt 结果: {guessit_value}")
+                # 如果 GuessIt 识别出季号大于1，且正则是默认值1或没有季号，使用 GuessIt 结果
+                if guessit_season and guessit_season > 1:
+                    if regex_season is None or regex_season == 1:
+                        merged[field] = guessit_value
+                        logger.debug(f"GuessIt 识别到季号 {guessit_value}，正则季号为 {regex_value}，使用 GuessIt 结果")
 
         # 媒体类型：如果正则没有识别，使用 guessit 结果
         if not merged.get('media_type') and guessit_metadata.get('media_type'):
