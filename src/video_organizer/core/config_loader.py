@@ -80,10 +80,33 @@ DEFAULT_CONFIG = {
     },
     "telegram": {"bot_token": "", "chat_id": ""},
     "llm_translation": {
+        "enabled": False,
+        "strategy": "round_robin",  # round_robin, random, failover, weighted
+        "providers": [],  # 多Provider配置，格式见下方
+        # 兼容旧的单Provider配置
         "api_key": "",
         "api_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
         "model": "GLM-4.5-Flash",
-        "enabled": False,
+        # Provider配置示例:
+        # providers = [
+        #     {
+        #         "name": "zhipu",
+        #         "api_key": "xxx",
+        #         "api_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        #         "model": "GLM-4.5-Flash",
+        #         "weight": 3,
+        #         "response_format": "openai",
+        #         "response_path": "choices[0].message.content",
+        #     },
+        #     {
+        #         "name": "deepseek",
+        #         "api_key": "xxx",
+        #         "api_url": "https://api.deepseek.com/v1/chat/completions",
+        #         "model": "deepseek-chat",
+        #         "weight": 2,
+        #         "response_format": "openai",
+        #     },
+        # ]
     },
     "llm_fallback": {"enabled": False, "max_concurrent": 2},
     "guessit": {

@@ -737,53 +737,68 @@ class VideoRenamer:
 
         # 加载字幕组映射配置
         self._release_group_mapping = dict(self.DEFAULT_RELEASE_GROUP_MAPPING)
+        custom_mapping = {}
         if config and isinstance(config, dict):
             custom_mapping = config.get("release_group_mapping", {})
             if custom_mapping:
                 # 合并配置，覆盖默认映射
                 self._release_group_mapping.update(custom_mapping)
-                logger.info(f"加载了 {len(custom_mapping)} 个自定义字幕组映射")
+        if custom_mapping:
+            logger.info(f"加载了 {len(custom_mapping)} 个自定义字幕组映射")
 
-        # 初始化 LLM 翻译器
+        # 初始化 LLM 翻译器（支持多Provider配置）
         self.llm_translator = None
 
         # 检查是否有 LLM 翻译配置
-        llm_enabled = False
-        llm_api_key = None
-        llm_api_url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-        llm_model = "GLM-4.5-Flash"
+        llm_config_to_use = None
 
         # 优先使用 llm_translation 配置
         if llm_config and isinstance(llm_config, dict):
-            llm_enabled = llm_config.get("enabled", False)
-            llm_api_key = llm_config.get("api_key")
-            llm_api_url = llm_config.get("api_url", llm_api_url)
-            llm_model = llm_config.get("model", llm_model)
+            llm_config_to_use = llm_config
 
         # 如果没有 llm_translation 配置，尝试使用 ai_translate 配置
-        if not llm_enabled or not llm_api_key:
-            # 从配置中获取 ai_translate 配置
-            ai_translate_config = {}  # 默认空配置
+        if not llm_config_to_use:
+            ai_translate_config = {}
             if hasattr(self, "config") and isinstance(self.config, dict):
                 ai_translate_config = self.config.get("ai_translate", {})
             elif hasattr(self, "_config") and isinstance(self._config, dict):
                 ai_translate_config = self._config.get("ai_translate", {})
 
-            # 检查 ai_translate 配置
-            ai_translate_enabled = ai_translate_config.get("enabled", False)
-            ai_translate_api_key = ai_translate_config.get("api_key")
+            if ai_translate_config.get("enabled") and ai_translate_config.get("api_key"):
+                llm_config_to_use = ai_translate_config
 
-            if ai_translate_enabled and ai_translate_api_key:
-                llm_enabled = True
-                llm_api_key = ai_translate_api_key
-                llm_api_url = ai_translate_config.get("api_url", llm_api_url)
-                llm_model = ai_translate_config.get("model", llm_model)
-
-        # 如果有有效的配置，初始化 LLM 翻译器
-        if llm_enabled and llm_api_key:
+        # 初始化 LLM 翻译器（支持新旧两种配置格式）
+        if llm_config_to_use:
+            # 使用新的初始化方式，传入完整config以支持多Provider
             self.llm_translator = LLMTranslator(
-                api_key=llm_api_key, api_url=llm_api_url, model=llm_model
+                config={"llm_translation": llm_config_to_use}
             )
+            if self.llm_translator.enabled:
+                providers_count = len(self.llm_translator.providers)
+                strategy = self.llm_translator.strategy.value
+                logger.info(
+                    f"VideoRenamer: LLM 翻译器初始化成功 "
+                    f"(providers={providers_count}, strategy={strategy})"
+                )
+            else:
+                logger.warning("VideoRenamer: LLM 翻译器初始化失败，没有可用的Provider")
+
+        # LLM 并发控制信号量（最多同时 2 个 LLM 调用）
+        self._llm_semaphore = threading.Semaphore(2)
+
+        # 是否启用 LLM 兜底识别（从配置读取）
+        self._llm_fallback_enabled = False
+        llm_fallback_config = {}
+        if config and isinstance(config, dict):
+            llm_fallback_config = config.get("llm_fallback", {})
+            if llm_fallback_config.get("enabled", False):
+                self._llm_fallback_enabled = True
+                max_concurrent = llm_fallback_config.get("max_concurrent", 2)
+                if max_concurrent > 0:
+                    self._llm_semaphore = threading.Semaphore(max_concurrent)
+                logger.info(
+                    f"VideoRenamer: LLM 兜底识别已启用 (max_concurrent={max_concurrent})"
+                )
             logger.info("VideoRenamer: LLM 翻译器初始化成功")
 
         # LLM 并发控制信号量（最多同时 2 个 LLM 调用）
