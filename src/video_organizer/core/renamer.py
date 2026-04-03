@@ -3159,12 +3159,69 @@ class VideoRenamer:
                                         results = truncated_results[:5]
                                         break
 
-                if not results:
-                    # 确保返回的metadata包含必要字段
-                    metadata.setdefault("quality_tags", original_quality_tags)
-                    metadata.setdefault("year", "")
-                    metadata.setdefault("tmdb_id", "")
-                    return metadata
+            if not results:
+                # 备选策略3：LLM翻译剧名后重新搜索
+                # 如果启用了LLM兜底，尝试用LLM翻译剧名（中文转英文或英文转中文）
+                if self._llm_fallback_enabled and self.llm_translator:
+                    logger.info(f"所有搜索策略失败，尝试LLM翻译剧名: '{search_term}'")
+
+                    # 使用信号量限制并发
+                    acquired = self._llm_semaphore.acquire(timeout=10)
+                    if acquired:
+                        try:
+                            # 判断搜索词语言，翻译为目标语言
+                            target_lang = "English" if search_term_is_chinese else "Chinese"
+                            translated_name = self.llm_translator.translate_video_name(
+                                search_term, target_language=target_lang
+                            )
+
+                            if translated_name and translated_name != search_term:
+                                logger.info(
+                                    f"LLM翻译结果: '{search_term}' -> '{translated_name}'"
+                                )
+
+                                # 用翻译后的词重新搜索TMDB
+                                llm_results = self._search_with_language(
+                                    translated_name,
+                                    media_type_hint,
+                                    search_year,
+                                    "en-US" if target_lang == "English" else "zh-CN",
+                                )
+
+                                if llm_results:
+                                    logger.info(
+                                        f"LLM翻译后搜索找到 {len(llm_results)} 个结果"
+                                    )
+                                    results = llm_results[:5]
+                                else:
+                                    # 尝试另一种语言
+                                    alt_lang = "zh-CN" if target_lang == "English" else "en-US"
+                                    llm_results = self._search_with_language(
+                                        translated_name,
+                                        media_type_hint,
+                                        search_year,
+                                        alt_lang,
+                                    )
+                                    if llm_results:
+                                        logger.info(
+                                            f"LLM翻译后(备选语言)搜索找到 {len(llm_results)} 个结果"
+                                        )
+                                        results = llm_results[:5]
+                            else:
+                                logger.warning(f"LLM翻译返回空或相同结果，跳过")
+                        except Exception as e:
+                            logger.error(f"LLM翻译失败: {e}")
+                        finally:
+                            self._llm_semaphore.release()
+                    else:
+                        logger.warning("LLM翻译超时（并发数已达上限），跳过")
+
+            if not results:
+                # 确保返回的metadata包含必要字段
+                metadata.setdefault("quality_tags", original_quality_tags)
+                metadata.setdefault("year", "")
+                metadata.setdefault("tmdb_id", "")
+                return metadata
 
             # 寻找最匹配的结果
             best_match = None
