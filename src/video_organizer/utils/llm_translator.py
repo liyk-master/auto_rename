@@ -265,8 +265,15 @@ class LLMTranslator:
             "model": provider.model,
             "messages": messages,
             "temperature": temperature,
-            "top_p": top_p,
+            "max_tokens": 1000,
         }
+        
+        if top_p is not None:
+            payload["top_p"] = top_p
+        
+        # 对于低温度参数的调用（通常是 JSON 解析），启用 response_format
+        if temperature <= 0.3:
+            payload["response_format"] = {"type": "json_object"}
         
         for attempt in range(provider.max_retries):
             try:
@@ -280,6 +287,7 @@ class LLMTranslator:
                 response.raise_for_status()
                 
                 result = response.json()
+                logger.debug(f"LLMTranslator: result '{result}'")
                 content = ResponseParser.parse(result, provider.response_path)
                 
                 if content:
@@ -372,6 +380,42 @@ class LLMTranslator:
             return translated_lines[0] if translated_lines else translated_content
         return translated_lines
     
+    def _extract_json(self, content: str) -> Optional[str]:
+        """
+        从响应内容中提取 JSON 字符串
+        
+        支持多种格式：
+        1. 纯 JSON 对象
+        2. markdown 代码块包裹的 JSON
+        3. 包含额外文字的 JSON
+        """
+        if not content:
+            return None
+        
+        content = content.strip()
+        
+        # 1. 尝试直接解析（纯 JSON）
+        if content.startswith('{') and content.endswith('}'):
+            return content
+        
+        # 2. 提取 markdown 代码块中的内容
+        json_block_match = re.search(r'```(?:json)?\s*\n?([\s\S]*?)\n?```', content)
+        if json_block_match:
+            return json_block_match.group(1).strip()
+        
+        # 3. 清理 markdown 标记后查找 JSON 对象
+        cleaned = content.replace("```json", "").replace("```", "").strip()
+        if cleaned.startswith('{') and cleaned.endswith('}'):
+            return cleaned
+        
+        # 4. 从内容中提取第一个完整的 JSON 对象
+        json_start = content.find('{')
+        json_end = content.rfind('}')
+        if json_start != -1 and json_end != -1 and json_end > json_start:
+            return content[json_start:json_end + 1]
+        
+        return None
+    
     def parse_filename(self, filename: str) -> Optional[dict]:
         """
         使用LLM解析视频文件名，提取元数据
@@ -385,50 +429,40 @@ class LLMTranslator:
         if not self._enabled:
             return None
         
-        prompt = f"""分析这个视频文件名，提取元数据。
+        prompt = f"""分析文件名并提取元数据，仅返回 JSON，不要任何 markdown 格式或解释文字。
 
 文件名: {filename}
 
-重要规则：
-1. show_name 必须是剧名/电影名，不包含季集信息(SxxExx)、年份、分辨率、来源、编码、发布组
-2. 如果文件名格式是 "剧名 SxxExx 集名"，只提取"剧名"作为show_name
-3. 集名/副标题不要放在show_name里
-4. release_group 是最后的发布组名称（如FLUX、ANi等）
+返回格式示例:
+{{"show_name":"剧名","season":1,"episode":2,"year":2023,"release_group":"发布组","media_type":"tv","original_language":"en"}}
 
-请返回JSON格式。
+提取规则:
+- show_name: 纯剧名，不含 S/E、年份、分辨率、发布组
+- season/episode: 数字或 null
+- year: 四位年份数字或 null
+- release_group: 发布组名或 null
+- media_type: tv/movie
+- original_language: 语言代码或 null
 
-{{
-    "show_name": "剧名/电影名（不要包含季集信息、分辨率、来源、编码）",
-    "season": "季号数字或null",
-    "episode": "集号数字或null",
-    "year": "null",
-    "release_group": "发布组名称",
-    "media_type": "tv"
-}}
+仅返回 JSON 对象，无其他内容。"""
 
-示例：
-- "Fallout S02E04 The the Snow 1080p AMZN WEB-DL DDP5 Atmos H 264-FLUX.mkv" → {{"show_name": "Fallout", "season": "2", "episode": "4", "release_group": "FLUX"}}
-- "www.UIndex.org - Fallout S02E04 The the Snow 1080p AMZN WEB-DL-FLUX.mkv" → {{"show_name": "Fallout", "season": "2", "episode": "4", "release_group": "FLUX"}}
-- "[Furretar] 空之境界 俯瞰风景.mkv" → {{"show_name": "空之境界", "season": "1", "episode": "1"}}
-- "[Bird] Ganzo! Bandori-chan - 14.mkv" → {{"show_name": "Ganzo Bandori-chan", "season": "1", "episode": "14"}}
-
-只返回JSON，不要其他内容。"""
-
-        messages = [
-            {"role": "system", "content": "你是一个视频文件元数据提取专家，擅长从各种格式的文件名中提取信息。"},
-            {"role": "user", "content": prompt},
-        ]
+        messages = [{"role": "user", "content": prompt}]
         
         logger.info(f"LLMTranslator: 解析文件名: {filename}")
-        content = self._call_with_failover(messages, temperature=0.3, top_p=0.9)
+        content = self._call_with_failover(messages, temperature=0.3)
         
         if not content:
             return None
         
+        # 提取 JSON 字符串
+        json_str = self._extract_json(content)
+        if not json_str:
+            logger.error(f"LLMTranslator: 无法从响应中提取 JSON")
+            logger.debug(f"原始响应: {content}")
+            return None
+        
         try:
-            # 清理markdown代码块标记
-            content = content.replace("```json", "").replace("```", "").strip()
-            metadata = json.loads(content)
+            metadata = json.loads(json_str)
             
             # 确保所有字段存在
             required_fields = [
@@ -439,10 +473,10 @@ class LLMTranslator:
                 if field not in metadata:
                     metadata[field] = None
             
-            logger.info(f"LLMTranslator: 解析成功: show_name={metadata.get('show_name')}")
+            logger.info(f"LLMTranslator: 解析成功: show_name={metadata.get('show_name')}, episode={metadata.get('episode')}")
             return metadata
             
         except json.JSONDecodeError as e:
             logger.error(f"LLMTranslator: JSON解析失败: {e}")
-            logger.debug(f"原始响应: {content}")
+            logger.debug(f"提取的 JSON: {json_str}")
             return None

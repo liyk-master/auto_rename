@@ -17,6 +17,14 @@ DEFAULT_CONFIG = {
         "use_polling": False,
         "polling_interval": 5,
         "path_mappings": {},  # 用于将下载器返回的路径映射到主机实际路径，例如："/downloads": "F:/Downloads"
+        # 目录监控相关配置
+        "enable_directory_monitor": False,
+        "directory_watch_dir": "",
+        "directory_output_dir": "",
+        "directory_organize_mode": "copy",
+        "directory_scrape_metadata": True,
+        "directory_metadata_format": "nfo",
+        "directory_polling_interval": 5,
     },
     "emos": {"auth_token": "", "base_url": "https://emos.lol"},
     "p123": {
@@ -79,36 +87,10 @@ DEFAULT_CONFIG = {
         "file_log": False,
     },
     "telegram": {"bot_token": "", "chat_id": ""},
-    "llm_translation": {
-        "enabled": False,
-        "strategy": "round_robin",  # round_robin, random, failover, weighted
-        "providers": [],  # 多Provider配置，格式见下方
-        # 兼容旧的单Provider配置
-        "api_key": "",
-        "api_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-        "model": "GLM-4.5-Flash",
-        # Provider配置示例:
-        # providers = [
-        #     {
-        #         "name": "zhipu",
-        #         "api_key": "xxx",
-        #         "api_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-        #         "model": "GLM-4.5-Flash",
-        #         "weight": 3,
-        #         "response_format": "openai",
-        #         "response_path": "choices[0].message.content",
-        #     },
-        #     {
-        #         "name": "deepseek",
-        #         "api_key": "xxx",
-        #         "api_url": "https://api.deepseek.com/v1/chat/completions",
-        #         "model": "deepseek-chat",
-        #         "weight": 2,
-        #         "response_format": "openai",
-        #     },
-        # ]
-    },
     "llm_fallback": {"enabled": False, "max_concurrent": 2},
+    "llm_provider_1": {"name": "", "api_url": "", "api_key": "", "model": "", "enabled": False, "weight": 1, "timeout": 30, "max_retries": 2},
+    "llm_provider_2": {"name": "", "api_url": "", "api_key": "", "model": "", "enabled": False, "weight": 1, "timeout": 30, "max_retries": 2},
+    "llm_provider_3": {"name": "", "api_url": "", "api_key": "", "model": "", "enabled": False, "weight": 1, "timeout": 30, "max_retries": 2},
     "guessit": {
         "enabled": True,  # 是否启用 GuessIt 增强识别
         "prefer_guessit": False,  # 是否优先使用 GuessIt 结果
