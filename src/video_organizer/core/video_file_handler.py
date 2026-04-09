@@ -54,7 +54,6 @@ class VideoFileHandler:
         processing_config: Optional[Dict[str, Any]] = None,
         path_mappings: Optional[Dict[str, str]] = None,
         telegram_config: Optional[Dict[str, Any]] = None,
-        llm_config: Optional[Dict[str, Any]] = None,
         config: Optional[Dict[str, Any]] = None,
         emya_db_config: Optional[Dict[str, Any]] = None,
     ):
@@ -69,7 +68,6 @@ class VideoFileHandler:
             emos_config: Emos配置字典
             processing_config: 处理配置字典
             path_mappings: 路径映射字典 (下载器路径 -> 本地路径)
-            llm_config: LLM 翻译配置
             yun139_config: 139云盘配置字典
         """
         # 初始化日志记录器
@@ -246,8 +244,7 @@ class VideoFileHandler:
             self.renamer = VideoRenamer(
                 tmdb_api_key=tmdb_api_key,
                 naming_rules=naming_rules,
-                llm_config=llm_config,
-                config=config,  # 传递完整配置以启用 llm_fallback
+                config=config,
             )
             self.logger.info("视频重命名器初始化成功")
         except Exception as e:

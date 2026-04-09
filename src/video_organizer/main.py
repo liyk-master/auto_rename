@@ -241,8 +241,7 @@ def force_process_file(file_path: str, config: dict) -> bool:
             processing_config=config.get("processing"),
             path_mappings=monitoring_config.get("path_mappings"),
             telegram_config=config.get("telegram"),
-            llm_config=config.get("llm_translation"),
-            config=config,  # 传递完整配置以启用 llm_fallback
+            config=config,
             emya_db_config=config.get("emya_db"),  # 传递 emya 数据库配置
         )
 

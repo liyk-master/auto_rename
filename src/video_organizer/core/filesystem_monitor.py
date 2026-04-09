@@ -85,7 +85,6 @@ class FileSystemMonitor:
                 else None
             ),
             telegram_config=self.config.get("telegram") if self.config else None,
-            llm_config=self.config.get("llm_translation") if self.config else None,
             config=self.config,
             emya_db_config=self.config.get("emya_db") if self.config else None,
         )

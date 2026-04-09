@@ -37,3 +37,4 @@ setuptools>=60.0.0
 wheel>=0.40.0
 
 cryptography
+websocket

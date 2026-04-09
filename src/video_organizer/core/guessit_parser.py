@@ -248,8 +248,8 @@ class GuessItParser:
         if match:
             return (int(match.group(1)), int(match.group(1)))
         
-        # 纯数字：01, 001（两位及以上数字）
-        match = re.match(r'^(\d{2,})$', stem)
+        # 纯数字：1, 01, 001（一位及以上数字）
+        match = re.match(r'^(\d+)$', stem)
         if match:
             return (int(match.group(1)), int(match.group(1)))
         
@@ -411,7 +411,7 @@ class GuessItParser:
             转换后的元数据字典
         """
         metadata = {
-            'original_filename': Path(filename).name if Path(filename).exists() else filename,
+            'original_filename': filename,  # 保留完整路径
         }
 
         # 类型判断
@@ -441,9 +441,17 @@ class GuessItParser:
                 elif guessit_key == 'season':
                     # 确保季号是整数
                     if isinstance(value, list):
-                        metadata[internal_key] = value[0] if value else None
+                        season_val = value[0] if value else None
                     else:
-                        metadata[internal_key] = value
+                        season_val = value
+                    # 检查 season 是否看起来像年份（如 2008），应该识别为 year
+                    if season_val and isinstance(season_val, int) and 1900 <= season_val <= 2030:
+                        # 将年份值移到 year 字段
+                        metadata['year'] = season_val
+                        logger.debug(f"将 season 值 {season_val} 识别为年份")
+                        metadata['season'] = None
+                    else:
+                        metadata[internal_key] = season_val
                 elif guessit_key == 'episode':
                     # 处理集号（可能是列表，如连集）
                     if isinstance(value, list):
@@ -575,7 +583,7 @@ class GuessItParser:
     def parse_with_fallback(
         self,
         filename: str,
-        regex_metadata: Dict[str, Any],
+        regex_metadata: Optional[Dict[str, Any]],
         prefer_guessit: bool = False
     ) -> Dict[str, Any]:
         """
@@ -588,7 +596,7 @@ class GuessItParser:
 
         Args:
             filename: 视频文件名
-            regex_metadata: 正则表达式解析的结果
+            regex_metadata: 正则表达式解析的结果（可能为 None）
             prefer_guessit: 是否优先使用 guessit 结果
 
         Returns:
@@ -596,11 +604,26 @@ class GuessItParser:
         """
         guessit_metadata = self.parse(filename)
 
+        # 处理 regex_metadata 为 None 的情况
+        if regex_metadata is None:
+            regex_metadata = {}
+
         if not guessit_metadata:
             return regex_metadata
 
         # 合并策略
         merged = regex_metadata.copy()
+
+        # 保留 original_filename：优先使用传入的完整路径 filename
+        # 如果传入的 filename 比 regex_metadata 的更长（通常是完整路径），使用它
+        regex_original = regex_metadata.get('original_filename', '')
+        if filename and len(filename) > len(regex_original):
+            merged['original_filename'] = filename
+            logger.debug(f"使用传入的完整路径作为 original_filename: {filename}")
+        elif regex_original:
+            merged['original_filename'] = regex_original
+        else:
+            merged['original_filename'] = filename
 
         # 关键字段：优先使用正则结果（除非正则结果不合理）
         key_fields = ['show_name', 'season', 'episode', 'year']
@@ -626,6 +649,28 @@ class GuessItParser:
                 elif regex_value and guessit_value:
                     guessit_stripped = guessit_value.strip()
                     regex_stripped = regex_value.strip()
+                    
+                    # 情况0（新增）：GuessIt 的 show_name 是正则 show_name 的前缀
+                    # 且正则 show_name 包含额外信息（如季集、质量标签等）
+                    # 这说明正则把额外信息也当成剧名了，应该使用 GuessIt 结果
+                    if regex_stripped.startswith(guessit_stripped) and len(regex_stripped) > len(guessit_stripped):
+                        # 正则的剧名以 GuessIt 剧名开头，但更长
+                        # 检查额外部分是否包含非标题信息
+                        extra_part = regex_stripped[len(guessit_stripped):].strip()
+                        # 如果额外部分包含季集信息、质量标签等，使用 GuessIt 结果
+                        non_title_patterns = [
+                            r'S\d+E?\d*',  # S03E08 或 S03
+                            r'\d{3,4}p',   # 2160p, 1080p
+                            r'WEB', r'BluRay', r'BDRip',  # 来源
+                            r'H\.?265', r'H\.?264', r'HEVC',  # 编码
+                            r'DD[P]?', r'DTS', r'Atmos',  # 音频
+                            r'DV', r'HDR',  # HDR 格式
+                        ]
+                        has_non_title_info = any(re.search(p, extra_part, re.IGNORECASE) for p in non_title_patterns)
+                        if has_non_title_info:
+                            merged[field] = guessit_value
+                            logger.debug(f"正则剧名 '{regex_value}' 包含额外的非标题信息，使用 GuessIt 结果: {guessit_value}")
+                            continue
                     
                     # 情况1：空格分隔的续集编号（如 "Lethal Weapon 2"）
                     match_space = re.match(r'^(.+?)\s+(\d+)$', guessit_stripped)

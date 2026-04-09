@@ -83,7 +83,6 @@ def main():
     renamer = VideoRenamer(
         tmdb_api_key=api_key,
         naming_rules=naming_conf,
-        llm_config=config.get("llm_translation", {}),
         config=config,  # 传递完整配置对象
     )
     if tmdb_client:
