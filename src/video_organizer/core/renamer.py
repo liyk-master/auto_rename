@@ -3203,11 +3203,18 @@ class VideoRenamer:
                                     metadata["episode"] = llm_result["episode"]
                                 if llm_result.get("season"):
                                     metadata["season"] = llm_result["season"]
+                                if llm_result.get("year"):
+                                    metadata["year"] = llm_result["year"]
                                 
                                 # 确定用于搜索的媒体类型
                                 search_media_type = llm_media_type or media_type_hint
                                 logger.debug(f"TMDB搜索媒体类型: {search_media_type} (llm={llm_media_type}, hint={media_type_hint})")
 
+                                # 优先使用 LLM 返回的年份，否则使用之前提取的年份
+                                llm_search_year = llm_result.get("year") or search_year
+                                if llm_result.get("year"):
+                                    logger.debug(f"使用 LLM 返回的年份: {llm_result.get('year')}")
+                                
                                 # 根据 LLM 返回的 show_name 重新判断搜索语言
                                 llm_show_name_is_chinese = bool(re.search(r"[\u4e00-\u9fff]", llm_show_name))
                                 llm_primary_language = "zh-CN" if llm_show_name_is_chinese else "en-US"
@@ -3218,12 +3225,12 @@ class VideoRenamer:
                                 llm_search_results = self._search_with_language(
                                     llm_show_name,
                                     search_media_type,
-                                    search_year,
+                                    llm_search_year,
                                     llm_primary_language,
                                 ) or self._search_with_language(
                                     llm_show_name,
                                     search_media_type,
-                                    search_year,
+                                    llm_search_year,
                                     llm_secondary_language,
                                 )
 
