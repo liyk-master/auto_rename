@@ -266,6 +266,7 @@ class LLMTranslator:
             "messages": messages,
             "temperature": temperature,
             "max_tokens": 1000,
+            "stream": False,
         }
         
         if top_p is not None:
@@ -438,6 +439,8 @@ class LLMTranslator:
 
 提取规则:
 - show_name: 纯剧名，不含 S/E、年份、分辨率、发布组
+  * 注意：剧名可能使用特殊字符防和谐，如"追·恶""追•恶"应识别为"追恶"
+  * 常见防和谐字符：· • _ - 空格等，需还原为正常剧名
 - season/episode: 数字或 null
 - year: 四位年份数字或 null
 - release_group: 发布组名或 null
