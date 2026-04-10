@@ -1025,18 +1025,9 @@ class VideoRenamer:
             metadata.setdefault("quality_tags", "")
             metadata.setdefault("year", "")
             metadata.setdefault("tmdb_id", "")
-            # 确保season和episode有默认值1，即使它们已经存在但值为None
-            # 但对于电影类型，不设置默认值
-            media_type = metadata.get("media_type", "")
-            if media_type != "movie":
-                if metadata.get("season") is None:
-                    metadata["season"] = 1
-                if metadata.get("episode") is None:
-                    metadata["episode"] = 1
-            else:
-                # 对于电影，删除可能的 season/episode 字段
-                metadata.pop("season", None)
-                metadata.pop("episode", None)
+            # 注意：不在这里设置 season/episode 默认值
+            # 因为会导致媒体类型误判（设了 season/episode 会被认为是电视剧）
+            # 默认值应在 TMDB 搜索成功后根据实际结果设置
 
             # 8. 确定分类信息
             try:
