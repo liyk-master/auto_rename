@@ -3208,17 +3208,23 @@ class VideoRenamer:
                                 search_media_type = llm_media_type or media_type_hint
                                 logger.debug(f"TMDB搜索媒体类型: {search_media_type} (llm={llm_media_type}, hint={media_type_hint})")
 
+                                # 根据 LLM 返回的 show_name 重新判断搜索语言
+                                llm_show_name_is_chinese = bool(re.search(r"[\u4e00-\u9fff]", llm_show_name))
+                                llm_primary_language = "zh-CN" if llm_show_name_is_chinese else "en-US"
+                                llm_secondary_language = "en-US" if llm_show_name_is_chinese else "zh-CN"
+                                logger.debug(f"LLM show_name '{llm_show_name}' 包含中文: {llm_show_name_is_chinese}, 搜索语言: {llm_primary_language}")
+
                                 # 用 LLM 返回的 show_name 搜索 TMDB
                                 llm_search_results = self._search_with_language(
                                     llm_show_name,
                                     search_media_type,
                                     search_year,
-                                    primary_language,
+                                    llm_primary_language,
                                 ) or self._search_with_language(
                                     llm_show_name,
                                     search_media_type,
                                     search_year,
-                                    secondary_language,
+                                    llm_secondary_language,
                                 )
 
                                 if llm_search_results:
