@@ -3237,6 +3237,9 @@ class VideoRenamer:
                                 if llm_search_results:
                                     logger.info(f"LLM识别后搜索返回 {len(llm_search_results)} 个结果")
                                     results = llm_search_results[:5]
+                                    # 重要：用 LLM 返回的 show_name 作为后续得分计算的搜索词
+                                    search_term = llm_show_name
+                                    search_year = llm_search_year
                                 else:
                                     logger.warning(f"LLM识别后TMDB搜索无结果，识别失败")
                             else:
