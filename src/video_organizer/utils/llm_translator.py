@@ -312,7 +312,23 @@ class LLMTranslator:
         temperature: float = 0.6,
         top_p: float = 0.95,
     ) -> Optional[str]:
-        """带故障转移的API调用"""
+        """
+        根据策略调用API
+        
+        - round_robin/random/weighted：负载均衡模式，只尝试一个 provider
+        - failover：故障转移模式，第一个失败才尝试下一个
+        """
+        # 负载均衡模式：只尝试一个 provider
+        if self.strategy != LoadBalanceStrategy.FAILOVER:
+            provider = self._select_provider()
+            if provider:
+                content = self._call_api(provider, messages, temperature, top_p)
+                if content:
+                    return content
+            logger.error("LLMTranslator: Provider 调用失败")
+            return None
+        
+        # 故障转移模式：尝试所有 provider 直到成功
         tried_providers = set()
         
         for _ in range(len(self.providers)):
