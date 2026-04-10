@@ -3339,23 +3339,7 @@ class VideoRenamer:
                 ):
                     score = 500
 
-                # 年份匹配判断：如果搜索有年份但结果年份不匹配，大幅降低得分
-                year_penalty = 0
-                if search_year:
-                    result_date = result.get("first_air_date" if result.get("media_type") == "tv" else "release_date", "")
-                    result_year = result_date[:4] if result_date else ""
-                    if result_year and str(result_year) != str(search_year):
-                        # 年份不匹配，扣分（根据标题匹配程度调整扣分）
-                        # 完全匹配扣分少，非匹配扣分多
-                        if score >= 15000:  # 完全或模糊匹配
-                            year_penalty = 5000
-                        elif score >= 500:  # 部分匹配
-                            year_penalty = 10000
-                        else:  # 无匹配（仅流行度）
-                            year_penalty = 15000
-                        logger.debug(f"年份不匹配: 搜索年份={search_year}, 结果年份={result_year}, 扣分={year_penalty}")
-
-                total_score = score + result.get("popularity", 0) - year_penalty
+                total_score = score + result.get("popularity", 0)
                 return total_score
 
             # 按得分排序
