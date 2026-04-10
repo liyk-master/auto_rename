@@ -3192,7 +3192,7 @@ class VideoRenamer:
                                 # 优先使用 LLM 返回的 media_type
                                 if llm_result.get("media_type"):
                                     llm_media_type = llm_result.get("media_type")
-                                    logger.debug(f"LLM 返回 media_type: {llm_media_type}")
+                                    logger.info(f"LLM 返回 media_type: {llm_media_type}")
                                 # 如果 LLM 返回了 episode 或 season，判断为电视剧
                                 elif llm_result.get("episode") or llm_result.get("season"):
                                     llm_media_type = "tv"
