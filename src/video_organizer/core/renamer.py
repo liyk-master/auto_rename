@@ -68,14 +68,14 @@ class VideoRenamer:
     DEFAULT_RELEASE_GROUP_MAPPING = {
         # ====== 国漫字幕组（明确映射到 drama）======
         # 这些字幕组主要做国产动漫/电视剧，优先使用 drama 以便通过 TMDB 信息判断子分类
-        "VARYG": "drama",
-        "Mortal": "drama",
-        "Linn": "drama",
-        "锅巴": "drama",
-        "未定": "drama",
-        "动漫花园": "drama",
-        "GM-Team": "drama",
-        "GM Team": "drama",
+        "VARYG": "anime",
+        "Mortal": "anime",
+        "Linn": "anime",
+        "锅巴": "anime",
+        "未定": "anime",
+        "动漫花园": "anime",
+        "GM-Team": "anime",
+        "GM Team": "anime",
         # ====== 动漫字幕组 ======
         "VCB-Studio": "anime",
         "vcb-studio": "anime",
