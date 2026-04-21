@@ -307,28 +307,45 @@ class GuessItParser:
                 clean_name = re.sub(r'\s*\d{4}\s*$', '', clean_name)
                 clean_name = clean_name.strip()
                 
-                # 排除纯季目录名
-                if not clean_name or re.match(r'^(第\d+季|Season\s*\d+|S\d+)$', clean_name, re.IGNORECASE):
+                # 排除纯季目录名（包括中文数字）
+                is_season_dir = (
+                    re.match(r'^(第\d+季|Season\s*\d+|S\d+)$', clean_name, re.IGNORECASE) or
+                    any(clean_name == f'第{cn}季' for cn in self.CHINESE_NUM_MAP.keys())
+                )
+                if not clean_name or is_season_dir:
                     continue
                 
                 # 检查名称中是否包含嵌入的季号信息
+                # 无论 season 是否已设置，都要从剧名中去除季号
                 # 格式1：剧名 第N季（如 "修罗武神 第二季"）
                 embedded_season_match = re.search(r'\s*第(\d+)季\s*$', clean_name)
-                if embedded_season_match and season is None:
-                    season = int(embedded_season_match.group(1))
+                if embedded_season_match:
+                    if season is None:
+                        season = int(embedded_season_match.group(1))
                     clean_name = clean_name[:embedded_season_match.start()].strip()
                 
                 # 格式2：剧名 第N季（中文数字，如 "修罗武神 第二季"）
                 for chinese_num, num in self.CHINESE_NUM_MAP.items():
                     cn_match = re.search(rf'\s*第{chinese_num}季\s*$', clean_name)
-                    if cn_match and season is None:
-                        season = num
+                    if cn_match:
+                        if season is None:
+                            season = num
                         clean_name = clean_name[:cn_match.start()].strip()
                         break
                 
                 # 格式3：剧名 Season N（如 "Show Name Season 2"）
                 embedded_season_match_en = re.search(r'\s+Season\s*(\d+)\s*$', clean_name, re.IGNORECASE)
-                if embedded_season_match_en and season is None:
+                if embedded_season_match_en:
+                    if season is None:
+                        season = int(embedded_season_match_en.group(1))
+                    clean_name = clean_name[:embedded_season_match_en.start()].strip()
+                
+                # 格式4：剧名 SN 或 S0N（如 "Show Name S02"）
+                embedded_s_match = re.search(r'\s+S(\d+)\s*$', clean_name, re.IGNORECASE)
+                if embedded_s_match:
+                    if season is None:
+                        season = int(embedded_s_match.group(1))
+                    clean_name = clean_name[:embedded_s_match.start()].strip()
                     season = int(embedded_season_match_en.group(1))
                     clean_name = clean_name[:embedded_season_match_en.start()].strip()
                 
@@ -357,26 +374,49 @@ class GuessItParser:
         path = Path(original_filename)
         stem = path.stem
         
-        # 如果 show_name 被识别为 "第1集" 或类似的集号格式
+        # 如果 show_name 被识别为 "第1集" 或类似的集号格式，或被误识别为文件扩展名
         show_name = metadata.get('show_name', '')
         
-        # 检查 show_name 是否是无效的集号格式
-        invalid_patterns = [
-            r'^第\d+集',
-            r'^第\d+话',
-            r'^第\d+話',
-            r'^第[一二三四五六七八九十]+集',
-            r'^第[一二三四五六七八九十]+话',
-            r'^[Ee][Pp]?\d+',
-        ]
+        # 使用 _is_invalid_show_name 方法判断剧名是否无效
+        # 这会检查：纯数字、季集格式、文件扩展名等无效情况
+        is_invalid_show_name = self._is_invalid_show_name(show_name)
         
-        is_invalid_show_name = any(re.match(p, show_name) for p in invalid_patterns)
+        # 清理剧名中的分类标签和季数范围
+        if show_name:
+            original_show_name = show_name
+            # 去除开头的分类标签（如 "美剧"、"国漫"、"日漫"、"韩剧" 等）
+            category_tags = ['美剧', '国漫', '日漫', '韩剧', '日剧', '泰剧', '英剧', '欧美剧', '国产剧', '动漫', '动画']
+            for tag in category_tags:
+                if show_name.startswith(tag):
+                    show_name = show_name[len(tag):].strip()
+                    logger.debug(f"去除分类标签 '{tag}': '{original_show_name}' -> '{show_name}'")
+                    break
+            
+            # 去除季数范围（如 "（1-5季）"、"（第一季）"、"(1-5季)" 等）
+            show_name = re.sub(r'\s*[（\(][^）\)]*季[）\)]\s*$', '', show_name)
+            show_name = re.sub(r'\s*[（\(]\d+[-~]\d+季[）\)]\s*$', '', show_name)
+            show_name = show_name.strip()
+            
+            if show_name != original_show_name:
+                metadata['show_name'] = show_name
+                logger.debug(f"清理剧名: '{original_show_name}' -> '{show_name}'")
         
         if is_invalid_show_name:
             # 尝试从父目录获取剧名
             show_name_from_path, season_from_path = self._extract_show_info_from_path(path)
             
             if show_name_from_path:
+                # 检查从父目录提取的剧名是否以"短数字+中文"开头
+                # 如 "4驭灵师" 可能是分类编号+剧名，应去除数字
+                # 但 "唐探1900" 这种末尾数字是剧名的一部分，不应去除
+                # 规则：只去除开头的1-2位数字+中文的情况
+                match = re.match(r'^(\d{1,2})([\u4e00-\u9fff].*)$', show_name_from_path)
+                if match:
+                    # 去除开头的短数字，保留中文部分
+                    cleaned_name = match.group(2)
+                    logger.debug(f"去除父目录剧名开头的分类编号: '{show_name_from_path}' -> '{cleaned_name}'")
+                    show_name_from_path = cleaned_name
+                
                 metadata['show_name'] = show_name_from_path
                 logger.debug(f"修正剧名: '{show_name}' -> '{show_name_from_path}' (来自父目录)")
                 
@@ -470,7 +510,12 @@ class GuessItParser:
 
         # 清理标题
         if 'show_name' in metadata:
-            metadata['show_name'] = self._clean_title(metadata['show_name'])
+            show_name_val = metadata['show_name']
+            # 如果 show_name 是 list，合并成字符串
+            if isinstance(show_name_val, list):
+                show_name_val = ' '.join(str(v) for v in show_name_val)
+                logger.debug(f"GuessIt title 是 list，合并为: {show_name_val}")
+            metadata['show_name'] = self._clean_title(show_name_val)
 
         return metadata
 
@@ -576,6 +621,33 @@ class GuessItParser:
             "Special", "OVA", "ONA", "NC", "EXTRAS"
         ]
         if show_name.upper() in fragment_keywords:
+            return True
+
+        # 文件扩展名被误识别为剧名（如 "strm", "mp4", "mkv" 等）
+        # 当 GuessIt 解析特殊文件名时，可能将扩展名误识别为 title
+        # 也检查剧名以扩展名结尾的情况（如 "FLUX strm"）
+        video_extensions = [
+            "strm", "mp4", "mkv", "avi", "mov", "wmv", "flv",
+            "webm", "m4v", "ts", "m2ts", "iso", "vob"
+        ]
+        if show_name.lower() in video_extensions:
+            return True
+        # 检查剧名是否以扩展名结尾（如 "FLUX strm"）
+        for ext in video_extensions:
+            if show_name.lower().endswith(' ' + ext) or show_name.lower().endswith('.' + ext):
+                return True
+
+        # 流媒体平台名称被误识别为剧名
+        # 当文件名只包含季集和技术标签时，GuessIt 可能将流媒体平台识别为 title
+        streaming_services = [
+            "Apple TV", "Apple TV+", "AppleTV", "AppleTV+",
+            "Netflix", "NF", "Disney+", "Disney", "DisneyPlus",
+            "HBO", "HBO Max", "HBOMax", "Amazon", "AMZN", "Prime",
+            "Amazon Prime", "Apple+", "iTunes", "Hulu", "Peacock",
+            "Paramount+", "Paramount", "Showtime", "Crunchyroll",
+            "Funimation", "VRV", "Tubi", "Pluto TV", "Roku",
+        ]
+        if show_name in streaming_services or show_name.lower() in [s.lower() for s in streaming_services]:
             return True
 
         return False

@@ -984,8 +984,8 @@ class VideoRenamer:
                     show_name = re.sub(r"^\[[^\]]+\]\s*", "", show_name)
                     # Remove Chinese brackets and keep content (【我推的孩子】 -> 我推的孩子)
                     show_name = re.sub(r"【([^】]+)】", r"\1", show_name)
-                    # Remove release group without brackets at the beginning (including space-separated)
-                    show_name = re.sub(r"^[A-Z]{2,6}(?:[._]|\s)\s*", "", show_name)
+                    # 注意：移除了原有的正则 r"^[A-Z]{2,6}(?:[._]|\s)\s*"
+                    # 因为它太宽泛，会误伤正常剧名如 "LIAR GAME" 中的 "LIAR "
                     # Remove common release group tags
                     for tag in [
                         "AHTV",
@@ -3322,7 +3322,16 @@ class VideoRenamer:
                     normalized_search in normalized_title
                     and len(normalized_search) > 1
                 ):
-                    score = 1000
+                    # # 检查标题是否明显比搜索词长（超过30%）
+                    # # 如果是，这可能是衍生作品（如"黑袍纠察队：恶魔"），应降低得分
+                    # title_len = len(normalized_title)
+                    # search_len = len(normalized_search)
+                    # if title_len > search_len * 1.3:
+                    #     # 标题明显更长，降低得分
+                    #     score = 500
+                    #     logger.debug(f"标题 '{normalized_title}' 明显长于搜索词 '{normalized_search}'，降低得分")
+                    # else:
+                        score = 1000
                 # 4. 标题是搜索词的子集（在标准化后的字符串上）
                 elif (
                     normalized_title in normalized_search
