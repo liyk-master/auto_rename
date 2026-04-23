@@ -99,8 +99,9 @@ class GuessItParser:
             logger.error(f"GuessIt 解析失败: {e}")
             return {}
 
-    # 中文数字映射
+    # 中文数字映射（简体+繁体）
     CHINESE_NUM_MAP = {
+        # 简体
         '零': 0, '一': 1, '二': 2, '三': 3, '四': 4,
         '五': 5, '六': 6, '七': 7, '八': 8, '九': 9,
         '十': 10, '十一': 11, '十二': 12, '十三': 13, '十四': 14,
@@ -108,7 +109,111 @@ class GuessItParser:
         '二十': 20, '二十一': 21, '二十二': 22, '二十三': 23, '二十四': 24,
         '二十五': 25, '二十六': 26, '二十七': 27, '二十八': 28, '二十九': 29,
         '三十': 30,
+        # 繁体
+        '壹': 1, '贰': 2, '叁': 3, '肆': 4, '伍': 5,
+        '陆': 6, '柒': 7, '捌': 8, '玖': 9, '拾': 10,
+        '廿': 20,  # 二十的简写
     }
+
+    # 罗马数字映射（支持 I, II, III 到 XXX）
+    ROMAN_NUM_MAP = {
+        'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5,
+        'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10,
+        'XI': 11, 'XII': 12, 'XIII': 13, 'XIV': 14, 'XV': 15,
+        'XVI': 16, 'XVII': 17, 'XVIII': 18, 'XIX': 19, 'XX': 20,
+        'XXI': 21, 'XXII': 22, 'XXIII': 23, 'XXIV': 24, 'XXV': 25,
+        'XXVI': 26, 'XXVII': 27, 'XXVIII': 28, 'XXIX': 29, 'XXX': 30,
+    }
+
+    def _extract_season_from_string(self, text: str) -> Optional[int]:
+        """
+        从字符串中提取季号
+        支持多种格式：第2季、第 2 季、第二季、Season 2、S2、Season I 等
+
+        Args:
+            text: 要解析的字符串
+
+        Returns:
+            季号（整数），如果无法识别则返回 None
+        """
+        if not text or not isinstance(text, str):
+            return None
+
+        text = text.strip()
+        if not text:
+            return None
+
+        # 统一的季号提取模式（按优先级排序）
+        season_patterns = [
+            # 模式1: 数字季（支持空格）：第2季、第 2 季、第02季、第 02 季
+            (r'^第\s*(\d+)\s*季$', lambda m: int(m.group(1))),
+            # 模式2: 中文数字季（支持空格）：第二季、第 二 季
+            (r'^第\s*([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾廿]+)\s*季$',
+             lambda m: self.CHINESE_NUM_MAP.get(
+                 m.group(1).translate(str.maketrans('壹贰叁肆伍陆柒捌玖拾', '一二三四五六七八九十'))
+             )),
+            # 模式3: 英文 Season（支持空格）：Season 2、Season02
+            (r'^Season\s*(\d+)$', lambda m: int(m.group(1)), re.IGNORECASE),
+            # 模式4: 罗马数字季：Season I、Season II
+            (r'^Season\s*([IVXLC]+)$', lambda m: self.ROMAN_NUM_MAP.get(m.group(1).upper()), re.IGNORECASE),
+            # 模式5: 简写 Sxx：S2、S02
+            (r'^S(\d+)$', lambda m: int(m.group(1)), re.IGNORECASE),
+            # 模式6: 中文简写：S2季、S02季
+            (r'^S(\d+)季$', lambda m: int(m.group(1)), re.IGNORECASE),
+        ]
+
+        for pattern_config in season_patterns:
+            if len(pattern_config) == 2:
+                pattern, extractor = pattern_config
+                flags = 0
+            else:
+                pattern, extractor, flags = pattern_config
+
+            match = re.match(pattern, text, flags)
+            if match:
+                try:
+                    season = extractor(match)
+                    if season is not None and isinstance(season, int) and season >= 0:
+                        return season
+                except (ValueError, TypeError):
+                    continue
+
+        return None
+
+    def _is_pure_season_directory(self, text: str) -> bool:
+        """
+        检查目录名是否仅为季号（不含剧名）
+        例如："第2季"、"第二季"、"Season 2"、"S2" 都是纯季目录
+        而 "剧名 第2季" 不是纯季目录
+
+        Args:
+            text: 目录名
+
+        Returns:
+            如果是纯季目录返回 True，否则返回 False
+        """
+        if not text or not isinstance(text, str):
+            return False
+
+        text = text.strip()
+        if not text:
+            return False
+
+        # 检查是否完全匹配纯季号格式
+        # 模式：第N季、第 N 季、第二季、第 二 季、Season N、S N、SN
+        pure_season_patterns = [
+            r'^第\s*\d+\s*季$',
+            r'^第\s*[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾廿]+\s*季$',
+            r'^Season\s*\d+$',
+            r'^Season\s*[IVXLC]+$',
+            r'^S\d+$',
+        ]
+
+        for pattern in pure_season_patterns:
+            if re.match(pattern, text, re.IGNORECASE):
+                return True
+
+        return False
 
     def _preprocess_chinese_filename(self, filename: str) -> str:
         """
@@ -267,98 +372,107 @@ class GuessItParser:
         """
         show_name = None
         season = None
-        
+
         # 遍历路径的父目录
         current = path.parent
         parent_parts = list(current.parts)
-        
+
         # 从后向前查找剧名和季号
         for i, part in enumerate(reversed(parent_parts)):
             part_str = str(part)
-            
-            # 检查是否是季目录
-            if season is None:
-                # 中文季：第一季、第二季...
-                for chinese_num, num in self.CHINESE_NUM_MAP.items():
-                    if part_str == f'第{chinese_num}季':
-                        season = num
-                        continue
-                
-                # 数字季：第1季、Season 1、S01、S1
-                match = re.match(r'^第(\d+)季$', part_str)
-                if match:
-                    season = int(match.group(1))
+
+            # 检查是否是季目录（使用统一的提取模式）
+            extracted_season = self._extract_season_from_string(part_str)
+            if extracted_season is not None:
+                if season is None:
+                    season = extracted_season
+                # 如果是纯季号目录，跳过，继续查找剧名
+                is_pure_season = self._is_pure_season_directory(part_str)
+                if is_pure_season:
                     continue
-                
-                match = re.match(r'^Season\s*(\d+)$', part_str, re.IGNORECASE)
-                if match:
-                    season = int(match.group(1))
-                    continue
-                
-                match = re.match(r'^S(\d+)$', part_str, re.IGNORECASE)
-                if match:
-                    season = int(match.group(1))
-                    continue
-            
+                # 如果不是纯季目录（目录名包含剧名+季号），继续处理剧名提取
+
             # 如果还没找到剧名，检查当前部分
             if show_name is None:
                 # 清理父目录名中的年份和其他干扰信息
                 clean_name = re.sub(r'[（\(]\d{4}[）\)]', '', part_str)
                 clean_name = re.sub(r'\s*\d{4}\s*$', '', clean_name)
                 clean_name = clean_name.strip()
-                
-                # 排除纯季目录名（包括中文数字）
-                is_season_dir = (
-                    re.match(r'^(第\d+季|Season\s*\d+|S\d+)$', clean_name, re.IGNORECASE) or
-                    any(clean_name == f'第{cn}季' for cn in self.CHINESE_NUM_MAP.keys())
-                )
-                if not clean_name or is_season_dir:
+
+                if not clean_name:
                     continue
-                
-                # 检查名称中是否包含嵌入的季号信息
-                # 无论 season 是否已设置，都要从剧名中去除季号
-                # 格式1：剧名 第N季（如 "修罗武神 第二季"）
-                embedded_season_match = re.search(r'\s*第(\d+)季\s*$', clean_name)
-                if embedded_season_match:
+
+                # 检查名称中是否包含嵌入的季号信息（使用 search 模式，支持剧名末尾的季号）
+                # 支持的格式：
+                # - 第2季、第 2 季、第二季、第 二 季
+                # - Season 2、Season02、Season I
+                # - S2、S02
+                embedded_season = self._extract_season_from_filename(clean_name)
+                if embedded_season is not None:
                     if season is None:
-                        season = int(embedded_season_match.group(1))
-                    clean_name = clean_name[:embedded_season_match.start()].strip()
-                
-                # 格式2：剧名 第N季（中文数字，如 "修罗武神 第二季"）
-                for chinese_num, num in self.CHINESE_NUM_MAP.items():
-                    cn_match = re.search(rf'\s*第{chinese_num}季\s*$', clean_name)
-                    if cn_match:
-                        if season is None:
-                            season = num
-                        clean_name = clean_name[:cn_match.start()].strip()
-                        break
-                
-                # 格式3：剧名 Season N（如 "Show Name Season 2"）
-                embedded_season_match_en = re.search(r'\s+Season\s*(\d+)\s*$', clean_name, re.IGNORECASE)
-                if embedded_season_match_en:
-                    if season is None:
-                        season = int(embedded_season_match_en.group(1))
-                    clean_name = clean_name[:embedded_season_match_en.start()].strip()
-                
-                # 格式4：剧名 SN 或 S0N（如 "Show Name S02"）
-                embedded_s_match = re.search(r'\s+S(\d+)\s*$', clean_name, re.IGNORECASE)
-                if embedded_s_match:
-                    if season is None:
-                        season = int(embedded_s_match.group(1))
-                    clean_name = clean_name[:embedded_s_match.start()].strip()
-                    season = int(embedded_season_match_en.group(1))
-                    clean_name = clean_name[:embedded_season_match_en.start()].strip()
-                
-                # 格式4：剧名 SN 或 S0N（如 "Show Name S02"）
-                embedded_s_match = re.search(r'\s+S(\d+)\s*$', clean_name, re.IGNORECASE)
-                if embedded_s_match and season is None:
-                    season = int(embedded_s_match.group(1))
-                    clean_name = clean_name[:embedded_s_match.start()].strip()
-                
+                        season = embedded_season
+                    # 从剧名中移除季号部分（使用正则匹配并移除）
+                    # 匹配可能的季号格式并从末尾移除
+                    clean_name = re.sub(r'\s*(?:第\s*[\d一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾廿]+\s*季|Season\s*[\dIVXLC]+|S\d+)\s*$', '', clean_name, flags=re.IGNORECASE).strip()
+
                 if clean_name:
                     show_name = clean_name
-        
+
         return (show_name, season)
+
+    def _extract_season_from_filename(self, text: str) -> Optional[int]:
+        """
+        从包含剧名的字符串中提取季号（搜索模式）
+        支持剧名末尾的季号格式，如 "Show Name 第2季"、"Show Name Season 2"
+
+        Args:
+            text: 包含剧名和可能的季号的字符串
+
+        Returns:
+            季号（整数），如果无法识别则返回 None
+        """
+        if not text or not isinstance(text, str):
+            return None
+
+        text = text.strip()
+        if not text:
+            return None
+
+        # 搜索季号格式（在字符串中查找）
+        # 模式：第2季、第 2 季、第二季、第 二 季、Season 2、S2
+        patterns = [
+            # 数字季：第2季、第 2 季、第02季（后跟空格或非季字符）
+            (r'第\s*(\d+)\s*季(?:\s|[^季\w]|$)', lambda m: int(m.group(1))),
+            # 中文数字季：第二季、第 二 季
+            (r'第\s*([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾廿]+)\s*季(?:\s|[^季\w]|$)',
+             lambda m: self.CHINESE_NUM_MAP.get(
+                 m.group(1).translate(str.maketrans('壹贰叁肆伍陆柒捌玖拾', '一二三四五六七八九十'))
+             )),
+            # 英文 Season：Season 2、Season02（后跟空格或非单词字符）
+            (r'Season\s*(\d+)(?:\s|\W|$)', lambda m: int(m.group(1)), re.IGNORECASE),
+            # 罗马数字季：Season I、Season II
+            (r'Season\s*([IVXLC]+)(?:\s|\W|$)', lambda m: self.ROMAN_NUM_MAP.get(m.group(1).upper()), re.IGNORECASE),
+            # 简写 Sxx：S2、S02（后跟空格或非单词字符）
+            (r'S(\d+)(?:\s|\W|$)', lambda m: int(m.group(1)), re.IGNORECASE),
+        ]
+
+        for pattern_config in patterns:
+            if len(pattern_config) == 2:
+                pattern, extractor = pattern_config
+                flags = 0
+            else:
+                pattern, extractor, flags = pattern_config
+
+            match = re.search(pattern, text, flags)
+            if match:
+                try:
+                    season = extractor(match)
+                    if season is not None and isinstance(season, int) and season >= 0:
+                        return season
+                except (ValueError, TypeError):
+                    continue
+
+        return None
 
     def _postprocess_chinese_result(self, metadata: Dict, original_filename: str) -> Dict:
         """
@@ -391,12 +505,26 @@ class GuessItParser:
                     show_name = show_name[len(tag):].strip()
                     logger.debug(f"去除分类标签 '{tag}': '{original_show_name}' -> '{show_name}'")
                     break
-            
+
+            # 从剧名中提取季号（如果还没有季号）
+            # 支持格式：剧名 第2季、剧名 第 2 季、剧名 Season 2、剧名 S2
+            embedded_season = self._extract_season_from_filename(show_name)
+            if embedded_season is not None:
+                # 如果还没有季号，使用提取的季号
+                if metadata.get('season') is None:
+                    metadata['season'] = embedded_season
+                    logger.debug(f"从剧名中提取季号: {embedded_season}")
+                # 从剧名中移除季号部分
+                show_name = re.sub(
+                    r'\s*(?:第\s*[\d一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾廿]+\s*季|Season\s*[\dIVXLC]+|S\d+)\s*$',
+                    '', show_name, flags=re.IGNORECASE
+                ).strip()
+
             # 去除季数范围（如 "（1-5季）"、"（第一季）"、"(1-5季)" 等）
             show_name = re.sub(r'\s*[（\(][^）\)]*季[）\)]\s*$', '', show_name)
             show_name = re.sub(r'\s*[（\(]\d+[-~]\d+季[）\)]\s*$', '', show_name)
             show_name = show_name.strip()
-            
+
             if show_name != original_show_name:
                 metadata['show_name'] = show_name
                 logger.debug(f"清理剧名: '{original_show_name}' -> '{show_name}'")
@@ -769,12 +897,18 @@ class GuessItParser:
             elif field == 'season' and guessit_value is not None:
                 # 特殊处理：如果正则 season 是默认值 1，而 GuessIt 有明确的 season，使用 GuessIt
                 # 检查文件名或路径中是否有明确的季号标识
+                # 使用统一的季号提取模式检测
                 has_explicit_season = bool(
                     re.search(r'\[S\d+\]|\(S\d+\)|\.S\d+\.|-S\d+-', filename, re.IGNORECASE) or
                     re.search(r'S\d+E\d+', filename, re.IGNORECASE) or
-                    re.search(r'第\d+季', filename) or
-                    re.search(r'第[一二三四五六七八九十]+季', filename) or
-                    re.search(r'Season\s*\d+', filename, re.IGNORECASE)
+                    # 支持空格的季号格式：第 2 季、第 02 季
+                    re.search(r'第\s*\d+\s*季', filename) or
+                    # 支持空格的中文数字季：第 二 季
+                    re.search(r'第\s*[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾廿]+\s*季', filename) or
+                    # 支持空格的英文季：Season 2、Season 02
+                    re.search(r'Season\s*\d+', filename, re.IGNORECASE) or
+                    # 罗马数字季：Season I、Season II
+                    re.search(r'Season\s*[IVXLC]+', filename, re.IGNORECASE)
                 )
                 # 转换为整数进行比较（regex_value 可能是字符串）
                 try:
