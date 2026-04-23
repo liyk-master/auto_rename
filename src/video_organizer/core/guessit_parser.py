@@ -423,7 +423,7 @@ class GuessItParser:
     def _extract_season_from_filename(self, text: str) -> Optional[int]:
         """
         从包含剧名的字符串中提取季号（搜索模式）
-        支持剧名末尾的季号格式，如 "Show Name 第2季"、"Show Name Season 2"
+        支持剧名末尾的季号格式，如 "Show Name 第2季"、"Show Name Season 2"、"Show Name 2"
 
         Args:
             text: 包含剧名和可能的季号的字符串
@@ -439,7 +439,7 @@ class GuessItParser:
             return None
 
         # 搜索季号格式（在字符串中查找）
-        # 模式：第2季、第 2 季、第二季、第 二 季、Season 2、S2
+        # 模式：第2季、第 2 季、第二季、第 二 季、Season 2、S2、Show Name 2
         patterns = [
             # 数字季：第2季、第 2 季、第02季（后跟空格或非季字符）
             (r'第\s*(\d+)\s*季(?:\s|[^季\w]|$)', lambda m: int(m.group(1))),
@@ -454,6 +454,13 @@ class GuessItParser:
             (r'Season\s*([IVXLC]+)(?:\s|\W|$)', lambda m: self.ROMAN_NUM_MAP.get(m.group(1).upper()), re.IGNORECASE),
             # 简写 Sxx：S2、S02（后跟空格或非单词字符）
             (r'S(\d+)(?:\s|\W|$)', lambda m: int(m.group(1)), re.IGNORECASE),
+            # 末尾直接跟数字：Show Name 2、Show Name 02
+            # 条件：
+            # 1. 数字前不能是"第"、"E"、"Ep"、"P"等集号标记
+            # 2. 数字前不能有其他数字（避免匹配年份的前两位）
+            # 3. 数字后不能是"集"、"话"、"話"等集号后缀
+            # 4. 数字后不能跟更多数字（避免匹配年份的后两位）
+            (r'(?<![第EePp\d])(?<![集话話])(\d{1,2})(?![集话話\d])(?=\s|\W|$)', lambda m: int(m.group(1))),
         ]
 
         for pattern_config in patterns:
