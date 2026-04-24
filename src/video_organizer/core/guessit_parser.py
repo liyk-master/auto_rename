@@ -82,13 +82,82 @@ class GuessItParser:
             # 中文剧集格式预处理
             # 如果文件名是纯中文格式（如 "第1集.strm"），尝试从父目录提取剧名
             preprocessed_filename = self._preprocess_chinese_filename(filename)
-            
+
+            # PT 命名法检测：在预处理之前检查，因为 PT 模式需要原始的 "Title.20" 格式
+            # 匹配 "[中文标题].英文标题.年份.其他标签.分辨率" 格式
+            # 例如：[第二十条].Article.20.2024.60FPS.2160p...
+            # 注意：年份和分辨率之间可能有其他标签（如 60FPS、HDR 等）
+            # 修复：en_title 使用贪婪匹配 +，确保 "Article.20" 这样的标题被完整捕获
+            # 从完整路径中提取文件名部分进行匹配
+            filename_only = Path(preprocessed_filename).name
+            pt_pattern = r'^\[(?P<cn_title>[\u4e00-\u9fff]+)\]\.(?P<en_title>[A-Za-z0-9\'"\.\s]+)\.(?P<year>\d{4})\.(?:[^\.]+\.)*?(?P<resolution>2160p|4K|UHD|FHD|1080p|720p|480p|360p|240p)'
+            pt_match = re.search(pt_pattern, filename_only)
+            if pt_match:
+                cn_title = pt_match.group('cn_title')
+                en_title = pt_match.group('en_title').strip()
+                year = pt_match.group('year')
+                resolution = pt_match.group('resolution')
+
+                # 提取剩余部分中的质量标签和发布组
+                # 注意：必须在 filename_only 上切片，因为 pt_match 是在 filename_only 上匹配的
+                remaining = filename_only[pt_match.end():]
+                logger.debug(f"PT 剩余部分: '{remaining}'")
+
+                # 从剩余部分提取质量标签（如 WEB-DL, H.265, DTS 等）
+                quality_tags = []
+                # 简单的标签提取：按点分割，过滤掉空字符串
+                parts = [p for p in remaining.split('.') if p]
+                for part in parts:
+                    # 跳过文件扩展名
+                    if part.lower() in ['strm', 'mp4', 'mkv', 'avi']:
+                        continue
+                    # 常见的质量标签
+                    if any(k in part.upper() for k in ['WEB', 'DL', 'H.', 'X.', 'DTS', 'AC3', 'AAC', 'FLAC']):
+                        quality_tags.append(part)
+                    elif 'P' in part and any(c.isdigit() for c in part):
+                        quality_tags.append(part)
+
+                # 提取发布组（最后一个 - 之后的部分）
+                release_group = None
+                if '-' in remaining:
+                    release_group = remaining.split('-')[-1].strip()
+                    # 移除扩展名
+                    if '.' in release_group:
+                        release_group = release_group.split('.')[0]
+
+                # 直接构造元数据，跳过 GuessIt（避免误判为电视剧）
+                logger.debug(f"PT 命名法检测到，直接构造元数据: cn_title={cn_title}, en_title={en_title}, year={year}")
+                # quality_tags 需要是字符串（用点连接），以便与后续代码兼容
+                quality_tags_str = '.'.join(quality_tags) if quality_tags else None
+                metadata = {
+                    'show_name': cn_title,  # 使用中文标题作为主标题
+                    'en_title': en_title,
+                    'year': int(year),
+                    'media_type': 'movie',  # 强制指定为电影
+                    'origin_filename': Path(filename).name,
+                    'quality_tags': quality_tags_str,
+                    'release_group': release_group,
+                    'screen_size': resolution,
+                    'extension': Path(filename).suffix.lower().lstrip('.'),  # 添加扩展名
+                }
+                logger.debug(f"PT 命名法直接构造结果: {metadata}")
+                return metadata
+
+            # PT 命名法预处理：处理 "英文标题.数字" 模式（如 "Article.20"）
+            # GuessIt 会把这种格式错误拆分为 title='Article', episode=20
+            # 我们的处理：把 "Title.20" 转换成 "Title 20"，让 GuessIt 正确识别完整标题
+            # 注意：只处理"字母单词.数字"模式，不处理"数字.数字"（如 2160p）
+            preprocessed_filename = re.sub(r'(?<!\d)([A-Za-z]+)\.(\d+)(?!\d)', r'\1 \2', preprocessed_filename)
+
+            # 调试：记录预处理后的文件名
+            logger.debug(f"预处理后文件名: '{preprocessed_filename}'")
+
             # 使用 guessit 解析
             result = guessit(preprocessed_filename, options or {})
 
             # 转换为项目内部格式
             metadata = self._convert_result(result, filename)
-            
+
             # 后处理：修正中文剧集的识别结果
             metadata = self._postprocess_chinese_result(metadata, filename)
 
@@ -232,16 +301,16 @@ class GuessItParser:
         """
         path = Path(filename)
         stem = path.stem
-        
+
         # 1. 尝试从文件名中提取集号信息
         episode_info = self._extract_episode_from_chinese(stem)
-        
+
         if episode_info:
             episode_num, episode_end = episode_info  # episode_end 用于连集
-            
+
             # 尝试从路径中提取剧名和季号
             show_name, season = self._extract_show_info_from_path(path)
-            
+
             if show_name:
                 # 构造标准格式
                 if episode_end and episode_end != episode_num:
@@ -249,21 +318,21 @@ class GuessItParser:
                     new_filename = f"{show_name} E{episode_num:02d}-E{episode_end:02d}{path.suffix}"
                 else:
                     new_filename = f"{show_name} E{episode_num:02d}{path.suffix}"
-                
+
                 # 如果有季号，添加季号
                 if season:
                     new_filename = f"{show_name} S{season:02d}E{episode_num:02d}{path.suffix}"
                     if episode_end and episode_end != episode_num:
                         new_filename = f"{show_name} S{season:02d}E{episode_num:02d}-E{episode_end:02d}{path.suffix}"
-                
+
                 logger.debug(f"中文格式预处理: '{filename}' -> '{new_filename}'")
                 return new_filename
-        
+
         # 2. 处理字幕组格式：【字幕组】剧名 第1集 或 【字幕组】剧名 第N集
         subtitle_match = re.match(r'^【[^】]+】(.+)$', stem)
         if subtitle_match:
             remaining = subtitle_match.group(1).strip()
-            
+
             # 尝试从剩余部分提取剧名和集号
             # 格式1：剧名 第1集、剧名 第01话、剧名 第1話
             match = re.match(r'^(.+?)\s*第(\d+)[集话話]$', remaining)
@@ -273,7 +342,7 @@ class GuessItParser:
                 new_filename = f"{show_name} E{episode_num:02d}{path.suffix}"
                 logger.debug(f"字幕组格式预处理: '{filename}' -> '{new_filename}'")
                 return new_filename
-            
+
             # 格式2：剧名 第一集、剧名 第二集（中文数字）
             for chinese_num, num in self.CHINESE_NUM_MAP.items():
                 cn_match = re.match(rf'^(.+?)\s*第{chinese_num}[集话話]$', remaining)
@@ -282,7 +351,7 @@ class GuessItParser:
                     new_filename = f"{show_name} E{num:02d}{path.suffix}"
                     logger.debug(f"字幕组格式预处理: '{filename}' -> '{new_filename}'")
                     return new_filename
-            
+
             # 格式3：剧名 - 01、剧名 E01
             match = re.match(r'^(.+?)\s*[-\s]+[Ee]?(\d+)$', remaining)
             if match:
@@ -291,7 +360,7 @@ class GuessItParser:
                 new_filename = f"{show_name} E{episode_num:02d}{path.suffix}"
                 logger.debug(f"字幕组格式预处理: '{filename}' -> '{new_filename}'")
                 return new_filename
-            
+
             # 格式4：纯集号（已在前面的逻辑处理）
             episode_info = self._extract_episode_from_chinese(remaining)
             if episode_info:
@@ -300,7 +369,7 @@ class GuessItParser:
                 show_name = re.sub(r'\s*第?\d+[-\d]*[集话話]?\s*$', '', remaining)
                 show_name = re.sub(r'\s*[Ee][Pp]?\d+(-\d+)?\s*$', '', show_name)
                 show_name = show_name.strip()
-                
+
                 if show_name:
                     if episode_end and episode_end != episode_num:
                         new_filename = f"{show_name} E{episode_num:02d}-E{episode_end:02d}{path.suffix}"
@@ -308,7 +377,7 @@ class GuessItParser:
                         new_filename = f"{show_name} E{episode_num:02d}{path.suffix}"
                     logger.debug(f"字幕组格式预处理: '{filename}' -> '{new_filename}'")
                     return new_filename
-        
+
         return filename
 
     def _extract_episode_from_chinese(self, stem: str) -> Optional[tuple]:
@@ -326,38 +395,38 @@ class GuessItParser:
         for chinese_num, num in self.CHINESE_NUM_MAP.items():
             if stem == f'第{chinese_num}集' or stem == f'第{chinese_num}话' or stem == f'第{chinese_num}話':
                 return (num, num)
-        
+
         # 数字集号：第1集、第01集、第1话、第01话、第1話（精确匹配）
         match = re.match(r'^第(\d+)[集话話]$', stem)
         if match:
             return (int(match.group(1)), int(match.group(1)))
-        
+
         # 带额外文本的数字集号：第1集 4K、第01集.HDR、第1话.1080p 等
         # 匹配以 "第N集" 或 "第N话" 开头的文件名
         match = re.match(r'^第(\d+)[集话話](?:\s|\.|$)', stem)
         if match:
             return (int(match.group(1)), int(match.group(1)))
-        
+
         # 带额外文本的中文数字集号：第一集 4K、第二集.HDR 等
         for chinese_num, num in self.CHINESE_NUM_MAP.items():
             if re.match(rf'^第{chinese_num}[集话話](?:\s|\.|$)', stem):
                 return (num, num)
-        
+
         # 连集格式：第1-2集、第01-02话、第1-2話
         match = re.match(r'^第(\d+)-(\d+)[集话話]', stem)
         if match:
             return (int(match.group(1)), int(match.group(2)))
-        
+
         # 英文格式：EP01, E01, ep01
         match = re.match(r'^[Ee][Pp]?(\d+)$', stem)
         if match:
             return (int(match.group(1)), int(match.group(1)))
-        
+
         # 纯数字：1, 01, 001（一位及以上数字）
         match = re.match(r'^(\d+)$', stem)
         if match:
             return (int(match.group(1)), int(match.group(1)))
-        
+
         return None
 
     def _extract_show_info_from_path(self, path: Path) -> tuple:
@@ -494,14 +563,14 @@ class GuessItParser:
         """
         path = Path(original_filename)
         stem = path.stem
-        
+
         # 如果 show_name 被识别为 "第1集" 或类似的集号格式，或被误识别为文件扩展名
         show_name = metadata.get('show_name', '')
-        
+
         # 使用 _is_invalid_show_name 方法判断剧名是否无效
         # 这会检查：纯数字、季集格式、文件扩展名等无效情况
         is_invalid_show_name = self._is_invalid_show_name(show_name)
-        
+
         # 清理剧名中的分类标签和季数范围
         if show_name:
             original_show_name = show_name
@@ -535,11 +604,11 @@ class GuessItParser:
             if show_name != original_show_name:
                 metadata['show_name'] = show_name
                 logger.debug(f"清理剧名: '{original_show_name}' -> '{show_name}'")
-        
+
         if is_invalid_show_name:
             # 尝试从父目录获取剧名
             show_name_from_path, season_from_path = self._extract_show_info_from_path(path)
-            
+
             if show_name_from_path:
                 # 检查从父目录提取的剧名是否以"短数字+中文"开头
                 # 如 "4驭灵师" 可能是分类编号+剧名，应去除数字
@@ -551,15 +620,15 @@ class GuessItParser:
                     cleaned_name = match.group(2)
                     logger.debug(f"去除父目录剧名开头的分类编号: '{show_name_from_path}' -> '{cleaned_name}'")
                     show_name_from_path = cleaned_name
-                
+
                 metadata['show_name'] = show_name_from_path
                 logger.debug(f"修正剧名: '{show_name}' -> '{show_name_from_path}' (来自父目录)")
-                
-                # 如果没有季号但从路径中提取到了季号，也添加
-                if metadata.get('season') is None and season_from_path is not None:
-                    metadata['season'] = season_from_path
-                    logger.debug(f"从路径补充季号: {season_from_path}")
-        
+
+            # 如果没有季号但从路径中提取到了季号，也添加
+            if metadata.get('season') is None and season_from_path is not None:
+                metadata['season'] = season_from_path
+                logger.debug(f"从路径补充季号: {season_from_path}")
+
         # 处理字幕组格式：【字幕组】剧名 第1集
         if '【' in show_name and '】' in show_name:
             # 移除字幕组标记
@@ -567,11 +636,11 @@ class GuessItParser:
             # 移除可能的集号部分
             cleaned_name = re.sub(r'\s*第?\d+[-\d]*[集话話]?\s*$', '', cleaned_name)
             cleaned_name = cleaned_name.strip()
-            
+
             if cleaned_name:
                 metadata['show_name'] = cleaned_name
                 logger.debug(f"清理字幕组格式剧名: '{show_name}' -> '{cleaned_name}'")
-        
+
         return metadata
 
     def _convert_result(self, result: Dict, filename: str) -> Dict[str, Any]:
@@ -788,10 +857,10 @@ class GuessItParser:
         return False
 
     def parse_with_fallback(
-        self,
-        filename: str,
-        regex_metadata: Optional[Dict[str, Any]],
-        prefer_guessit: bool = False
+            self,
+            filename: str,
+            regex_metadata: Optional[Dict[str, Any]],
+            prefer_guessit: bool = False
     ) -> Dict[str, Any]:
         """
         结合 guessit 和正则表达式的解析结果
@@ -851,12 +920,12 @@ class GuessItParser:
                 if self._is_invalid_show_name(regex_value):
                     merged[field] = guessit_value
                     logger.debug(f"正则剧名 '{regex_value}' 不合理，使用 GuessIt 结果: {guessit_value}")
-                # 检查是否 GuessIt 结果包含续集编号（如 "Lethal Weapon 2"）
-                # 而正则结果丢失了续集编号（如 "Lethal Weapon"）
+                    # 检查是否 GuessIt 结果包含续集编号（如 "Lethal Weapon 2"）
+                    # 而正则结果丢失了续集编号（如 "Lethal Weapon"）
                 elif regex_value and guessit_value:
                     guessit_stripped = guessit_value.strip()
                     regex_stripped = regex_value.strip()
-                    
+
                     # 情况0（新增）：GuessIt 的 show_name 是正则 show_name 的前缀
                     # 且正则 show_name 包含额外信息（如季集、质量标签等）
                     # 这说明正则把额外信息也当成剧名了，应该使用 GuessIt 结果
@@ -867,7 +936,7 @@ class GuessItParser:
                         # 如果额外部分包含季集信息、质量标签等，使用 GuessIt 结果
                         non_title_patterns = [
                             r'S\d+E?\d*',  # S03E08 或 S03
-                            r'\d{3,4}p',   # 2160p, 1080p
+                            r'\d{3,4}p',  # 2160p, 1080p
                             r'WEB', r'BluRay', r'BDRip',  # 来源
                             r'H\.?265', r'H\.?264', r'HEVC',  # 编码
                             r'DD[P]?', r'DTS', r'Atmos',  # 音频
@@ -878,7 +947,7 @@ class GuessItParser:
                             merged[field] = guessit_value
                             logger.debug(f"正则剧名 '{regex_value}' 包含额外的非标题信息，使用 GuessIt 结果: {guessit_value}")
                             continue
-                    
+
                     # 情况1：空格分隔的续集编号（如 "Lethal Weapon 2"）
                     match_space = re.match(r'^(.+?)\s+(\d+)$', guessit_stripped)
                     if match_space:
@@ -890,7 +959,7 @@ class GuessItParser:
                             merged[field] = guessit_value
                             logger.debug(f"GuessIt 标题 '{guessit_value}' 包含续集编号，正则 '{regex_value}' 丢失了编号，使用 GuessIt 结果")
                             continue
-                    
+
                     # 情况2：直接连接的数字（如 "唐探1900"）
                     # 正则可能把标题中的数字误识别为年份，导致 show_name 被截断
                     match_direct = re.match(r'^(.+?)(\d+)$', guessit_stripped)
@@ -924,7 +993,7 @@ class GuessItParser:
                 except (ValueError, TypeError):
                     regex_season = None
                     guessit_season = None
-                
+
                 # 如果 GuessIt 识别出季号大于1，且正则是默认值1或没有季号，使用 GuessIt 结果
                 if guessit_season and guessit_season > 1:
                     if regex_season is None or regex_season == 1:
@@ -941,7 +1010,7 @@ class GuessItParser:
         merged_show_name = merged.get('show_name', '')
         regex_year = regex_metadata.get('year')
         guessit_year = guessit_metadata.get('year')
-        
+
         if regex_show_name != merged_show_name and guessit_year is not None:
             # show_name 被修正了，检查正则的年份是否来自标题中的数字
             # 例如：正则把 "唐探1900" 拆成 show_name="唐探", year="1900"
@@ -961,7 +1030,7 @@ class GuessItParser:
             existing_tags_str = merged.get('quality_tags', '')
             existing_tags = existing_tags_str.split('.') if existing_tags_str else []
             guessit_tags = guessit_metadata['quality_tags'].split('.')
-            
+
             # 去重并保持顺序
             seen = set()
             merged_tags = []
@@ -970,7 +1039,7 @@ class GuessItParser:
                 if tag_lower not in seen and tag:
                     seen.add(tag_lower)
                     merged_tags.append(tag)
-            
+
             merged['quality_tags'] = '.'.join(merged_tags)
 
         # 语言信息
@@ -990,21 +1059,21 @@ class GuessItParser:
         return merged
 
 
-def create_guessit_parser(config: Optional[Dict] = None) -> GuessItParser:
-    """
-    创建 GuessIt 解析器实例
+    def create_guessit_parser(config: Optional[Dict] = None) -> GuessItParser:
+        """
+        创建 GuessIt 解析器实例
 
-    Args:
-        config: 配置字典
+        Args:
+            config: 配置字典
 
-    Returns:
-        GuessItParser 实例
-    """
-    if config is None:
-        return GuessItParser(enabled=False)
+        Returns:
+            GuessItParser 实例
+        """
+        if config is None:
+            return GuessItParser(enabled=False)
 
-    # 从配置读取 guessit 设置
-    guessit_config = config.get('guessit', {})
-    enabled = guessit_config.get('enabled', True)
+        # 从配置读取 guessit 设置
+        guessit_config = config.get('guessit', {})
+        enabled = guessit_config.get('enabled', True)
 
-    return GuessItParser(enabled=enabled)
+        return GuessItParser(enabled=enabled)

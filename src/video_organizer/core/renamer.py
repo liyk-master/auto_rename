@@ -8,12 +8,13 @@ import logging
 import threading
 import urllib.parse
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Set
 
 from jinja2 import Template
 from src.video_organizer.core.tmdb_client import TMDBClient
 from src.video_organizer.core.guessit_parser import GuessItParser, GUESSIT_AVAILABLE
 from src.video_organizer.utils.llm_translator import LLMTranslator
+from .manual_rule_engine import ManualRuleEngine
 
 # 繁简转换支持
 try:
@@ -810,6 +811,40 @@ class VideoRenamer:
         self._tmdb_name_to_id: Dict[str, int] = {}
         logger.info("VideoRenamer: TMDB 缓存已初始化")
 
+        # 手动规则引擎初始化
+        self.rule_engine = None
+        self._locked_fields: Set[str] = set()
+        if config and isinstance(config, dict):
+            manual_rules_config = config.get("manual_rules", {})
+            if manual_rules_config.get("enabled", False):
+                rules_list = manual_rules_config.get("rules", [])
+                normalize_symbols = manual_rules_config.get("normalize_symbols", True)
+                self.rule_engine = ManualRuleEngine(
+                    rules_config=rules_list,
+                    enabled=True,
+                    normalize_symbols=normalize_symbols
+                )
+                if self.rule_engine and self.rule_engine.rules:
+                    logger.info(f"VideoRenamer: 手动规则引擎已启用，加载 {len(self.rule_engine.rules)} 条规则")
+                else:
+                    logger.info("VideoRenamer: 手动规则引擎已启用但无有效规则")
+            else:
+                logger.info("VideoRenamer: 手动规则引擎已禁用")
+
+    def _merge_metadata(self, target: Dict, source: Optional[Dict], locked_fields: Set[str]) -> Dict:
+        """合并元数据，跳过已锁定的字段"""
+        if source is None:
+            source = {}
+        for key, value in source.items():
+            if key not in locked_fields:
+                target[key] = value
+        return target
+
+    def _apply_locked_fields_preserve(self, metadata: Dict, locked_fields: Set[str]) -> None:
+        """确保锁定字段的值不丢失（用于某些步骤后恢复）"""
+        # 现在不需要单独恢复，因为所有合并都走 _merge_metadata
+        pass
+
     def extract_metadata(
         self, file_path: Union[str, Path], media_type_hint: Optional[str] = None
     ) -> Dict:
@@ -836,21 +871,62 @@ class VideoRenamer:
             if decoded_filename != file_path.name:
                 logger.debug(f"解码文件名: {file_path.name} -> {decoded_filename}")
 
-            # 1. 首先尝试从文件名提取（使用解码后的文件名）
-            metadata = self._extract_with_regex(decoded_filename)
+            # 0. 应用手动规则（如果启用）
+            locked_fields: Set[str] = set()
+            processed_filename: str = decoded_filename
+            if self.rule_engine and self.rule_engine.enabled:
+                try:
+                    # 初始化基础元数据，包含待处理文件名
+                    base_metadata = {"_processed_filename": decoded_filename}
+                    initial_metadata = self.rule_engine.apply_rules(base_metadata, file_path)
+                    locked_fields = self.rule_engine.get_locked_fields()
+                    logger.debug(f"手动规则已应用，锁定字段: {locked_fields}")
+                    # 提取处理后的文件名用于后续解析
+                    processed_filename = initial_metadata.pop("_processed_filename", decoded_filename)
+                    metadata = initial_metadata
+                except Exception as e:
+                    logger.warning(f"手动规则应用失败，继续常规流程: {e}")
+                    locked_fields = set()
+                    metadata = {}
+            else:
+                metadata = {}
+
+            # 1. 首先尝试从文件名提取（使用可能被规则修改过的文件名）
+            regex_meta = self._extract_with_regex(processed_filename)
+            print(f"DEBUG: regex_meta keys={list(regex_meta.keys()) if regex_meta else None}, has extension={regex_meta.get('extension') if regex_meta else None}")
+            metadata = self._merge_metadata(metadata, regex_meta, locked_fields)
+            print(f"DEBUG: after merge, metadata keys={list(metadata.keys())}, extension={metadata.get('extension')}")
 
             # 1.5 使用 GuessIt 增强识别（如果已启用）
             if self._guessit_enabled and self._guessit_parser:
                 try:
-                    # 创建解码后的路径用于 GuessIt 解析
-                    decoded_path = str(file_path.parent / decoded_filename)
-                    metadata = self._guessit_parser.parse_with_fallback(
+                    # 使用处理后的文件名（可能已被规则修改）构造路径
+                    guessit_path = file_path.parent / processed_filename
+                    decoded_path = str(guessit_path)
+                    logger.debug(f"DEBUG: guessit_path={guessit_path}")
+                    logger.debug(f"DEBUG: decoded_path={decoded_path}")
+                    # 保存当前锁定字段的值，防止被 GuessIt 合并覆盖
+                    locked_values_before_guessit = {k: metadata.get(k) for k in locked_fields}
+                    # 传入当前元数据作为基础，让 parse_with_fallback 进行智能合并
+                    guessit_merged = self._guessit_parser.parse_with_fallback(
                         decoded_path,
                         metadata,
                         prefer_guessit=self._guessit_prefer
                     )
+                    # 恢复锁定字段的值
+                    for k, v in locked_values_before_guessit.items():
+                        guessit_merged[k] = v
+                    metadata = guessit_merged
                     logger.debug(f"GuessIt 增强识别完成: show_name={metadata.get('show_name')}, "
                                 f"season={metadata.get('season')}, episode={metadata.get('episode')}")
+                    
+                    # 再次应用规则：用于处理 show_name（如果规则只修改了 _processed_filename 但 show_name 还没被修改）
+                    if self.rule_engine and self.rule_engine.enabled:
+                        try:
+                            metadata = self.rule_engine.apply_rules(metadata, file_path)
+                            logger.debug(f"GuessIt 后再次应用规则: show_name={metadata.get('show_name')}")
+                        except Exception as e:
+                            logger.warning(f"GuessIt 后应用规则失败: {e}")
                 except Exception as e:
                     logger.warning(f"GuessIt 解析失败，使用正则表达式结果: {e}")
 
@@ -916,9 +992,12 @@ class VideoRenamer:
                         decoded_parent_name = decode_filename(p_dir.name)
                         parent_metadata = self._extract_with_regex(decoded_parent_name)
                         # 如果父目录能提取到剧名
-                        if parent_metadata.get("show_name"):
+                        if parent_metadata and parent_metadata.get("show_name"):
                             # 补全缺失字段（只补全 show_name 和 year，不覆盖 season 和 episode）
                             for key in ["show_name", "year", "tmdb_id"]:
+                                # 如果字段已锁定，跳过
+                                if key in locked_fields:
+                                    continue
                                 # 特殊逻辑：如果父目录提取的剧名包含季号（如 GGO S02），进行二次清洗
                                 val = parent_metadata.get(key)
                                 if key == "show_name" and val:
@@ -938,7 +1017,7 @@ class VideoRenamer:
                             if metadata.get("show_name"):
                                 break
 
-                    if not metadata.get("show_name") and len(file_path.parts) > 1:
+                    if not metadata.get("show_name") and "show_name" not in locked_fields and len(file_path.parts) > 1:
                         # 最后的尝试：直接拿父目录名并清洗
                         raw_parent_name = file_path.parent.name
                         metadata["show_name"] = self._clean_filename_for_search(
@@ -948,13 +1027,13 @@ class VideoRenamer:
                 except Exception as e:
                     logger.error(f"父目录元数据提取失败: {e}")
 
-            # 3. 补全媒体类型
-            if media_type_hint:
+            # 3. 补全媒体类型（如果未锁定）
+            if media_type_hint and "media_type" not in locked_fields:
                 metadata["media_type"] = media_type_hint
 
             # 3.5 智能判断媒体类型：如果提取到了 season 或 episode，优先识别为电视剧
             # 除非用户明确指定了 media_type_hint 为 movie
-            if not media_type_hint:
+            if not media_type_hint and "media_type" not in locked_fields:
                 has_season = metadata.get("season") is not None and metadata.get("season") != ""
                 has_episode = metadata.get("episode") is not None and metadata.get("episode") != ""
                 if has_season or has_episode:
@@ -978,15 +1057,12 @@ class VideoRenamer:
             # 6. TMDB 丰富
             if metadata.get("show_name"):
                 try:
-                    # Before calling TMDB, clean show_name of release group info
+                    # 保存锁定字段的快照（防止被后续修改覆盖）
+                    locked_snapshot = {k: metadata[k] for k in locked_fields if k in metadata}
+                    # 清洗 show_name（用于 TMDB 查询）
                     show_name = metadata["show_name"]
-                    # Remove release group in brackets at the beginning
                     show_name = re.sub(r"^\[[^\]]+\]\s*", "", show_name)
-                    # Remove Chinese brackets and keep content (【我推的孩子】 -> 我推的孩子)
                     show_name = re.sub(r"【([^】]+)】", r"\1", show_name)
-                    # 注意：移除了原有的正则 r"^[A-Z]{2,6}(?:[._]|\s)\s*"
-                    # 因为它太宽泛，会误伤正常剧名如 "LIAR GAME" 中的 "LIAR "
-                    # Remove common release group tags
                     for tag in [
                         "AHTV",
                         "CCTV",
@@ -1006,25 +1082,41 @@ class VideoRenamer:
                             show_name,
                             flags=re.IGNORECASE,
                         )
-                    metadata["show_name"] = show_name.strip()
+                    show_name = show_name.strip()
+                    # 临时替换为清洗后的 show_name 供 TMDB 查询使用
+                    metadata["show_name"] = show_name
 
-                    # 只有在 TMDB 客户端可用时才进行元数据丰富
                     if self.tmdb_client:
-                        metadata = self._enrich_with_tmdb(metadata)
+                        tmdb_meta = self._enrich_with_tmdb(metadata)
+                        # 确保 tmdb_meta 是字典
+                        if tmdb_meta is None:
+                            tmdb_meta = {}
+                        # 合并未锁定的字段
+                        metadata = self._merge_metadata(metadata, tmdb_meta, locked_fields)
+                        # 恢复锁定字段为原始值（规则设置的值）
+                        for k, v in locked_snapshot.items():
+                            metadata[k] = v
                     else:
+                        # 恢复锁定字段
+                        for k, v in locked_snapshot.items():
+                            metadata[k] = v
                         logger.warning("TMDB 客户端未初始化，跳过元数据丰富")
                 except Exception as e:
                     logger.error(f"TMDB元数据丰富失败: {e}")
 
             # 7. 最终兜底填充
-            metadata.setdefault("show_name", file_path.stem)
-            # 始终保存完整路径用于LLM兜底
+            if "show_name" not in locked_fields:
+                metadata.setdefault("show_name", file_path.stem)
+            # 始终保存完整路径用于LLM兜底，但如果 original_filename 被锁定则跳过
             logger.debug(f"设置original_filename: {file_path} (full path)")
-            metadata["original_filename"] = str(file_path)
+            if "original_filename" not in locked_fields:
+                metadata["original_filename"] = str(file_path)
             logger.debug(f"DEBUG: 7.兜底填充后 original_filename = {metadata.get('original_filename')}")
             metadata.setdefault("quality_tags", "")
-            metadata.setdefault("year", "")
-            metadata.setdefault("tmdb_id", "")
+            if "year" not in locked_fields:
+                metadata.setdefault("year", "")
+            if "tmdb_id" not in locked_fields:
+                metadata.setdefault("tmdb_id", "")
             # 注意：不在这里设置 season/episode 默认值
             # 因为会导致媒体类型误判（设了 season/episode 会被认为是电视剧）
             # 默认值应在 TMDB 搜索成功后根据实际结果设置
@@ -1055,10 +1147,22 @@ class VideoRenamer:
 
             return metadata
         except Exception as e:
-            logger.error(f"提取元数据时发生未处理的异常: {e}")
+            import sys, os, traceback
+            # 写入完整 traceback 到文件（绝对路径）
+            try:
+                log_path = 'E:\\Project\\auto_rename\\extract_metadata_error.log'
+                with open(log_path, 'w', encoding='utf-8') as f:
+                    traceback.print_exc(file=f)
+                # 同时输出到 stderr（会被 pytest 捕获）
+                traceback.print_exc()
+            except:
+                pass  # 忽略写入失败
+            logger.error(f"提取元数据时发生未处理的异常: {e}", exc_info=True)
+            # 确保返回必要的字段，包括 extension
             return {
                 "show_name": getattr(file_path, "stem", "Unknown"),
                 "original_filename": getattr(file_path, "name", "unknown"),
+                "extension": getattr(file_path, "suffix", "").lstrip(".") or None,
                 "season": 1,
                 "episode": 1,
                 "error": str(e),
@@ -1126,7 +1230,8 @@ class VideoRenamer:
 
     def _extract_with_regex(self, filename: str) -> Dict:
         """Extract metadata using regular expressions."""
-        # 预处理：将全角括号替换为标准方括号，将+号替换为空格，将中文冒号替换为英文
+        print(f"DEBUG _extract_with_regex: called with filename={filename}")
+        # 预处理：将中文方括号替换为标准方括号，+号替换为空格，冒号替换为中文冒号
         base_name = (
             filename.replace("【", "[")
             .replace("】", "]")
@@ -1356,6 +1461,26 @@ class VideoRenamer:
             if match:
                 match_data = match.groupdict()
 
+                # 验证：如果文件名包含电影常见技术标签（如分辨率+编码），
+                # 且只有集号没有季号（如 "Jurassic Park 3"），
+                # 那么这个数字很可能是电影系列编号而非集号
+                has_movie_tech_tags = re.search(
+                    r"(?i)(2160p|4k|uhd|fhd|1080p|720p|480p|360p|240p).*(?:x264|x265|h264|h265|hevc|xvid|divx|aac|dts|ddp|ac3)",
+                    base_name,
+                )
+                has_episode_only = match_data.get("episode") and not match_data.get("season")
+                episode_num = int(match_data.get("episode", 0)) if match_data.get("episode") else 0
+                # 小数字（1-9）作为集号更可疑
+                is_suspicious_episode = has_episode_only and 1 <= episode_num <= 9
+                if is_suspicious_episode and has_movie_tech_tags:
+                    # 检查匹配后面是否紧跟年份（如 "Jurassic Park 3 2001"）
+                    # 如果是，说明这个数字是电影系列编号而非集号
+                    remaining_after_match = name_only[match.end():]
+                    year_after = re.match(r"\s*(\d{4})", remaining_after_match)
+                    if year_after:
+                        # 这很可能是电影系列编号（如 Jurassic Park 3 2001），跳过这个匹配
+                        continue
+
                 # 处理中文季号转换
                 if "season_cn" in match_data and match_data["season_cn"]:
                     cn_val = match_data["season_cn"]
@@ -1373,9 +1498,13 @@ class VideoRenamer:
                 # 补全元数据
                 for key, value in match_data.items():
                     if value and key not in ("season_cn", "season_jp") and not metadata.get(key):
-                        # 清理show_name：移除末尾点号，将点替换为空格（用于日文/英文剧名）
+                        # 清理show_name：移除末尾点号，将点和连字符替换为空格，并首字母大写（用于日文/英文剧名）
                         if key == "show_name":
-                            value = value.rstrip(".").replace(".", " ")
+                            value = value.rstrip(".").replace(".", " ").replace("-", " ").title()
+                            # 移除首尾多余空格
+                            value = value.strip()
+                            # 合并多余空格
+                            value = re.sub(r"\s+", " ", value)
                         metadata[key] = value
                 match_found = True
 
@@ -2068,6 +2197,7 @@ class VideoRenamer:
                 show_name = show_name.strip()
                 metadata["show_name"] = show_name
 
+            print(f"DEBUG _extract_with_regex: returning, metadata is None: {metadata is None}, keys: {list(metadata.keys()) if metadata else None}")
             return metadata
 
     def _roman_to_digit(self, roman: str) -> Optional[int]:
@@ -2463,6 +2593,9 @@ class VideoRenamer:
         if not isinstance(metadata, dict):
             logger.error("元数据不是字典类型，直接返回")
             return {}
+
+        # 初始化 best_match，防止在未定义时被引用
+        best_match = None
 
         try:
             # ========== 缓存检查 ==========

@@ -54,14 +54,17 @@ def main():
         )
         if not os.path.exists(config_path):
             print(f"提示: 找不到配置文件 {config_path}, 将尝试使用默认配置或环境变量")
-
-        config = load_config(args.config)
+        
+        config = load_config(config_path)
         tmdb_conf = config.get("tmdb", {})
         naming_conf = config.get("naming_rules", {})
-
+        
         api_key = tmdb_conf.get("api_key")
         if not api_key:
-            print("警告: 配置文件中未找到 TMDB API Key。部分功能将受限。")
+            print(f"警告: 配置文件中未找到 TMDB API Key (tmdb_conf={tmdb_conf})。部分功能将受限。")
+        else:
+            # 只打印前10个字符，避免泄露完整密钥
+            print(f"DEBUG: TMDB API Key 已加载: {api_key[:10]}...")
 
         print(f"成功加载配置，TMDB 语言: {tmdb_conf.get('language', 'zh-CN')}")
     except Exception as e:
