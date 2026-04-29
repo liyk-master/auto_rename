@@ -1,0 +1,238 @@
+{
+  "total": 20,
+  "success": [
+    {
+      "filename": "[Skymoon-Raws][One Piece 海賊王][1159][ViuTV][WEB-RIP][CHT][SRT][1080p][MKV].mkv",
+      "show_name": "海賊王",
+      "season": "1",
+      "episode": "1159",
+      "release_group": "Skymoon-Raws"
+    },
+    {
+      "filename": "[04][1080P][简繁内封].mkv",
+      "show_name": "1080P",
+      "season": "1",
+      "episode": "04",
+      "release_group": "04"
+    },
+    {
+      "filename": "[04][1080P][繁体内嵌].mkv",
+      "show_name": "1080P",
+      "season": "1",
+      "episode": "04",
+      "release_group": "04"
+    },
+    {
+      "filename": "[04][1080P][简体内嵌].mkv",
+      "show_name": "1080P",
+      "season": "1",
+      "episode": "04",
+      "release_group": "04"
+    },
+    {
+      "filename": "[04][1080P][HEVC-10bit][CHS&CHT&JP][检索：魔法姐妹露露特莉莉].mkv",
+      "show_name": "1080P",
+      "season": "1",
+      "episode": "04",
+      "release_group": "04"
+    },
+    {
+      "filename": "[04][1080P][CHT&JPN][檢索：魔法姊妹露露特莉莉].mkv",
+      "show_name": "1080P",
+      "season": "1",
+      "episode": "04",
+      "release_group": "04"
+    },
+    {
+      "filename": "[04][1080P][CHS&JPN][检索：魔法姐妹露露特莉莉].mkv",
+      "show_name": "1080P",
+      "season": "1",
+      "episode": "04",
+      "release_group": "04"
+    },
+    {
+      "filename": "[04][1080P][简繁内封].mkv",
+      "show_name": "1080P",
+      "season": "1",
+      "episode": "04",
+      "release_group": "04"
+    },
+    {
+      "filename": "[04][1080P][繁体内嵌].mkv",
+      "show_name": "1080P",
+      "season": "1",
+      "episode": "04",
+      "release_group": "04"
+    },
+    {
+      "filename": "[04][1080P][简体内嵌].mkv",
+      "show_name": "1080P",
+      "season": "1",
+      "episode": "04",
+      "release_group": "04"
+    },
+    {
+      "filename": "[02][1080P][HEVC-10bit][简繁日内封].mkv",
+      "show_name": "1080P",
+      "season": "1",
+      "episode": "02",
+      "release_group": "02"
+    },
+    {
+      "filename": "[02][1080P][繁日內嵌].mkv",
+      "show_name": "1080P",
+      "season": "1",
+      "episode": "02",
+      "release_group": "02"
+    },
+    {
+      "filename": "[02][1080P][简日内嵌].mkv",
+      "show_name": "1080P",
+      "season": "1",
+      "episode": "02",
+      "release_group": "02"
+    },
+    {
+      "filename": "[没有辣妹会对阿宅温柔！？  / Otaku ni Yasashii Gal wa Inai!?][01][WEBrip][1080P][繁日内嵌].mkv",
+      "show_name": "mkv",
+      "season": "1",
+      "episode": "01",
+      "release_group": "没有辣妹会对阿宅温柔！？  / Otaku ni Yasashii Gal wa Inai!?"
+    },
+    {
+      "filename": "[没有辣妹会对阿宅温柔！？  / Otaku ni Yasashii Gal wa Inai!?][01][WEBrip][1080P][简日内嵌].mkv",
+      "show_name": "mkv",
+      "season": "1",
+      "episode": "01",
+      "release_group": "没有辣妹会对阿宅温柔！？  / Otaku ni Yasashii Gal wa Inai!?"
+    }
+  ],
+  "failures": {
+    "missing_show_name": [],
+    "missing_episode": [
+      {
+        "filename": "[1080P][Baha][WEB-DL][AAC AVC][CHT][MP4].mkv",
+        "rss_title": "[ANi] Isekai Nonbiri Nōka /  異世界悠閒農家 2 - 04 [1080P][Baha][WEB-DL][AAC AVC][CHT][MP4]",
+        "parsed": {
+          "original_filename": "[1080P][Baha][WEB-DL][AAC AVC][CHT][MP4].mkv",
+          "season": null,
+          "episode": null,
+          "release_group": "1080P",
+          "extension": ".mkv",
+          "quality_tags": "1080P.WEB-DL.AAC.AVC",
+          "cleaned_name": "[1080P][Baha][WEB-DL][AAC AVC][CHT][MP4].mkv",
+          "show_name": "Baha",
+          "media_type": "movie"
+        },
+        "issues": [
+          "missing_episode"
+        ]
+      },
+      {
+        "filename": "[1080P][Baha][WEB-DL][AAC AVC][CHT][MP4].mkv",
+        "rss_title": "[ANi]  木頭風紀委員和迷你裙 JK 的故事 - 04 [1080P][Baha][WEB-DL][AAC AVC][CHT][MP4]",
+        "parsed": {
+          "original_filename": "[1080P][Baha][WEB-DL][AAC AVC][CHT][MP4].mkv",
+          "season": null,
+          "episode": null,
+          "release_group": "1080P",
+          "extension": ".mkv",
+          "quality_tags": "1080P.WEB-DL.AAC.AVC",
+          "cleaned_name": "[1080P][Baha][WEB-DL][AAC AVC][CHT][MP4].mkv",
+          "show_name": "Baha",
+          "media_type": "movie"
+        },
+        "issues": [
+          "missing_episode"
+        ]
+      }
+    ],
+    "missing_season": [],
+    "parse_error": [
+      {
+        "filename": "[1080p][简日内嵌].mkv",
+        "rss_title": "[樱桃花字幕组]欢迎来到实力至上主义的教室 第四季 Youkoso Jitsuryoku Shijou Shugi no Kyoushitsu e S4 - 06[1080p][简日内嵌]",
+        "error": "'NoneType' object has no attribute 'get'"
+      },
+      {
+        "filename": "[jibaketa合成&音頻壓制][ViuTV粵語].mkv",
+        "rss_title": "[jibaketa合成&音頻壓制][ViuTV粵語]爆旋陀螺X / 戰鬥陀螺X / 霸旋陀螺 极限突破 / Beyblade X - 119 [粵語+內封繁體中文字幕](WEB 1920x1080 AVC AAC SRT+PGS ViuTV YUE CHT)",
+        "error": "'NoneType' object has no attribute 'get'"
+      },
+      {
+        "filename": "[WebRip 1080p HEVC-10bit AAC][简繁内封字幕].mkv",
+        "rss_title": "[LoliHouse] 勇者之渣 / Yuusha no Kuzu - 15 [WebRip 1080p HEVC-10bit AAC][简繁内封字幕](检索用：勇者之屑)",
+        "error": "'NoneType' object has no attribute 'get'"
+      }
+    ]
+  },
+  "by_release_group": {
+    "Skymoon-Raws": {
+      "success": 1,
+      "fail": 0,
+      "samples": []
+    },
+    "Unknown": {
+      "success": 0,
+      "fail": 3,
+      "samples": []
+    },
+    "04": {
+      "success": 9,
+      "fail": 0,
+      "samples": []
+    },
+    "1080P": {
+      "success": 0,
+      "fail": 2,
+      "samples": [
+        {
+          "filename": "[1080P][Baha][WEB-DL][AAC AVC][CHT][MP4].mkv",
+          "rss_title": "[ANi] Isekai Nonbiri Nōka /  異世界悠閒農家 2 - 04 [1080P][Baha][WEB-DL][AAC AVC][CHT][MP4]",
+          "parsed": {
+            "original_filename": "[1080P][Baha][WEB-DL][AAC AVC][CHT][MP4].mkv",
+            "season": null,
+            "episode": null,
+            "release_group": "1080P",
+            "extension": ".mkv",
+            "quality_tags": "1080P.WEB-DL.AAC.AVC",
+            "cleaned_name": "[1080P][Baha][WEB-DL][AAC AVC][CHT][MP4].mkv",
+            "show_name": "Baha",
+            "media_type": "movie"
+          },
+          "issues": [
+            "missing_episode"
+          ]
+        },
+        {
+          "filename": "[1080P][Baha][WEB-DL][AAC AVC][CHT][MP4].mkv",
+          "rss_title": "[ANi]  木頭風紀委員和迷你裙 JK 的故事 - 04 [1080P][Baha][WEB-DL][AAC AVC][CHT][MP4]",
+          "parsed": {
+            "original_filename": "[1080P][Baha][WEB-DL][AAC AVC][CHT][MP4].mkv",
+            "season": null,
+            "episode": null,
+            "release_group": "1080P",
+            "extension": ".mkv",
+            "quality_tags": "1080P.WEB-DL.AAC.AVC",
+            "cleaned_name": "[1080P][Baha][WEB-DL][AAC AVC][CHT][MP4].mkv",
+            "show_name": "Baha",
+            "media_type": "movie"
+          },
+          "issues": [
+            "missing_episode"
+          ]
+        }
+      ]
+    },
+    "02": {
+      "success": 3,
+      "fail": 0,
+      "samples": []
+    },
+    "没有辣妹会对阿宅温柔！？  / Otaku ni Yasashii Gal wa Inai!?": {
+      "success": 2,
+      "fail": 0,
+      "samples": []
+    }
+  }
+}

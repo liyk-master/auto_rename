@@ -1346,6 +1346,9 @@ class VideoRenamer:
             r"^\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\s*-\s*(?P<episode>\d{1,4}(?:-\d{1,4})?)\s*\[",
             # 0.1 Special pattern for bracket-format anime with season: [Group][ShowName][S2][12][...]
             r"^\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\s*\[S(?P<season>\d+)\]\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
+            # 0.1.1 Special pattern for bracket-format anime with underscore season: [Group][ShowName_2][12][...]
+            # Like: [KTXP+LKSUB][Baka_Test_Shoukanjuu_2][03][GB_CN][AV1_opus][1080p][Remaster].mkv
+            r"^\[[^\]]+\]\s*\[(?P<show_name>[^\]]+?)_(?P<season>[1-9]|1\d|20)(?!(?:th|nd|rd|st))\]\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
             # 0.2 Special pattern for anime with episode title: [Group][Detective Conan_30th_1hSP][1187][Episode Title][...].mp4
             r"^\[[^\]]+\]\s*\[(?P<show_name>[\w\s]+?)(?:_\d+(?:th|nd|rd|st)?(?:_?\d+h(?:SP)?)?)?\]\s*\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
             # 0.3 Special pattern for anime with full episode info: [Group][Show_30th_1hSP][1187][Episode Title][BIG5][2160P][20260103].mp4
@@ -1380,6 +1383,8 @@ class VideoRenamer:
             r"^(?P<show_name>.*?)[. ]?S(?P<season>\d+)E(?P<episode>\d+)",
             # 1.5. 匹配季节-only 格式（如 Downton.Abbey.S06.1080p.BluRay.x264...）
             r"^(?P<show_name>[A-Za-z][A-Za-z0-9\s\.]*?)[. ]S(?P<season>\d+)(?:\.|$)",
+            # 1.8. 匹配 "Season X Episode Y" 格式（如 The Office Season 3 Episode 22）
+            r"(?P<show_name>.*?)\s*Season\s*(?P<season>\d+)\s+Episode\s*(?P<episode>\d+)",
             # 2. Season patterns (English & Chinese)
             r"(?P<show_name>.*?)\s*Season\s*(?P<season>\d+)",
             r"(?P<show_name>.*?)\s*(?P<season>\d+)(?:st|nd|rd|th)\s*Season",
@@ -1571,6 +1576,47 @@ class VideoRenamer:
 
                 # 接下来执行常规清理
                 show_name = metadata["show_name"]
+                
+                # 1.0 清理季号相关文本（如 "2nd Season", "-S2", "S2", "Season X" 等）
+                if metadata.get("season"):
+                    season_num = metadata["season"]
+                    # 移除模式：数字+序数词+Season（如 "2nd Season"）
+                    show_name = re.sub(
+                        rf"\s*\b\d{{1,2}}(?:st|nd|rd|th)\s+Season",
+                        "",
+                        show_name,
+                        flags=re.IGNORECASE,
+                    )
+                    # 移除模式：Season+数字（如 "Season 2"）
+                    show_name = re.sub(
+                        rf"\s*\bSeason\s+{season_num}\b",
+                        "",
+                        show_name,
+                        flags=re.IGNORECASE,
+                    )
+                    # 移除模式：-S+数字 或 -S+数字+Season（如 "-S2" 或 "-S2 Season"）
+                    show_name = re.sub(
+                        rf"\s*-\s*[Ss]{season_num}(?:\s+Season)?",
+                        "",
+                        show_name,
+                        flags=re.IGNORECASE,
+                    )
+                    # 移除模式：S+数字（如 "S2"）
+                    show_name = re.sub(
+                        rf"\s*\b[Ss]{season_num}\b",
+                        "",
+                        show_name,
+                        flags=re.IGNORECASE,
+                    )
+                    # 移除模式：数字+季度/季（中文/日文）
+                    show_name = re.sub(
+                        rf"\s*\b\d{{1,2}}\s*(?:季度|季|シーズン)",
+                        "",
+                        show_name,
+                        flags=re.IGNORECASE,
+                    )
+                    show_name = show_name.strip()
+                
                 # 1. 移除首部的发布组方括号，如 [Dynamis One]
                 show_name = re.sub(r"^\[[^\]]+\]\s*", "", show_name)
                 # 1.1 移除中文方括号并保留内容（如 【我推的孩子】 -> 我推的孩子）
@@ -1682,6 +1728,17 @@ class VideoRenamer:
                         flags=re.IGNORECASE,
                     )
 
+                # 5.5 如果没有提取到季号，但show_name末尾有_数字格式，提取为季号
+                # 如 Baka_Test_Shoukanjuu_2 -> 季号2，同时从show_name中移除
+                if not metadata.get("season"):
+                    underscore_season_match = re.search(r"_(\d{1,2})\s*$", show_name)
+                    if underscore_season_match:
+                        season_num = int(underscore_season_match.group(1))
+                        # 排除年份（如 _2024）和过大的数字（如 _1080）
+                        if season_num <= 20:
+                            metadata["season"] = str(season_num)
+                            show_name = show_name[:underscore_season_match.start()].strip()
+
                 # 6. 额外清理：如果剧名末尾残存了连集信息（如 Pocket Monsters 115），剔除它
                 show_name = re.sub(r"\s+\d+(?:-\d+)?$", "", show_name)
 
@@ -1692,6 +1749,25 @@ class VideoRenamer:
                     show_name,
                     flags=re.IGNORECASE,
                 )
+                # 5.6 提取文本型季号（如 2nd Season, Season 2, S2 等）
+                if not metadata.get("season"):
+                    # 尝试匹配: Show Name 2nd Season, Show Name Season 2, Show Name - S2, Show Name 2
+                    patterns = [
+                        r"(?:\s+|^)(?P<num>\d{1,2})(?:st|nd|rd|th)\s+Season.*$",      # 2nd Season (with trailing)
+                        r"(?:\s+|^)Season\s+(?P<num>\d{1,2}).*$",                     # Season 2 (with trailing)
+                        r"(?:\s+|^)S(?P<num>\d{1,2})(?:\s+Season)?.*$",              # S2 或 S2 Season
+                        r"(?:\s+|^)(?P<num>\d{1,2})(?:\s+シーズン|\s+季度).*$",     # 日语/中文
+                    ]
+                    for pat in patterns:
+                        m = re.search(pat, show_name, re.IGNORECASE)
+                        if m:
+                            season_num = int(m.group("num"))
+                            if 1 <= season_num <= 30:
+                                metadata["season"] = str(season_num)
+                                # 移除整个匹配的后缀
+                                show_name = re.sub(pat, "", show_name, flags=re.IGNORECASE).strip()
+                                break
+                
 
                 metadata["show_name"] = show_name.strip()
                 show_name = show_name.strip().rstrip(".")

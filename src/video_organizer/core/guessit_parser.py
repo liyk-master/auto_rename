@@ -83,6 +83,114 @@ class GuessItParser:
             # 如果文件名是纯中文格式（如 "第1集.strm"），尝试从父目录提取剧名
             preprocessed_filename = self._preprocess_chinese_filename(filename)
 
+            # 特殊格式检测：文件名包含集号范围 [13-25] 模式
+            # 如 [Solo Leveling][13-25][BIG5][720P]/[Solo Leveling][25][BIG5][720P].mp4
+            # 父目录的 [13-25] 会被误识别为 season，需要特殊处理
+            path_obj = Path(preprocessed_filename)
+            filename_only = path_obj.name
+
+            # 检测文件名中是否包含方括号内的单集号 [25]，且父目录中有集号范围 [13-25]
+            episode_in_brackets = re.search(r'\[(\d+)\]', filename_only)
+            parent_dir = path_obj.parent.name if path_obj.parent else ''
+            episode_range_in_parent = re.search(r'\[(\d+)-(\d+)\]', parent_dir)
+
+            if episode_in_brackets and episode_range_in_parent:
+                # 提取剧名（从父目录或文件名的第一个方括号中）
+                # 格式: [Solo Leveling][13-25][...]/[Solo Leveling][25][...]
+                # 或者: [Tate no Yuusha no Nariagari S4][01-12][...]/[Tate no Yuusha no Nariagari S4][08][...]
+                first_bracket_in_filename = re.match(r'^\[([^\]]+)\]', filename_only)
+                first_bracket_in_parent = re.match(r'^\[([^\]]+)\]', parent_dir)
+
+                if first_bracket_in_filename:
+                    potential_show_name = first_bracket_in_filename.group(1)
+                    episode_num = int(episode_in_brackets.group(1))
+
+                    # 检查这个名称是否像剧名（不全是数字、不含质量标签等）
+                    if not potential_show_name.isdigit() and not re.match(r'^(BIG5|720P|1080P|HEVC|AAC|CHS|CHT|MP4|MKV)$', potential_show_name, re.IGNORECASE):
+                        # 直接构造正确的元数据
+                        metadata = {
+                            'show_name': potential_show_name,
+                            'episode': episode_num,
+                            'media_type': 'tv',
+                            'season': 1,  # 默认第一季
+                            'original_filename': filename,
+                        }
+
+                        # 从剧名中提取季号（如 "Tate no Yuusha no Nariagari S4" -> season=4）
+                        season_match = re.search(r'\s+S(\d{1,2})$', potential_show_name, re.IGNORECASE)
+                        if season_match:
+                            metadata['season'] = int(season_match.group(1))
+                            # 从剧名中移除季号部分
+                            metadata['show_name'] = potential_show_name[:season_match.start()].strip()
+                            logger.debug(f"从剧名中提取季号: {metadata['season']}, 剧名修正为: {metadata['show_name']}")
+
+                        # 尝试提取分辨率
+                        resolution_match = re.search(r'\[(\d+[Pp])\]', filename_only)
+                        if resolution_match:
+                            metadata['screen_size'] = resolution_match.group(1).lower()
+                            metadata['quality_tags'] = resolution_match.group(1)
+
+                        # 尝试提取字幕/语言
+                        lang_match = re.search(r'\[(BIG5|CHS|CHT|GB|简体|繁体)\]', filename_only, re.IGNORECASE)
+                        if lang_match:
+                            metadata['language'] = lang_match.group(1)
+
+                        # 添加扩展名
+                        ext = path_obj.suffix.lower().lstrip('.')
+                        if ext:
+                            metadata['container'] = ext
+                            metadata['extension'] = ext
+
+                        logger.debug(f"特殊集号范围格式检测，直接构造元数据: show_name={metadata['show_name']}, season={metadata.get('season')}, episode={episode_num}")
+                        return metadata
+
+            # 通用方括号格式检测：[剧名][集号][其他标签].ext
+            # 如 [Tonikaku Kawaii Joshikou hen][04][BIG5][1080P].mp4
+            # 这种格式 GuessIt 可能误识别，需要特殊处理
+            bracket_pattern_match = re.match(r'^\[([^\]]+)\]\[(\d+)\]', filename_only)
+            if bracket_pattern_match:
+                potential_show_name = bracket_pattern_match.group(1)
+                episode_num = int(bracket_pattern_match.group(2))
+
+                # 检查这个名称是否像剧名（不全是数字、不含质量标签等）
+                if not potential_show_name.isdigit() and not re.match(r'^(BIG5|720P|1080P|HEVC|AAC|CHS|CHT|MP4|MKV)$', potential_show_name, re.IGNORECASE):
+                    # 直接构造正确的元数据
+                    metadata = {
+                        'show_name': potential_show_name,
+                        'episode': episode_num,
+                        'media_type': 'tv',
+                        'season': 1,  # 默认第一季
+                        'original_filename': filename,
+                    }
+
+                    # 从剧名中提取季号（如 "Tonikaku Kawaii S2" -> season=2）
+                    season_match = re.search(r'\s+S(\d{1,2})$', potential_show_name, re.IGNORECASE)
+                    if season_match:
+                        metadata['season'] = int(season_match.group(1))
+                        # 从剧名中移除季号部分
+                        metadata['show_name'] = potential_show_name[:season_match.start()].strip()
+                        logger.debug(f"从剧名中提取季号: {metadata['season']}, 剧名修正为: {metadata['show_name']}")
+
+                    # 尝试提取分辨率
+                    resolution_match = re.search(r'\[(\d+[Pp])\]', filename_only)
+                    if resolution_match:
+                        metadata['screen_size'] = resolution_match.group(1).lower()
+                        metadata['quality_tags'] = resolution_match.group(1)
+
+                    # 尝试提取字幕/语言
+                    lang_match = re.search(r'\[(BIG5|CHS|CHT|GB|简体|繁体)\]', filename_only, re.IGNORECASE)
+                    if lang_match:
+                        metadata['language'] = lang_match.group(1)
+
+                    # 添加扩展名
+                    ext = path_obj.suffix.lower().lstrip('.')
+                    if ext:
+                        metadata['container'] = ext
+                        metadata['extension'] = ext
+
+                    logger.debug(f"方括号格式检测，直接构造元数据: show_name={metadata['show_name']}, season={metadata.get('season')}, episode={episode_num}")
+                    return metadata
+
             # PT 命名法检测：在预处理之前检查，因为 PT 模式需要原始的 "Title.20" 格式
             # 匹配 "[中文标题].英文标题.年份.其他标签.分辨率" 格式
             # 例如：[第二十条].Article.20.2024.60FPS.2160p...
@@ -450,6 +558,10 @@ class GuessItParser:
         for i, part in enumerate(reversed(parent_parts)):
             part_str = str(part)
 
+            # 跳过纯集数目录（如：前100集、全100集、100集、第100集）
+            if self._is_episode_collection_directory(part_str):
+                continue
+
             # 检查是否是季目录（使用统一的提取模式）
             extracted_season = self._extract_season_from_string(part_str)
             if extracted_season is not None:
@@ -488,6 +600,24 @@ class GuessItParser:
                     show_name = clean_name
 
         return (show_name, season)
+
+    def _is_episode_collection_directory(self, text: str) -> bool:
+        """判断是否为集数集合目录（如 前100集、全100集、100集、第100集）。"""
+        if not text or not isinstance(text, str):
+            return False
+
+        text = text.strip()
+        if not text:
+            return False
+
+        patterns = [
+            r'^[前后全]\s*\d+\s*集$',
+            r'^第\s*\d+\s*集$',
+            r'^\d+\s*集$',
+        ]
+
+        return any(re.match(p, text) for p in patterns)
+
 
     def _extract_season_from_filename(self, text: str) -> Optional[int]:
         """
