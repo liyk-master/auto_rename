@@ -761,10 +761,22 @@ class VideoFileHandler:
             # 检查是否成功获取到 TMDB ID
             if not tmdb_id or tmdb_id == "":
                 console_log(f"\n❌ [线程#{worker_id}] 未找到 TMDB 匹配结果")
-                console_log(f"⚠️  建议：请手动处理该文件或确认文件名是否正确")
-                console_log(f"⚠️  文件将跳过上传，等待手动处理\n")
-                # 从上传中集合移除，添加到已上传集合（避免重复处理）
-                self._uploaded_files.add(file_path)
+                tmdb_request_failed = bool(
+                    self.renamer.tmdb_client
+                    and getattr(self.renamer.tmdb_client, "last_request_failed", False)
+                )
+                if tmdb_request_failed:
+                    error_msg = getattr(self.renamer.tmdb_client, "last_request_error", None)
+                    reason = f"TMDB请求失败: {error_msg}" if error_msg else "TMDB请求失败"
+                    console_log(f"⚠️  TMDB 请求异常，文件将加入自动重试: {reason}")
+                    self._failed_files[file_path] = reason
+                    if self._parent_monitor:
+                        self._parent_monitor._retry_files.add(file_path)
+                else:
+                    console_log(f"⚠️  建议：请手动处理该文件或确认文件名是否正确")
+                    console_log(f"⚠️  文件将跳过上传，等待手动处理\n")
+                    # 记录失败原因，但不标记为已上传（以便后续可以重试）
+                    self._failed_files[file_path] = "未找到 TMDB 匹配结果"
                 self._uploading_files.discard(file_path)
                 return False
             media_type = metadata.get(
@@ -1483,6 +1495,11 @@ class VideoFileHandler:
                 )
                 console_log(f"⚠️  [线程#{worker_id}] 保留本地文件，等待重试或手动处理")
                 self._uploading_files.discard(file_path)
+                # 记录失败原因，以便 Web UI 显示和重试
+                self._failed_files[file_path] = f"部分云盘上传失败: {', '.join(failed_targets)}"
+                # 加入重试队列，自动重试
+                if self._parent_monitor:
+                    self._parent_monitor._retry_files.add(file_path)
                 log_success(
                     self.logger,
                     "文件元数据获取成功但部分云盘上传失败",
@@ -1500,6 +1517,11 @@ class VideoFileHandler:
         except Exception as e:
             console_log(f"\n❌ [线程#{worker_id}] 视频上传错误: {e}")
             self._uploading_files.discard(file_path)
+            # 记录失败原因，以便 Web UI 显示和重试
+            self._failed_files[file_path] = f"上传异常: {str(e)}"
+            # 加入重试队列，自动重试
+            if self._parent_monitor:
+                self._parent_monitor._retry_files.add(file_path)
             log_success(
                 self.logger,
                 "文件元数据获取成功但上传出错",

@@ -21,6 +21,8 @@ class TMDBClient:
         self.retry_count = retry_count
         self.timeout = timeout
         self.session = requests.Session()
+        self.last_request_failed = False
+        self.last_request_error = None
         # Check if it's a JWT token (Bearer token) or regular API key
         if api_key and api_key.startswith("eyJ"):
             # JWT token - use Bearer authentication
@@ -137,6 +139,8 @@ class TMDBClient:
 
         retry_count = self.retry_count
         last_error = None
+        self.last_request_failed = False
+        self.last_request_error = None
 
         while retry_count >= 0:
             try:
@@ -181,6 +185,8 @@ class TMDBClient:
                     continue
 
                 response.raise_for_status()
+                self.last_request_failed = False
+                self.last_request_error = None
                 return response.json()
 
             except requests.exceptions.Timeout as e:
@@ -207,6 +213,8 @@ class TMDBClient:
             f"TMDB API request failed after multiple attempts. Last error: {last_error}"
         )
         logger.error(f"Failed URL: {url}, params: {params}")
+        self.last_request_failed = True
+        self.last_request_error = last_error
         return None
 
     def _handle_retry(self, retry_count: int, error_msg: str, url: str):

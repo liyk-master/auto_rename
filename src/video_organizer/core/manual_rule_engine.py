@@ -228,6 +228,7 @@ class ManualRuleEngine:
         self.enabled = enabled
         self.normalize_symbols = normalize_symbols
         self.rules: List[ManualRule] = []
+        self._last_locked_fields: Set[str] = set()
 
         if enabled:
             self._parse_rules(rules_config)
@@ -311,7 +312,10 @@ class ManualRuleEngine:
 
     def apply_rules(self, metadata: Dict, file_path: Path) -> Dict:
         if not self.enabled:
+            self._last_locked_fields = set()
             return metadata
+
+        self._last_locked_fields = set()
 
         for rule in self.rules:
             if not rule.enabled:
@@ -319,15 +323,14 @@ class ManualRuleEngine:
 
             try:
                 logger.debug(f"应用规则 [{rule.rule_type}]: {rule.raw_rule}")
+                before = dict(metadata)
                 metadata = rule.apply(metadata, file_path, self.normalize_symbols)
+                if metadata != before:
+                    self._last_locked_fields.update(rule.lock_fields())
             except Exception as e:
                 logger.error(f"应用规则失败 [{rule.rule_type}]: {e}")
 
         return metadata
 
     def get_locked_fields(self) -> Set[str]:
-        locked = set()
-        for rule in self.rules:
-            if rule.enabled:
-                locked.update(rule.lock_fields())
-        return locked
+        return set(self._last_locked_fields)

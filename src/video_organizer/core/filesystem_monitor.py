@@ -792,6 +792,12 @@ class FileSystemMonitor:
             directory_monitor_thread.start()
             logger.info("目录监控线程已启动")
 
+        # 启动重试队列处理线程
+        retry_thread = threading.Thread(target=self._retry_loop)
+        retry_thread.daemon = True
+        retry_thread.start()
+        logger.info("重试队列处理线程已启动")
+
         logger.info(f"Started downloader monitoring (No filesystem monitoring enabled)")
 
         try:
@@ -803,6 +809,79 @@ class FileSystemMonitor:
         # 等待目录监控线程结束
         if directory_monitor_thread and directory_monitor_thread.is_alive():
             directory_monitor_thread.join(timeout=5)
+
+        # 等待重试线程结束
+        if retry_thread and retry_thread.is_alive():
+            retry_thread.join(timeout=5)
+
+    def _retry_loop(self):
+        """
+        重试队列处理循环，定期检查需要重试的文件
+        """
+        logger.info("重试队列处理循环已启动")
+        retry_interval = 60  # 每60秒检查一次重试队列
+
+        while not self.stop_event.is_set():
+            try:
+                # 处理 pending 文件（文件未完成写入的情况）
+                if self._pending_files:
+                    pending_files = list(self._pending_files)
+                    for file_path in pending_files:
+                        try:
+                            if not os.path.exists(file_path):
+                                logger.debug(f"重试: 文件不存在，从队列移除: {file_path}")
+                                self._pending_files.discard(file_path)
+                                continue
+
+                            # 检查文件是否完整
+                            if hasattr(self.event_handler, '_is_file_complete') and \
+                               self.event_handler._is_file_complete(file_path):
+                                logger.info(f"重试处理待处理文件: {file_path}")
+                                self._pending_files.discard(file_path)
+                                # 在新线程中处理
+                                threading.Thread(
+                                    target=self.event_handler._process_file,
+                                    args=(file_path,)
+                                ).start()
+                        except Exception as e:
+                            logger.error(f"重试处理文件失败: {file_path}, 错误: {e}")
+
+                # 处理 retry 文件（API请求失败等情况）
+                if self._retry_files:
+                    retry_files = list(self._retry_files)
+                    for file_path in retry_files:
+                        try:
+                            if not os.path.exists(file_path):
+                                logger.debug(f"重试: 文件不存在，从队列移除: {file_path}")
+                                self._retry_files.discard(file_path)
+                                continue
+
+                            # 检查文件是否已经在处理中或已上传
+                            if file_path in self.event_handler._uploading_files or \
+                               file_path in self.event_handler._uploaded_files:
+                                self._retry_files.discard(file_path)
+                                continue
+
+                            logger.info(f"重试处理失败文件: {file_path}")
+                            self._retry_files.discard(file_path)
+                            # 从失败列表中移除后重新处理
+                            if file_path in self.event_handler._failed_files:
+                                del self.event_handler._failed_files[file_path]
+                            # 在新线程中处理
+                            threading.Thread(
+                                target=self.event_handler._process_file,
+                                args=(file_path,)
+                            ).start()
+                        except Exception as e:
+                            logger.error(f"重试处理文件失败: {file_path}, 错误: {e}")
+
+            except Exception as e:
+                logger.error(f"重试队列处理循环发生错误: {e}")
+
+            # 等待指定的重试间隔
+            self.stop_event.wait(retry_interval)
+
+        logger.info("重试队列处理循环已停止")
 
     def _directory_monitor_loop(self):
         """

@@ -5,6 +5,7 @@ GuessIt 是一个强大的视频文件名解析库，能够从文件名中提取
 本模块将其集成到 Video Organizer 项目中，作为正则表达式识别的补充和增强。
 """
 
+from __future__ import annotations
 import logging
 import re
 from pathlib import Path
@@ -189,6 +190,47 @@ class GuessItParser:
                         metadata['extension'] = ext
 
                     logger.debug(f"方括号格式检测，直接构造元数据: show_name={metadata['show_name']}, season={metadata.get('season')}, episode={episode_num}")
+                    return metadata
+
+            # 通用“剧名+集号”紧凑格式检测：如 入青云01.mp4、TonikakuKawaii08.mkv
+            # 避免依赖 LLM 才能纠正
+            stem_only = path_obj.stem
+            has_season_episode_pattern = bool(re.search(r'S\d+E\d+$', stem_only, re.IGNORECASE))
+            compact_match = None if has_season_episode_pattern else re.match(r'^(.+?)(\d{1,3})$', stem_only)
+            if compact_match:
+                potential_show_name = compact_match.group(1).strip()
+                episode_num = int(compact_match.group(2))
+
+                # 排除明显无效的剧名片段
+                invalid_show_tokens = [
+                    'BIG5', 'CHS', 'CHT', 'GB', 'HEVC', 'AAC', 'WEB', 'WEB-DL',
+                    '1080P', '720P', '2160P', 'MP4', 'MKV', 'AVI'
+                ]
+                is_invalid = (
+                    not potential_show_name
+                    or potential_show_name.isdigit()
+                    or potential_show_name.upper() in invalid_show_tokens
+                )
+
+                # 简单保护：像“202401”这类纯数字时间戳不要误判为剧名+集号
+                if not is_invalid and len(potential_show_name) >= 2:
+                    metadata = {
+                        'show_name': potential_show_name,
+                        'episode': episode_num,
+                        'media_type': 'tv',
+                        'season': 1,
+                        'original_filename': filename,
+                    }
+
+                    ext = path_obj.suffix.lower().lstrip('.')
+                    if ext:
+                        metadata['container'] = ext
+                        metadata['extension'] = ext
+
+                    logger.debug(
+                        f"紧凑格式检测，直接构造元数据: show_name={metadata['show_name']}, "
+                        f"season={metadata.get('season')}, episode={episode_num}"
+                    )
                     return metadata
 
             # PT 命名法检测：在预处理之前检查，因为 PT 模式需要原始的 "Title.20" 格式
