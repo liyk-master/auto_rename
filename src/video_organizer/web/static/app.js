@@ -160,6 +160,7 @@ function startAutoRefresh() {
     state.autoRefresh = setInterval(() => {
         loadStatus();
         if (document.querySelector('#page-tasks.active')) loadTasks();
+        if (document.querySelector('#page-dashboard.active')) updateRecentActivity();
     }, 5000);
 }
 
@@ -230,41 +231,76 @@ function updateTaskList() {
             statusBadge = '<span class="badge badge-warning">处理中</span>';
             break;
         case 'completed':
-            files = state.tasks.completed.map(f => ({ path: f }));
+            files = (state.tasks._completed || []).map(f => ({ path: f.path, time: f.time }));
             statusBadge = '<span class="badge badge-success">已完成</span>';
             break;
         case 'failed':
             files = Object.entries(state.tasks.failed).map(([p, err]) => ({ path: p, error: err }));
+            // 合并时间信息
+            if (state.tasks._failed) {
+                for (const f of files) {
+                    const ft = state.tasks._failed[f.path];
+                    if (ft) f.time = ft.time;
+                }
+            }
             statusBadge = '<span class="badge badge-danger">失败</span>';
             break;
     }
     if (files.length === 0) {
-        el.taskList.innerHTML = `<tr><td colspan="3"><div class="empty-state"><p>暂无数据</p></div></td></tr>`;
+        el.taskList.innerHTML = `<tr><td colspan="4"><div class="empty-state"><p>暂无数据</p></div></td></tr>`;
         return;
     }
+    const showTime = tab === 'completed' || tab === 'failed';
     el.taskList.innerHTML = files.map(file => `<tr>
         <td style="font-family:monospace;font-size:0.8125rem">${escapeHtml(file.path)}</td>
         <td>${statusBadge}${file.error ? `<br><small style="color:var(--accent-danger)">${escapeHtml(file.error)}</small>` : ''}</td>
+        ${showTime ? `<td style="color:var(--text-muted);white-space:nowrap;font-size:0.8125rem">${formatRelativeTime(file.time)}</td>` : ''}
         <td>${tab === 'failed' ? `<button class="btn btn-primary btn-sm" onclick="retryTask('${escapeHtml(file.path)}')">重试</button>
             <button class="btn btn-danger btn-sm" onclick="confirmClearFailed('${escapeHtml(file.path)}')">清除</button>` : ''}</td>
     </tr>`).join('');
+    // 更新表头列数
+    const headers = el.taskList.closest('table')?.querySelector('thead tr');
+    if (headers && showTime && headers.children.length < 4) {
+        const th = document.createElement('th');
+        th.textContent = '时间';
+        headers.insertBefore(th, headers.lastElementChild);
+    }
+}
+
+function formatRelativeTime(isoTime) {
+    if (!isoTime) return '';
+    const now = Date.now();
+    const then = new Date(isoTime).getTime();
+    const diffMs = now - then;
+    if (diffMs < 0) return '刚刚';
+    const seconds = Math.floor(diffMs / 1000);
+    if (seconds < 60) return '刚刚';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}分钟前`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}小时前`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days}天前`;
+    const months = Math.floor(days / 30);
+    if (months < 12) return `${months}个月前`;
+    return `${Math.floor(months / 12)}年前`;
 }
 
 function updateRecentActivity() {
-    const allTasks = [
-        ...state.tasks.completed.map(p => ({ path: p, status: 'completed' })),
-        ...Object.entries(state.tasks.failed).map(([p, e]) => ({ path: p, status: 'failed', error: e }))
-    ].slice(-10).reverse();
-
-    if (allTasks.length === 0) {
-        el.recentActivity.innerHTML = `<tr><td colspan="3"><div class="empty-state"><p>暂无数据</p></div></td></tr>`;
-        return;
-    }
-    el.recentActivity.innerHTML = allTasks.map(t => `<tr>
-        <td style="font-family:monospace;font-size:0.8125rem">${escapeHtml(t.path)}</td>
-        <td><span class="badge ${t.status === 'completed' ? 'badge-success' : 'badge-danger'}">${t.status === 'completed' ? '已完成' : '失败'}</span></td>
-        <td style="color:var(--text-muted)">刚刚</td>
-    </tr>`).join('');
+    apiRequest('/tasks/recent').then(data => {
+        const items = data.items || [];
+        if (items.length === 0) {
+            el.recentActivity.innerHTML = `<tr><td colspan="3"><div class="empty-state"><p>暂无数据</p></div></td></tr>`;
+            return;
+        }
+        el.recentActivity.innerHTML = items.map(t => `<tr>
+            <td style="font-family:monospace;font-size:0.8125rem">${escapeHtml(t.path)}</td>
+            <td><span class="badge ${t.status === 'completed' ? 'badge-success' : 'badge-danger'}">${t.status === 'completed' ? '已完成' : '失败'}</span></td>
+            <td style="color:var(--text-muted);white-space:nowrap">${formatRelativeTime(t.time)}</td>
+        </tr>`).join('');
+    }).catch(() => {
+        // fallback: 兼容旧格式
+    });
 }
 
 async function retryTask(filePath) {

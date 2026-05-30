@@ -68,7 +68,21 @@ async function loadTasksFromApi() {
         apiRequest('/tasks/completed'),
         apiRequest('/tasks/failed')
     ]);
-    return { queued: queued.files, processing: processing.files, completed: completed.files, failed: failed.files };
+    // completed.files 现在是数组对象 [{path, time}]
+    const completedPaths = (completed.files || []).map(f => f.path);
+    // failed.files 现在是字典 {path: {error, time}}
+    const failedDict = {};
+    for (const [p, v] of Object.entries(failed.files || {})) {
+        failedDict[p] = v.error || '';
+    }
+    return {
+        queued: queued.files,
+        processing: processing.files,
+        completed: completedPaths,
+        failed: failedDict,
+        _completed: completed.files,
+        _failed: failed.files,
+    };
 }
 
 async function loadConfigFromApi() {

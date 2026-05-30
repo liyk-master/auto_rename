@@ -13,6 +13,9 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from ...database.operations import get_completed_tasks as db_get_completed
+from ...database.operations import get_failed_tasks as db_get_failed
+
 
 @dataclass
 class TaskInfo:
@@ -245,6 +248,59 @@ class StateManager:
             self._logger.error(f"获取失败文件失败: {e}")
         
         return {}
+    
+    def get_completed_with_time(self) -> List[Dict]:
+        """
+        获取已完成的文件列表（含时间戳）
+        
+        合并内存状态和数据库记录，返回带完成时间的列表。
+        """
+        seen = {}
+        # 数据库记录优先（有时间戳）
+        try:
+            db_items = db_get_completed(limit=500)
+            for item in db_items:
+                seen[item["path"]] = item["time"]
+        except Exception:
+            pass
+        # 内存状态补充（实时数据）
+        try:
+            if self._video_handler and hasattr(self._video_handler, "_uploaded_files"):
+                for p in list(self._video_handler._uploaded_files)[-500:]:
+                    if p not in seen:
+                        seen[p] = None
+        except Exception:
+            pass
+        # 按时间倒序
+        result = [{"path": p, "time": t} for p, t in seen.items()]
+        result.sort(key=lambda x: x["time"] or "", reverse=True)
+        return result[:200]
+    
+    def get_failed_with_time(self) -> Dict[str, Dict]:
+        """
+        获取失败的文件列表（含时间戳）
+        
+        Returns:
+            {path: {"error": str, "time": str or None}, ...}
+        """
+        result = {}
+        # 数据库记录优先（有时间戳）
+        try:
+            db_items = db_get_failed(limit=500)
+            for key, val in db_items.items():
+                result[key] = val
+        except Exception:
+            pass
+        # 内存状态补充（实时数据/自动重试中的文件）
+        try:
+            if self._video_handler and hasattr(self._video_handler, "_failed_files"):
+                handler_failed = self._video_handler._failed_files
+                for p, err in handler_failed.items():
+                    if p not in result:
+                        result[p] = {"error": err, "time": None}
+        except Exception:
+            pass
+        return dict(list(result.items())[:200])
     
     def add_task_history(self, task: TaskInfo) -> None:
         """添加任务历史记录"""

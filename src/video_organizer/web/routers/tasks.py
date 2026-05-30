@@ -38,11 +38,44 @@ class TaskListResponse(BaseModel):
     files: List[str]
 
 
+class CompletedTaskItem(BaseModel):
+    """已完成任务项"""
+    path: str
+    time: Optional[str] = None
+
+
+class CompletedTaskListResponse(BaseModel):
+    """已完成任务列表响应"""
+    success: bool
+    count: int
+    files: List[CompletedTaskItem]
+
+
+class FailedTaskItem(BaseModel):
+    """失败任务项"""
+    error: str
+    time: Optional[str] = None
+
+
 class FailedTaskListResponse(BaseModel):
     """失败任务列表响应"""
     success: bool
     count: int
-    files: Dict[str, str]  # file_path -> error_message
+    files: Dict[str, FailedTaskItem]  # path -> {error, time}
+
+
+class RecentActivityItem(BaseModel):
+    """最近活动项"""
+    path: str
+    status: str
+    error: Optional[str] = None
+    time: Optional[str] = None
+
+
+class RecentActivityResponse(BaseModel):
+    """最近活动响应"""
+    success: bool
+    items: List[RecentActivityItem]
 
 
 class RetryRequest(BaseModel):
@@ -157,21 +190,21 @@ async def get_uploading_tasks():
         raise HTTPException(status_code=500, detail=f"获取上传中任务失败: {e}")
 
 
-@router.get("/completed", response_model=TaskListResponse)
+@router.get("/completed", response_model=CompletedTaskListResponse)
 async def get_completed_tasks():
     """
     获取已完成的任务
     
-    返回已成功处理的文件列表。
+    返回已成功处理的文件及其完成时间。
     """
     try:
         state = get_state_manager()
-        files = state.get_completed_files()
+        files = state.get_completed_with_time()
         
-        return TaskListResponse(
+        return CompletedTaskListResponse(
             success=True,
             count=len(files),
-            files=files,
+            files=[CompletedTaskItem(**f) for f in files],
         )
     except Exception as e:
         logger.error(f"获取已完成任务失败: {e}")
@@ -183,20 +216,47 @@ async def get_failed_tasks():
     """
     获取失败的任务
     
-    返回处理失败的文件及其错误信息。
+    返回处理失败的文件、错误信息及其时间。
     """
     try:
         state = get_state_manager()
-        files = state.get_failed_files()
+        files = state.get_failed_with_time()
         
         return FailedTaskListResponse(
             success=True,
             count=len(files),
-            files=files,
+            files={p: FailedTaskItem(**v) for p, v in files.items()},
         )
     except Exception as e:
         logger.error(f"获取失败任务失败: {e}")
         raise HTTPException(status_code=500, detail=f"获取失败任务失败: {e}")
+
+
+@router.get("/recent", response_model=RecentActivityResponse)
+async def get_recent_activity():
+    """
+    获取最近活动
+    
+    返回最近的已完成和失败任务（含时间戳），用于仪表盘展示。
+    """
+    try:
+        state = get_state_manager()
+        completed = state.get_completed_with_time()
+        failed_dict = state.get_failed_with_time()
+        
+        items = []
+        for f in completed:
+            items.append(RecentActivityItem(path=f["path"], status="completed", time=f["time"]))
+        for p, v in failed_dict.items():
+            items.append(RecentActivityItem(path=p, status="failed", error=v["error"], time=v["time"]))
+        
+        items.sort(key=lambda x: x.time or "", reverse=True)
+        items = items[:20]
+        
+        return RecentActivityResponse(success=True, items=items)
+    except Exception as e:
+        logger.error(f"获取最近活动失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取最近活动失败: {e}")
 
 
 @router.get("/progress", response_model=AllProgressResponse)

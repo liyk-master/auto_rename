@@ -4,6 +4,7 @@ import subprocess
 import requests
 import threading
 import logging
+from datetime import datetime
 from queue import Queue, Empty
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
@@ -16,6 +17,8 @@ from .tmdb_client import TMDBClient
 from .subtitle_handler import SubtitleHandler
 from .downloader_monitor import decode_file_path
 from ..utils.logging_utils import get_logger, log_success, log_failure, log_exception
+from ..database.operations import record_task
+from ..database.session import init_db as init_task_db
 
 
 # 获取模块级别的 logger
@@ -294,6 +297,12 @@ class VideoFileHandler:
 
         # 父监控器引用
         self._parent_monitor = None
+
+        # 初始化任务历史数据库（失败不阻塞）
+        try:
+            init_task_db()
+        except Exception:
+            self.logger.warning("初始化任务历史数据库失败（部分功能可能受限）")
 
         # 处理中的文件，用于跟踪文件写入完成状态
         self._processing_files = set()
@@ -590,6 +599,7 @@ class VideoFileHandler:
                 console_log(f"\n🎉 视频上传成功!")
                 # 从上传中集合移除，添加到已上传集合
                 self._uploaded_files.add(file_path)
+                record_task(file_path, "completed", end_time=datetime.now())
 
                 # 如果配置了上传后删除文件，执行删除操作
                 if self.delete_after_upload:
@@ -775,6 +785,7 @@ class VideoFileHandler:
                     reason = f"TMDB请求失败: {error_msg}" if error_msg else "TMDB请求失败"
                     console_log(f"⚠️  TMDB 请求异常，文件将加入自动重试: {reason}")
                     self._failed_files[file_path] = reason
+                    record_task(file_path, "failed", error_message=reason, end_time=datetime.now())
                     if self._parent_monitor:
                         self._parent_monitor._retry_files.add(file_path)
                 else:
@@ -782,6 +793,7 @@ class VideoFileHandler:
                     console_log(f"⚠️  文件将跳过上传，等待手动处理\n")
                     # 记录失败原因，但不标记为已上传（以便后续可以重试）
                     self._failed_files[file_path] = "未找到 TMDB 匹配结果"
+                    record_task(file_path, "failed", error_message="未找到 TMDB 匹配结果", end_time=datetime.now())
                 self._uploading_files.discard(file_path)
                 return False
             media_type = metadata.get(
@@ -992,6 +1004,7 @@ class VideoFileHandler:
             else:
                 # 需要 Emos 但没有 item_id
                 self._failed_files[file_path] = "未找到匹配的item_id"
+                record_task(file_path, "failed", error_message="未找到匹配的item_id", end_time=datetime.now())
                 log_success(
                     self.logger,
                     "文件元数据获取成功但未匹配到item_id",
@@ -1022,6 +1035,7 @@ class VideoFileHandler:
 
             # 记录失败原因
             self._failed_files[file_path] = f"API请求失败: {str(e)}"
+            record_task(file_path, "failed", error_message=f"API请求失败: {str(e)}", end_time=datetime.now())
 
             # 如果有父监控器，可以将文件添加到重试队列
             if self._parent_monitor:
@@ -1305,6 +1319,7 @@ class VideoFileHandler:
                 console_log(f"\n🎉 [线程#{worker_id}] 所有云盘上传成功!")
                 # 从上传中集合移除，添加到已上传集合
                 self._uploaded_files.add(file_path)
+                record_task(file_path, "completed", end_time=datetime.now())
                 self._uploading_files.discard(file_path)
 
                 # 执行 emya 数据库入库（如果启用）
@@ -1503,6 +1518,7 @@ class VideoFileHandler:
                 self._uploading_files.discard(file_path)
                 # 记录失败原因，以便 Web UI 显示和重试
                 self._failed_files[file_path] = f"部分云盘上传失败: {', '.join(failed_targets)}"
+                record_task(file_path, "failed", error_message=f"部分云盘上传失败: {', '.join(failed_targets)}", end_time=datetime.now())
                 # 加入重试队列，自动重试
                 if self._parent_monitor:
                     self._parent_monitor._retry_files.add(file_path)
@@ -1525,6 +1541,7 @@ class VideoFileHandler:
             self._uploading_files.discard(file_path)
             # 记录失败原因，以便 Web UI 显示和重试
             self._failed_files[file_path] = f"上传异常: {str(e)}"
+            record_task(file_path, "failed", error_message=f"上传异常: {str(e)}", end_time=datetime.now())
             # 加入重试队列，自动重试
             if self._parent_monitor:
                 self._parent_monitor._retry_files.add(file_path)
