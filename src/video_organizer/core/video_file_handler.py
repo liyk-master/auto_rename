@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess
 import requests
 import threading
 import logging
@@ -593,18 +594,21 @@ class VideoFileHandler:
                 # 如果配置了上传后删除文件，执行删除操作
                 if self.delete_after_upload:
                     try:
-                        # 重要：先从下载器 (qBittorrent) 中删除任务，让下载器释放文件句柄
+                        # 1. 先暂停下载器中的种子，提前释放文件句柄
+                        self._release_file_lock_via_downloader(file_path)
+
+                        # 2. 再从下载器中强制删除任务，让下载器释放文件句柄
                         self._force_cleanup_download_task(file_path)
 
-                        # 等待一下让 qBittorrent 释放文件
+                        # 等待一段时间让下载器完全释放文件
                         import time
 
-                        time.sleep(1.0)
+                        time.sleep(3.0)
 
-                        # 然后尝试删除文件 (文件可能已被下载器删除)
+                        # 3. 然后尝试删除文件 (文件可能已被下载器删除)
                         delete_success = False
-                        max_retries = 3
-                        retry_delay = 2.0
+                        max_retries = 5
+                        retry_delay = 3.0
 
                         for attempt in range(max_retries):
                             try:
@@ -638,8 +642,9 @@ class VideoFileHandler:
                                     time.sleep(retry_delay)
                                 else:
                                     self.logger.error(
-                                        f"删除原文件失败，已从下载器清理: {file_path}, 错误: {e}"
+                                        f"删除原文件失败，已从下载器清理，启动后台重试: {file_path}, 错误: {e}"
                                     )
+                                    self._delete_file_with_background_retry(file_path)
                     except Exception as e:
                         console_log(f"❌ 上传成功后删除原文件失败: {e}")
                         self.logger.error(
@@ -1394,18 +1399,21 @@ class VideoFileHandler:
                 deleted = False
                 if self.delete_after_upload:
                     try:
-                        # 1. 先尝试正常的清理流程 (会检查是否所有视频都已处理)
+                        # 1. 先暂停下载器中的种子，提前释放文件句柄
+                        self._release_file_lock_via_downloader(file_path)
+
+                        # 2. 再尝试从下载器中删除任务
                         self._cleanup_download_task(file_path)
 
-                        # 2. 等待一下让下载器释放文件
+                        # 3. 等待一段时间让下载器完全释放文件
                         import time
 
-                        time.sleep(0.5)
+                        time.sleep(3.0)
 
-                        # 3. 然后尝试删除文件
+                        # 4. 然后尝试删除文件
                         delete_success = False
-                        max_retries = 3
-                        retry_delay = 2.0
+                        max_retries = 5
+                        retry_delay = 3.0
 
                         for attempt in range(max_retries):
                             try:
@@ -1439,18 +1447,16 @@ class VideoFileHandler:
                                         else e.errno
                                     )
                                     self.logger.warning(
-                                        f"[线程#{worker_id}] 文件被占用 ({error_code})，尝试暂停下载器种子..."
+                                        f"[线程#{worker_id}] 文件被占用 ({error_code})，{retry_delay}秒后重试..."
                                     )
-
-                                    # 尝试暂停 qBittorrent 中的种子来释放文件锁
-                                    self._release_file_lock_via_downloader(file_path)
 
                                     # 等待后重试
                                     time.sleep(retry_delay)
                                 else:
                                     self.logger.warning(
-                                        f"[线程#{worker_id}] 文件删除失败 (已尝试暂停种子): {file_path}"
+                                        f"[线程#{worker_id}] 文件删除失败，启动后台重试: {file_path}"
                                     )
+                                    self._delete_file_with_background_retry(file_path)
                     except Exception as e:
                         console_log(f"❌ [线程#{worker_id}] 删除原文件失败: {e}")
                         self.logger.error(f"删除原文件失败: {file_path}, 错误: {e}")
@@ -1901,6 +1907,50 @@ class VideoFileHandler:
                     self.logger.warning(f"尝试暂停种子时出错: {e}")
 
         return False
+
+    def _delete_file_with_background_retry(
+        self, file_path: str, max_retries: int = 20, retry_interval: int = 5
+    ) -> bool:
+        """
+        使用 PowerShell 后台作业持续重试删除文件，即使主进程退出后也能继续
+
+        Args:
+            file_path: 文件路径
+            max_retries: 最大重试次数
+            retry_interval: 重试间隔（秒）
+
+        Returns:
+            bool: 是否成功启动了后台重试
+        """
+        try:
+            ps_script = (
+                f'$path = "{file_path}"; '
+                f'$maxRetries = {max_retries}; '
+                f'$delay = {retry_interval}; '
+                "Start-Sleep -Seconds 3; "
+                "for($i=0; $i -lt $maxRetries; $i++) { "
+                "    if(Test-Path $path) { "
+                "        try { "
+                "            Remove-Item -LiteralPath $path -Force -ErrorAction Stop; "
+                "            exit 0 "
+                "        } catch { "
+                "            Start-Sleep -Seconds $delay "
+                "        } "
+                "    } else { "
+                "        exit 0 "
+                "    } "
+                "}; "
+                "exit 1"
+            )
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            self.logger.info(f"已启动 PowerShell 后台重试删除文件: {file_path}")
+            return True
+        except Exception as e:
+            self.logger.warning(f"启动 PowerShell 后台重试失败: {e}")
+            return False
 
     def _cleanup_old_records(self):
         """清理旧的处理记录，防止内存溢出"""

@@ -1,280 +1,225 @@
-/**
- * Video Organizer Web 管理后台 - 前端脚本
- */
-
-// API 基础路径
-const API_BASE = '/api';
-
-// 状态
 const state = {
     config: null,
-    tasks: {
-        queued: [],
-        processing: [],
-        completed: [],
-        failed: {}
-    },
+    tasks: { queued: [], processing: [], completed: [], failed: {} },
     status: null,
     currentTab: 'queued',
-    currentLogTab: 'queued',
     logWebSocket: null,
-    autoRefresh: null
+    autoRefresh: null,
+    initialized: false
 };
 
-// DOM 元素缓存
-const elements = {};
+const el = {};
 
-// 初始化
 document.addEventListener('DOMContentLoaded', async () => {
-    initElements();
-    initEventListeners();
-    await loadInitialData();
-    startAutoRefresh();
-    // 连接上传进度 WebSocket
-    connectUploadProgressWebSocket();
+    initThemeOnLoginPage();
+    bindLoginEvents();
+    const authed = await checkAuthApi();
+    if (authed) {
+        hideLoginPage();
+        initApp();
+    } else {
+        showLoginPage();
+    }
 });
 
-// 初始化 DOM 元素缓存
-function initElements() {
-    // 导航
-    elements.navItems = document.querySelectorAll('.nav-item');
-    elements.pages = document.querySelectorAll('.page');
-    elements.statusDot = document.getElementById('statusDot');
-    elements.statusText = document.getElementById('statusText');
-    elements.queueCount = document.getElementById('queueCount');
-
-    // 仪表盘
-    elements.statQueue = document.getElementById('stat-queue');
-    elements.statProcessing = document.getElementById('stat-processing');
-    elements.statCompleted = document.getElementById('stat-completed');
-    elements.statFailed = document.getElementById('stat-failed');
-    elements.recentActivity = document.getElementById('recent-activity');
-
-    // 任务管理
-    elements.taskTabs = document.querySelectorAll('#page-tasks .tab');
-    elements.taskList = document.getElementById('task-list');
-    elements.refreshTasksBtn = document.getElementById('refreshTasksBtn');
-    elements.clearFailedBtn = document.getElementById('clearFailedBtn');
-    elements.retryAllBtn = document.getElementById('retryAllBtn');
-
-    // 配置管理
-    elements.configEditor = document.getElementById('config-editor');
-    elements.reloadConfigBtn = document.getElementById('reloadConfigBtn');
-    elements.saveConfigBtn = document.getElementById('saveConfigBtn');
-
-    // 日志查看
-    elements.logFileSelect = document.getElementById('logFileSelect');
-    elements.logViewer = document.getElementById('logViewer');
-    elements.autoScrollCheck = document.getElementById('autoScrollCheck');
-    elements.liveLogCheck = document.getElementById('liveLogCheck');
-
-    // 手动处理
-    elements.manualFilePath = document.getElementById('manualFilePath');
-    elements.browseFileBtn = document.getElementById('browseFileBtn');
-    elements.forceProcessCheck = document.getElementById('forceProcessCheck');
-    elements.processFileBtn = document.getElementById('processFileBtn');
-    elements.previewFileBtn = document.getElementById('previewFileBtn');
-    elements.previewResult = document.getElementById('previewResult');
-    elements.previewContent = document.getElementById('previewContent');
-    elements.scanDirPath = document.getElementById('scanDirPath');
-    elements.recursiveScanCheck = document.getElementById('recursiveScanCheck');
-    elements.scanDirBtn = document.getElementById('scanDirBtn');
-    elements.scanResults = document.getElementById('scanResults');
-    elements.scannedFilesList = document.getElementById('scannedFilesList');
-    elements.selectAllFiles = document.getElementById('selectAllFiles');
-    elements.processSelectedBtn = document.getElementById('processSelectedBtn');
-
-    // 下载器
-    elements.downloaderList = document.getElementById('downloader-list');
-    elements.refreshDownloadersBtn = document.getElementById('refreshDownloadersBtn');
-
-    // 上传进度
-    elements.uploadProgressList = document.getElementById('upload-progress-list');
-    elements.uploadStatusDot = document.getElementById('uploadStatusDot');
-
-    // 模态框
-    elements.modalOverlay = document.getElementById('modalOverlay');
-    elements.modalTitle = document.getElementById('modalTitle');
-    elements.modalBody = document.getElementById('modalBody');
-    elements.modalClose = document.getElementById('modalClose');
-    elements.modalCancelBtn = document.getElementById('modalCancelBtn');
-    elements.modalConfirmBtn = document.getElementById('modalConfirmBtn');
-
-    // Toast
-    elements.toastContainer = document.getElementById('toastContainer');
+function bindLoginEvents() {
+    const form = document.getElementById('loginForm');
+    if (form) form.addEventListener('submit', handleLogin);
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) logoutBtn.addEventListener('click', handleLogout);
 }
 
-// 初始化事件监听
-function initEventListeners() {
-    // 导航切换
-    elements.navItems.forEach(item => {
+async function initApp() {
+    if (state.initialized) return;
+    state.initialized = true;
+    cacheElements();
+    bindEvents();
+    await loadInitialData();
+    startAutoRefresh();
+    connectUploadProgressWebSocket();
+    initKeyboardShortcuts();
+    initMobileMenu();
+    initThemeSwitcher();
+}
+
+function cacheElements() {
+    el.navItems = document.querySelectorAll('.nav-item');
+    el.pages = document.querySelectorAll('.page');
+    el.statusDot = document.getElementById('statusDot');
+    el.statusText = document.getElementById('statusText');
+    el.queueCount = document.getElementById('queueCount');
+    el.statQueue = document.getElementById('stat-queue');
+    el.statProcessing = document.getElementById('stat-processing');
+    el.statCompleted = document.getElementById('stat-completed');
+    el.statFailed = document.getElementById('stat-failed');
+    el.recentActivity = document.getElementById('recent-activity');
+    el.taskTabs = document.querySelectorAll('#page-tasks .tab');
+    el.taskList = document.getElementById('task-list');
+    el.refreshTasksBtn = document.getElementById('refreshTasksBtn');
+    el.clearFailedBtn = document.getElementById('clearFailedBtn');
+    el.retryAllBtn = document.getElementById('retryAllBtn');
+    el.configEditor = document.getElementById('config-editor');
+    el.reloadConfigBtn = document.getElementById('reloadConfigBtn');
+    el.saveConfigBtn = document.getElementById('saveConfigBtn');
+    el.logFileSelect = document.getElementById('logFileSelect');
+    el.logViewer = document.getElementById('logViewer');
+    el.autoScrollCheck = document.getElementById('autoScrollCheck');
+    el.liveLogCheck = document.getElementById('liveLogCheck');
+    el.manualFilePath = document.getElementById('manualFilePath');
+    el.browseFileBtn = document.getElementById('browseFileBtn');
+    el.forceProcessCheck = document.getElementById('forceProcessCheck');
+    el.processFileBtn = document.getElementById('processFileBtn');
+    el.previewFileBtn = document.getElementById('previewFileBtn');
+    el.previewResult = document.getElementById('previewResult');
+    el.previewContent = document.getElementById('previewContent');
+    el.validateScrapeBtn = document.getElementById('validateScrapeBtn');
+    el.validateResult = document.getElementById('validateResult');
+    el.validateContent = document.getElementById('validateContent');
+    el.scanDirPath = document.getElementById('scanDirPath');
+    el.recursiveScanCheck = document.getElementById('recursiveScanCheck');
+    el.scanDirBtn = document.getElementById('scanDirBtn');
+    el.scanResults = document.getElementById('scanResults');
+    el.scannedFilesList = document.getElementById('scannedFilesList');
+    el.selectAllFiles = document.getElementById('selectAllFiles');
+    el.processSelectedBtn = document.getElementById('processSelectedBtn');
+    el.downloaderList = document.getElementById('downloader-list');
+    el.refreshDownloadersBtn = document.getElementById('refreshDownloadersBtn');
+    el.uploadProgressList = document.getElementById('upload-progress-list');
+    el.uploadStatusDot = document.getElementById('uploadStatusDot');
+    el.modalOverlay = document.getElementById('modalOverlay');
+    el.modalTitle = document.getElementById('modalTitle');
+    el.modalBody = document.getElementById('modalBody');
+    el.modalClose = document.getElementById('modalClose');
+    el.modalCancelBtn = document.getElementById('modalCancelBtn');
+    el.modalConfirmBtn = document.getElementById('modalConfirmBtn');
+    el.toastContainer = document.getElementById('toastContainer');
+}
+
+function bindEvents() {
+    el.navItems.forEach(item => {
         item.addEventListener('click', () => switchPage(item.dataset.page));
     });
-
-    // 任务标签切换
-    elements.taskTabs.forEach(tab => {
+    el.taskTabs.forEach(tab => {
         tab.addEventListener('click', () => switchTaskTab(tab.dataset.tab));
     });
-
-    // 任务管理按钮
-    elements.refreshTasksBtn.addEventListener('click', loadTasks);
-    elements.clearFailedBtn.addEventListener('click', clearAllFailedTasks);
-    elements.retryAllBtn.addEventListener('click', retryAllFailedTasks);
-
-    // 配置管理按钮
-    elements.reloadConfigBtn.addEventListener('click', reloadConfig);
-    elements.saveConfigBtn.addEventListener('click', saveConfig);
-
-    // 日志查看
-    elements.logFileSelect.addEventListener('change', loadLogContent);
-    elements.liveLogCheck.addEventListener('change', toggleLiveLog);
-
-    // 手动处理
-    elements.browseFileBtn.addEventListener('click', browseFile);
-    elements.processFileBtn.addEventListener('click', processFile);
-    elements.previewFileBtn.addEventListener('click', previewFile);
-    elements.scanDirBtn.addEventListener('click', scanDirectory);
-    elements.selectAllFiles.addEventListener('change', toggleSelectAllFiles);
-    elements.processSelectedBtn.addEventListener('click', processSelectedFiles);
-
-    // 下载器
-    elements.refreshDownloadersBtn.addEventListener('click', loadDownloaders);
-
-    // 模态框
-    elements.modalClose.addEventListener('click', hideModal);
-    elements.modalCancelBtn.addEventListener('click', hideModal);
-    elements.modalOverlay.addEventListener('click', (e) => {
-        if (e.target === elements.modalOverlay) hideModal();
+    el.refreshTasksBtn.addEventListener('click', loadTasks);
+    el.clearFailedBtn.addEventListener('click', () => {
+        showConfirm('清除失败记录', '确定要清除所有失败记录吗？此操作不可撤销。', clearAllFailedTasks);
+    });
+    el.retryAllBtn.addEventListener('click', () => {
+        showConfirm('重试全部', '确定要重试所有失败的任务吗？', retryAllFailedTasks);
+    });
+    el.reloadConfigBtn.addEventListener('click', reloadConfig);
+    el.saveConfigBtn.addEventListener('click', saveConfig);
+    el.logFileSelect.addEventListener('change', loadLogContent);
+    el.liveLogCheck.addEventListener('change', toggleLiveLog);
+    el.browseFileBtn.addEventListener('click', browseFile);
+    el.processFileBtn.addEventListener('click', processFile);
+    el.previewFileBtn.addEventListener('click', previewFile);
+    el.scanDirBtn.addEventListener('click', scanDirectory);
+    el.validateScrapeBtn.addEventListener('click', validateScrape);
+    el.selectAllFiles.addEventListener('change', toggleSelectAllFiles);
+    el.processSelectedBtn.addEventListener('click', processSelectedFiles);
+    el.refreshDownloadersBtn.addEventListener('click', loadDownloaders);
+    el.modalClose.addEventListener('click', hideModal);
+    el.modalCancelBtn.addEventListener('click', hideModal);
+    el.modalOverlay.addEventListener('click', (e) => {
+        if (e.target === el.modalOverlay) hideModal();
     });
 }
 
-// 加载初始数据
+function initKeyboardShortcuts() {
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') hideModal();
+        if ((e.ctrlKey || e.metaKey) && e.key === 'r' && document.querySelector('#page-tasks.active')) {
+            e.preventDefault();
+            loadTasks();
+        }
+    });
+}
+
+function initMobileMenu() {
+    const toggle = document.querySelector('.menu-toggle');
+    const sidebar = document.querySelector('.sidebar');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', () => sidebar.classList.toggle('show'));
+        document.addEventListener('click', (e) => {
+            if (!sidebar.contains(e.target) && !toggle.contains(e.target)) {
+                sidebar.classList.remove('show');
+            }
+        });
+    }
+}
+
 async function loadInitialData() {
-    await Promise.all([
-        loadStatus(),
-        loadConfig(),
-        loadLogFiles(),
-        loadDownloaders()
-    ]);
+    await Promise.all([loadStatus(), loadConfig(), loadLogFiles(), loadDownloaders()]);
     loadTasks();
 }
 
-// 启动自动刷新
 function startAutoRefresh() {
     state.autoRefresh = setInterval(() => {
         loadStatus();
-        if (document.querySelector('#page-tasks.active')) {
-            loadTasks();
-        }
+        if (document.querySelector('#page-tasks.active')) loadTasks();
     }, 5000);
 }
 
-// 切换页面
 function switchPage(pageName) {
-    elements.navItems.forEach(item => {
-        item.classList.toggle('active', item.dataset.page === pageName);
+    el.navItems.forEach(item => item.classList.toggle('active', item.dataset.page === pageName));
+    el.pages.forEach(page => {
+        const isActive = page.id === `page-${pageName}`;
+        if (isActive) {
+            page.classList.remove('active');
+            void page.offsetWidth;
+        }
+        page.classList.toggle('active', isActive);
     });
-    elements.pages.forEach(page => {
-        page.classList.toggle('active', page.id === `page-${pageName}`);
-    });
+    const sidebar = document.querySelector('.sidebar');
+    if (sidebar) sidebar.classList.remove('show');
 }
 
-// 切换任务标签
 function switchTaskTab(tabName) {
     state.currentTab = tabName;
-    elements.taskTabs.forEach(tab => {
-        tab.classList.toggle('active', tab.dataset.tab === tabName);
-    });
-    
-    // 显示/隐藏按钮
-    elements.clearFailedBtn.style.display = tabName === 'failed' ? 'inline-flex' : 'none';
-    elements.retryAllBtn.style.display = tabName === 'failed' ? 'inline-flex' : 'none';
-    
+    el.taskTabs.forEach(tab => tab.classList.toggle('active', tab.dataset.tab === tabName));
+    el.clearFailedBtn.style.display = tabName === 'failed' ? 'inline-flex' : 'none';
+    el.retryAllBtn.style.display = tabName === 'failed' ? 'inline-flex' : 'none';
     updateTaskList();
 }
 
-// API 请求封装
-async function apiRequest(endpoint, options = {}) {
-    try {
-        const response = await fetch(`${API_BASE}${endpoint}`, {
-            headers: {
-                'Content-Type': 'application/json',
-                ...options.headers
-            },
-            ...options
-        });
+// ===== 状态 =====
 
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({ detail: response.statusText }));
-            throw new Error(error.detail || '请求失败');
-        }
-
-        return await response.json();
-    } catch (error) {
-        console.error('API 请求失败:', error);
-        throw error;
-    }
-}
-
-// 加载状态
 async function loadStatus() {
     try {
-        const status = await apiRequest('/status');
-        state.status = status;
+        state.status = await loadStatusFromApi();
         updateStatusDisplay();
-    } catch (error) {
-        console.error('加载状态失败:', error);
-    }
+    } catch (e) { if (!e.message.includes('登录已过期')) console.error('加载状态失败:', e); }
 }
 
-// 更新状态显示
 function updateStatusDisplay() {
-    const status = state.status;
-    if (!status) return;
-
-    // 状态点
-    elements.statusDot.className = `status-dot ${status.is_running ? 'running' : 'stopped'}`;
-    elements.statusText.textContent = status.is_running ? '运行中' : '已停止';
-
-    // 队列数量
-    elements.queueCount.textContent = status.queue_size;
-
-    // 统计卡片
-    elements.statQueue.textContent = status.queue_size;
-    elements.statProcessing.textContent = status.processing_count;
-    elements.statCompleted.textContent = status.completed_count;
-    elements.statFailed.textContent = status.failed_count;
+    const s = state.status;
+    if (!s) return;
+    el.statusDot.className = `status-dot ${s.is_running ? 'running' : 'stopped'}`;
+    el.statusText.textContent = s.is_running ? '运行中' : '已停止';
+    el.queueCount.textContent = s.queue_size;
+    el.statQueue.textContent = s.queue_size;
+    el.statProcessing.textContent = s.processing_count;
+    el.statCompleted.textContent = s.completed_count;
+    el.statFailed.textContent = s.failed_count;
 }
 
-// 加载任务
+// ===== 任务 =====
+
 async function loadTasks() {
     try {
-        const [queued, processing, completed, failed] = await Promise.all([
-            apiRequest('/tasks/queued'),
-            apiRequest('/tasks/processing'),
-            apiRequest('/tasks/completed'),
-            apiRequest('/tasks/failed')
-        ]);
-
-        state.tasks = {
-            queued: queued.files,
-            processing: processing.files,
-            completed: completed.files,
-            failed: failed.files
-        };
-
+        state.tasks = await loadTasksFromApi();
         updateTaskList();
-    } catch (error) {
-        console.error('加载任务失败:', error);
-    }
+        updateRecentActivity();
+    } catch (e) { if (!e.message.includes('登录已过期')) console.error('加载任务失败:', e); }
 }
 
-// 更新任务列表
 function updateTaskList() {
     const tab = state.currentTab;
     let files = [];
     let statusBadge = '';
-
     switch (tab) {
         case 'queued':
             files = state.tasks.queued.map(f => ({ path: f }));
@@ -289,738 +234,574 @@ function updateTaskList() {
             statusBadge = '<span class="badge badge-success">已完成</span>';
             break;
         case 'failed':
-            files = Object.entries(state.tasks.failed).map(([path, error]) => ({ path, error }));
+            files = Object.entries(state.tasks.failed).map(([p, err]) => ({ path: p, error: err }));
             statusBadge = '<span class="badge badge-danger">失败</span>';
             break;
     }
-
     if (files.length === 0) {
-        elements.taskList.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-muted);">暂无数据</td></tr>`;
+        el.taskList.innerHTML = `<tr><td colspan="3"><div class="empty-state"><p>暂无数据</p></div></td></tr>`;
         return;
     }
-
-    elements.taskList.innerHTML = files.map(file => `
-        <tr>
-            <td style="font-family: monospace; font-size: 0.8125rem;">${escapeHtml(file.path)}</td>
-            <td>${statusBadge}${file.error ? `<br><small style="color: var(--accent-danger);">${escapeHtml(file.error)}</small>` : ''}</td>
-            <td>
-                ${tab === 'failed' ? `
-                    <button class="btn btn-primary btn-sm" onclick="retryTask('${escapeHtml(file.path)}')">重试</button>
-                    <button class="btn btn-danger btn-sm" onclick="clearFailedTask('${escapeHtml(file.path)}')">清除</button>
-                ` : ''}
-            </td>
-        </tr>
-    `).join('');
+    el.taskList.innerHTML = files.map(file => `<tr>
+        <td style="font-family:monospace;font-size:0.8125rem">${escapeHtml(file.path)}</td>
+        <td>${statusBadge}${file.error ? `<br><small style="color:var(--accent-danger)">${escapeHtml(file.error)}</small>` : ''}</td>
+        <td>${tab === 'failed' ? `<button class="btn btn-primary btn-sm" onclick="retryTask('${escapeHtml(file.path)}')">重试</button>
+            <button class="btn btn-danger btn-sm" onclick="confirmClearFailed('${escapeHtml(file.path)}')">清除</button>` : ''}</td>
+    </tr>`).join('');
 }
 
-// 重试任务
+function updateRecentActivity() {
+    const allTasks = [
+        ...state.tasks.completed.map(p => ({ path: p, status: 'completed' })),
+        ...Object.entries(state.tasks.failed).map(([p, e]) => ({ path: p, status: 'failed', error: e }))
+    ].slice(-10).reverse();
+
+    if (allTasks.length === 0) {
+        el.recentActivity.innerHTML = `<tr><td colspan="3"><div class="empty-state"><p>暂无数据</p></div></td></tr>`;
+        return;
+    }
+    el.recentActivity.innerHTML = allTasks.map(t => `<tr>
+        <td style="font-family:monospace;font-size:0.8125rem">${escapeHtml(t.path)}</td>
+        <td><span class="badge ${t.status === 'completed' ? 'badge-success' : 'badge-danger'}">${t.status === 'completed' ? '已完成' : '失败'}</span></td>
+        <td style="color:var(--text-muted)">刚刚</td>
+    </tr>`).join('');
+}
+
 async function retryTask(filePath) {
     try {
-        await apiRequest('/tasks/retry', {
-            method: 'POST',
-            body: JSON.stringify({ file_path: filePath })
-        });
+        await retryTaskViaApi(filePath);
         showToast('已重试任务', 'success');
         loadTasks();
-    } catch (error) {
-        showToast(`重试失败: ${error.message}`, 'error');
-    }
+    } catch (e) { showToast(`重试失败: ${e.message}`, 'error'); }
 }
 
-// 清除失败任务
-async function clearFailedTask(filePath) {
-    try {
-        await apiRequest(`/tasks/failed/${encodeURIComponent(filePath)}`, {
-            method: 'DELETE'
-        });
-        showToast('已清除失败记录', 'success');
-        loadTasks();
-    } catch (error) {
-        showToast(`清除失败: ${error.message}`, 'error');
-    }
+function confirmClearFailed(filePath) {
+    showConfirm('清除失败记录', `确定要清除该失败记录吗？`, async () => {
+        try {
+            await clearFailedTaskViaApi(filePath);
+            showToast('已清除失败记录', 'success');
+            loadTasks();
+        } catch (e) { showToast(`清除失败: ${e.message}`, 'error'); }
+    });
 }
 
-// 清除所有失败任务
 async function clearAllFailedTasks() {
     try {
-        await apiRequest('/tasks/failed', { method: 'DELETE' });
+        await clearAllFailedViaApi();
         showToast('已清除所有失败记录', 'success');
         loadTasks();
-    } catch (error) {
-        showToast(`清除失败: ${error.message}`, 'error');
-    }
+    } catch (e) { showToast(`清除失败: ${e.message}`, 'error'); }
 }
 
-// 重试所有失败任务
 async function retryAllFailedTasks() {
     try {
-        const result = await apiRequest('/tasks/retry-all', { method: 'POST' });
+        const result = await retryAllFailedViaApi();
         showToast(`已重试 ${result.retried_count} 个任务`, 'success');
         loadTasks();
-    } catch (error) {
-        showToast(`重试失败: ${error.message}`, 'error');
-    }
+    } catch (e) { showToast(`重试失败: ${e.message}`, 'error'); }
 }
 
-// 加载配置
+// ===== 配置 =====
+
 async function loadConfig() {
     try {
-        const result = await apiRequest('/config');
-        state.config = result.config;
+        state.config = await loadConfigFromApi();
         renderConfigEditor();
-    } catch (error) {
-        console.error('加载配置失败:', error);
-    }
+    } catch (e) { if (!e.message.includes('登录已过期')) console.error('加载配置失败:', e); }
 }
 
-// 渲染配置编辑器
 function renderConfigEditor() {
     const config = state.config;
     if (!config) return;
 
     const sections = {
-        'monitoring': '监控配置',
-        'tmdb': 'TMDB 配置',
-        'logging': '日志配置',
-        'naming': '命名规则',
-        'processing': '处理配置',
-        'p123': '123云盘配置',
-        'cloud189': '天翼云盘配置',
-        'yun139': '139云盘配置'
+        'monitoring': '监控配置', 'tmdb': 'TMDB 配置', 'logging': '日志配置',
+        'naming': '命名规则', 'processing': '处理配置',
+        'p123': '123云盘配置', 'cloud189': '天翼云盘配置', 'yun139': '139云盘配置'
     };
 
     let html = '';
     for (const [key, label] of Object.entries(sections)) {
         if (!config[key]) continue;
-        html += `
-            <div class="config-section">
-                <div class="config-section-title">${label}</div>
-                ${Object.entries(config[key]).map(([k, v]) => `
-                    <div class="form-group">
-                        <label class="form-label">${k}</label>
-                        ${renderConfigInput(key, k, v)}
-                    </div>
-                `).join('')}
-            </div>
-        `;
+        html += `<div class="config-section"><div class="config-section-title">${label}</div>`;
+        for (const [k, v] of Object.entries(config[key])) {
+            html += `<div class="form-group"><label class="form-label">${escapeHtml(k)}</label>${renderConfigInput(key, k, v)}</div>`;
+        }
+        html += `</div>`;
     }
+    el.configEditor.innerHTML = html;
 
-    elements.configEditor.innerHTML = html;
+    // 绑定 checkbox 标签同步
+    document.querySelectorAll('#config-editor input[type="checkbox"]').forEach(cb => {
+        cb.addEventListener('change', () => {
+            const label = document.getElementById(`${cb.id}-label`);
+            if (label) label.textContent = cb.checked ? '是' : '否';
+        });
+    });
 }
 
-// 渲染配置输入框
 function renderConfigInput(section, key, value) {
     const inputId = `config-${section}-${key}`;
     const inputName = `${section}.${key}`;
-
+    const isPassword = key.toLowerCase().includes('password') || key.toLowerCase().includes('token') || key.toLowerCase().includes('secret') || key.toLowerCase().includes('api_key');
     if (typeof value === 'boolean') {
-        return `
-            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                <input type="checkbox" id="${inputId}" name="${inputName}" ${value ? 'checked' : ''}>
-                <span>${value ? '是' : '否'}</span>
-            </label>
-        `;
-    } else if (Array.isArray(value)) {
-        return `<input type="text" class="form-input" id="${inputId}" name="${inputName}" value="${escapeHtml(value.join(', '))}">`;
-    } else if (typeof value === 'object') {
-        return `<textarea class="form-textarea" id="${inputId}" name="${inputName}">${escapeHtml(JSON.stringify(value, null, 2))}</textarea>`;
-    } else {
-        return `<input type="text" class="form-input" id="${inputId}" name="${inputName}" value="${escapeHtml(String(value))}">`;
+        return `<label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="${inputId}" name="${inputName}" ${value ? 'checked' : ''}>
+            <span id="${inputId}-label">${value ? '是' : '否'}</span>
+        </label>`;
     }
+    if (Array.isArray(value)) {
+        return `<input type="text" class="form-input" id="${inputId}" name="${inputName}" value="${escapeHtml(value.join(', '))}">`;
+    }
+    if (typeof value === 'object' && value !== null) {
+        return `<textarea class="form-textarea" id="${inputId}" name="${inputName}">${escapeHtml(JSON.stringify(value, null, 2))}</textarea>`;
+    }
+    if (isPassword) {
+        return `<input type="password" class="form-input" id="${inputId}" name="${inputName}" value="${escapeHtml(String(value))}">`;
+    }
+    return `<input type="text" class="form-input" id="${inputId}" name="${inputName}" value="${escapeHtml(String(value))}">`;
 }
 
-// 重新加载配置
 async function reloadConfig() {
     try {
-        await apiRequest('/config/reload', { method: 'POST' });
+        await reloadConfigViaApi();
         await loadConfig();
         showToast('配置已重新加载', 'success');
-    } catch (error) {
-        showToast(`重新加载失败: ${error.message}`, 'error');
+    } catch (e) { showToast(`重新加载失败: ${e.message}`, 'error'); }
+}
+
+async function saveConfig() {
+    const inputs = el.configEditor.querySelectorAll('[name]');
+    const sections = {};
+
+    inputs.forEach(input => {
+        const [section, ...keyParts] = input.name.split('.');
+        const key = keyParts.join('.');
+        if (!sections[section]) sections[section] = {};
+        let value = input.value;
+        if (input.type === 'checkbox') {
+            value = input.checked;
+        } else if (!isNaN(Number(value)) && value.trim() !== '') {
+            const num = Number(value);
+            if (Number.isFinite(num)) value = num;
+        }
+        sections[section][key] = value;
+    });
+
+    let successCount = 0;
+    let failCount = 0;
+    for (const [section, data] of Object.entries(sections)) {
+        try {
+            const current = state.config[section] || {};
+            const changed = {};
+            for (const k of Object.keys(data)) {
+                if (JSON.stringify(data[k]) !== JSON.stringify(current[k])) {
+                    changed[k] = data[k];
+                }
+            }
+            if (Object.keys(changed).length === 0) {
+                successCount++;
+                continue;
+            }
+            await saveConfigToApi(section, changed);
+            await loadConfig();
+            successCount++;
+        } catch (e) {
+            console.error(`保存配置节 ${section} 失败:`, e);
+            failCount++;
+        }
+    }
+
+    if (failCount === 0) {
+        showToast(`配置已保存（${successCount} 节）`, 'success');
+    } else {
+        showToast(`保存完成: ${successCount} 节成功, ${failCount} 节失败`, 'warning');
     }
 }
 
-// 保存配置
-async function saveConfig() {
-    showToast('配置保存功能开发中...', 'warning');
-}
+// ===== 日志 =====
 
-// 加载日志文件列表
 async function loadLogFiles() {
     try {
-        const result = await apiRequest('/logs/files');
-        elements.logFileSelect.innerHTML = '<option value="">选择日志文件</option>' +
-            result.files.map(f => `<option value="${f}">${f}</option>`).join('');
-        
+        const result = await loadLogFilesFromApi();
+        el.logFileSelect.innerHTML = '<option value="">选择日志文件</option>' +
+            (result.files || []).map(f => `<option value="${f}">${f}</option>`).join('');
         if (result.current) {
-            elements.logFileSelect.value = result.current;
+            el.logFileSelect.value = result.current;
             loadLogContent();
         }
-    } catch (error) {
-        console.error('加载日志文件列表失败:', error);
-    }
+    } catch (e) { if (!e.message.includes('登录已过期')) console.error('加载日志文件列表失败:', e); }
 }
 
-// 加载日志内容
 async function loadLogContent() {
-    const filename = elements.logFileSelect.value;
+    const filename = el.logFileSelect.value;
     if (!filename) return;
-
     try {
-        const content = await fetch(`${API_BASE}/logs/content/${encodeURIComponent(filename)}?lines=200`);
-        if (!content.ok) throw new Error('加载失败');
-        const text = await content.text();
-        
-        const lines = text.split('\n');
-        elements.logViewer.innerHTML = lines.map(line => {
-            let className = 'log-line';
-            if (line.includes(' ERROR ')) className += ' error';
-            else if (line.includes(' WARNING ')) className += ' warning';
-            else if (line.includes(' INFO ')) className += ' info';
-            return `<div class="${className}">${escapeHtml(line)}</div>`;
-        }).join('');
-
-        if (elements.autoScrollCheck.checked) {
-            elements.logViewer.scrollTop = elements.logViewer.scrollHeight;
-        }
-    } catch (error) {
-        showToast(`加载日志失败: ${error.message}`, 'error');
-    }
+        const text = await loadLogContentFromApi(filename);
+        el.logViewer.innerHTML = text.split('\n').map(line =>
+            `<div class="${classifyLogLine(line)}">${escapeHtml(line)}</div>`
+        ).join('');
+        if (el.autoScrollCheck.checked) el.logViewer.scrollTop = el.logViewer.scrollHeight;
+    } catch (e) { showToast(`加载日志失败: ${e.message}`, 'error'); }
 }
 
-// 切换实时日志
 function toggleLiveLog() {
-    const filename = elements.logFileSelect.value;
+    const filename = el.logFileSelect.value;
     if (!filename) return;
-
-    if (elements.liveLogCheck.checked) {
-        startLiveLog(filename);
-    } else {
-        stopLiveLog();
-    }
+    if (el.liveLogCheck.checked) startLiveLog(filename);
+    else stopLiveLog();
 }
 
-// 启动实时日志
 function startLiveLog(filename) {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}${API_BASE}/logs/ws/${encodeURIComponent(filename)}`;
-    
+    const token = getAuthToken();
+    const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/logs/ws/${encodeURIComponent(filename)}`;
     state.logWebSocket = new WebSocket(wsUrl);
-    
+    state.logWebSocket.onopen = () => {
+        if (token) state.logWebSocket.send(JSON.stringify({ type: 'auth', token }));
+    };
     state.logWebSocket.onmessage = (event) => {
         const data = JSON.parse(event.data);
         if (data.type === 'log') {
-            let className = 'log-line';
-            if (data.content.includes(' ERROR ')) className += ' error';
-            else if (data.content.includes(' WARNING ')) className += ' warning';
-            else if (data.content.includes(' INFO ')) className += ' info';
-            
-            elements.logViewer.innerHTML += `<div class="${className}">${escapeHtml(data.content)}</div>`;
-            
-            if (elements.autoScrollCheck.checked) {
-                elements.logViewer.scrollTop = elements.logViewer.scrollHeight;
-            }
+            el.logViewer.innerHTML += `<div class="${classifyLogLine(data.content)}">${escapeHtml(data.content)}</div>`;
+            if (el.autoScrollCheck.checked) el.logViewer.scrollTop = el.logViewer.scrollHeight;
         }
     };
-
     state.logWebSocket.onerror = () => {
         showToast('WebSocket 连接失败', 'error');
-        elements.liveLogCheck.checked = false;
+        el.liveLogCheck.checked = false;
     };
+    state.logWebSocket.onclose = () => { state.logWebSocket = null; };
 }
 
-// 停止实时日志
 function stopLiveLog() {
-    if (state.logWebSocket) {
-        state.logWebSocket.close();
-        state.logWebSocket = null;
-    }
+    if (state.logWebSocket) { state.logWebSocket.close(); state.logWebSocket = null; }
 }
 
-// 浏览文件
+// ===== 手动处理 =====
+
 async function browseFile() {
-    const currentPath = elements.manualFilePath.value || '';
     try {
-        const result = await apiRequest(`/manual/browse?path=${encodeURIComponent(currentPath)}`);
+        const result = await browsePathFromApi(el.manualFilePath.value);
         showBrowseModal(result);
-    } catch (error) {
-        showToast(`浏览失败: ${error.message}`, 'error');
-    }
+    } catch (e) { showToast(`浏览失败: ${e.message}`, 'error'); }
 }
 
-// 显示浏览模态框
 function showBrowseModal(data) {
-    elements.modalTitle = '选择文件';
-    
-    let html = `
-        <div class="file-browser">
-            <div class="file-browser-header">
-                ${data.parent ? `<button class="btn btn-secondary btn-sm" onclick="browsePath('${escapeHtml(data.parent)}')">..</button>` : ''}
-                <div class="file-browser-path">${escapeHtml(data.path) || '根目录'}</div>
-            </div>
-            <div class="file-list">
-    `;
-    
-    data.directories.forEach(dir => {
-        html += `
-            <div class="file-item" onclick="browsePath('${escapeHtml(data.path)}\\${escapeHtml(dir)}')">
-                <svg class="file-icon folder" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M10 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V8a2 2 0 00-2-2h-8l-2-2z"/>
-                </svg>
-                <span>${escapeHtml(dir)}</span>
-            </div>
-        `;
+    const titleEl = document.getElementById('modalTitle');
+    if (titleEl) titleEl.textContent = '选择文件';
+
+    let html = `<div class="file-browser"><div class="file-browser-header">
+        ${data.parent ? `<button class="btn btn-secondary btn-sm" data-path="${escapeHtml(data.parent)}" data-type="parent">..</button>` : ''}
+        <div class="file-browser-path">${escapeHtml(data.path) || '根目录'}</div>
+    </div><div class="file-list">`;
+
+    (data.directories || []).forEach(dir => {
+        const fullPath = data.path ? `${data.path}\\${dir}` : dir;
+        html += `<div class="file-item" data-path="${escapeHtml(fullPath)}" data-type="dir">
+            <svg class="file-icon folder" viewBox="0 0 24 24" fill="currentColor"><path d="M10 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V8a2 2 0 00-2-2h-8l-2-2z"/></svg>
+            <span>${escapeHtml(dir)}</span>
+        </div>`;
     });
-    
-    data.files.forEach(file => {
-        const isVideo = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv'].includes(file.extension);
-        html += `
-            <div class="file-item" onclick="selectFile('${escapeHtml(data.path)}\\${escapeHtml(file.name)}')">
-                <svg class="file-icon ${isVideo ? 'video' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-                    <polyline points="14 2 14 8 20 8"/>
-                </svg>
-                <span>${escapeHtml(file.name)}</span>
-                <small style="color: var(--text-muted); margin-left: auto;">${formatSize(file.size)}</small>
-            </div>
-        `;
+
+    (data.files || []).forEach(file => {
+        const isVideo = ['.mp4','.mkv','.avi','.mov','.wmv','.flv'].includes(file.extension);
+        const fullPath = data.path ? `${data.path}\\${file.name}` : file.name;
+        html += `<div class="file-item" data-path="${escapeHtml(fullPath)}" data-type="file">
+            <svg class="file-icon ${isVideo ? 'video' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
+            </svg>
+            <span>${escapeHtml(file.name)}</span>
+            <small style="color:var(--text-muted);margin-left:auto">${formatSize(file.size)}</small>
+        </div>`;
     });
-    
+
     html += '</div></div>';
-    
-    elements.modalBody.innerHTML = html;
-    elements.modalFooter.style.display = 'none';
+    const body = document.getElementById('modalBody');
+    if (body) {
+        body.innerHTML = html;
+        const fileList = body.querySelector('.file-list');
+        if (fileList) {
+            fileList.addEventListener('click', onFileListClick);
+        }
+        const parentBtn = body.querySelector('[data-type="parent"]');
+        if (parentBtn) {
+            parentBtn.addEventListener('click', () => browsePath(parentBtn.dataset.path));
+        }
+    }
+    const footer = document.getElementById('modalFooter');
+    if (footer) footer.style.display = 'none';
     showModal();
 }
 
-// 浏览路径
-async function browsePath(path) {
-    try {
-        const result = await apiRequest(`/manual/browse?path=${encodeURIComponent(path)}`);
-        showBrowseModal(result);
-    } catch (error) {
-        showToast(`浏览失败: ${error.message}`, 'error');
+function onFileListClick(e) {
+    const item = e.target.closest('.file-item');
+    if (!item || !item.dataset.path) return;
+    const path = item.dataset.path;
+    if (item.dataset.type === 'dir') {
+        browsePath(path);
+    } else {
+        selectFile(path);
     }
 }
 
-// 选择文件
+async function browsePath(path) {
+    try {
+        const result = await browsePathFromApi(path);
+        showBrowseModal(result);
+    } catch (e) { showToast(`浏览失败: ${e.message}`, 'error'); }
+}
+
 function selectFile(path) {
-    elements.manualFilePath.value = path;
+    el.manualFilePath.value = path;
     hideModal();
 }
 
-// 处理文件
 async function processFile() {
-    const filePath = elements.manualFilePath.value.trim();
-    if (!filePath) {
-        showToast('请输入文件路径', 'warning');
-        return;
-    }
-
+    const filePath = el.manualFilePath.value.trim();
+    if (!filePath) { showToast('请输入文件路径', 'warning'); return; }
+    setButtonLoading(el.processFileBtn, true);
     try {
-        const result = await apiRequest('/manual/process', {
-            method: 'POST',
-            body: JSON.stringify({
-                file_path: filePath,
-                force: elements.forceProcessCheck.checked
-            })
-        });
+        const result = await processFileViaApi(filePath, el.forceProcessCheck.checked);
         showToast(result.message, result.success ? 'success' : 'warning');
-        if (result.success) {
-            elements.manualFilePath.value = '';
-            loadTasks();
-        }
-    } catch (error) {
-        showToast(`处理失败: ${error.message}`, 'error');
-    }
+        if (result.success) { el.manualFilePath.value = ''; loadTasks(); }
+    } catch (e) { showToast(`处理失败: ${e.message}`, 'error'); }
+    finally { setButtonLoading(el.processFileBtn, false); }
 }
 
-// 预览文件
 async function previewFile() {
-    const filePath = elements.manualFilePath.value.trim();
-    if (!filePath) {
-        showToast('请输入文件路径', 'warning');
-        return;
-    }
-
+    const filePath = el.manualFilePath.value.trim();
+    if (!filePath) { showToast('请输入文件路径', 'warning'); return; }
+    setButtonLoading(el.previewFileBtn, true);
     try {
-        const result = await apiRequest('/manual/preview', {
-            method: 'POST',
-            body: JSON.stringify({ file_path: filePath })
-        });
-
+        const result = await previewFileViaApi(filePath);
         if (result.success) {
-            elements.previewResult.style.display = 'block';
-            elements.previewContent.innerHTML = `
-                <div class="form-group">
-                    <label class="form-label">原始名称</label>
-                    <div style="font-family: monospace;">${escapeHtml(result.original_name)}</div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">建议名称</label>
-                    <div style="font-family: monospace; color: var(--accent-primary);">${escapeHtml(result.suggested_name || '无法生成')}</div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">媒体类型</label>
-                    <span class="badge badge-info">${result.media_type || '未知'}</span>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">元数据</label>
-                    <pre style="background: var(--bg-primary); padding: 12px; border-radius: 8px; overflow-x: auto;">${JSON.stringify(result.metadata, null, 2)}</pre>
-                </div>
-            `;
+            el.previewResult.style.display = 'block';
+            el.previewContent.innerHTML = `
+                <div class="form-group"><label class="form-label">原始名称</label>
+                    <div style="font-family:monospace">${escapeHtml(result.original_name)}</div></div>
+                <div class="form-group"><label class="form-label">建议名称</label>
+                    <div style="font-family:monospace;color:var(--accent-primary)">${escapeHtml(result.suggested_name || '无法生成')}</div></div>
+                <div class="form-group"><label class="form-label">媒体类型</label>
+                    <span class="badge badge-info">${result.media_type || '未知'}</span></div>
+                <div class="form-group"><label class="form-label">元数据</label>
+                    <pre style="background:var(--bg-primary);padding:12px;border-radius:8px;overflow-x:auto">${JSON.stringify(result.metadata, null, 2)}</pre></div>`;
         } else {
-            elements.previewResult.style.display = 'block';
-            elements.previewContent.innerHTML = `<div style="color: var(--accent-danger);">${escapeHtml(result.error)}</div>`;
+            el.previewResult.style.display = 'block';
+            el.previewContent.innerHTML = `<div style="color:var(--accent-danger)">${escapeHtml(result.error)}</div>`;
         }
-    } catch (error) {
-        showToast(`预览失败: ${error.message}`, 'error');
-    }
+    } catch (e) { showToast(`预览失败: ${e.message}`, 'error'); }
+    finally { setButtonLoading(el.previewFileBtn, false); }
 }
 
-// 扫描目录
-async function scanDirectory() {
-    const dirPath = elements.scanDirPath.value.trim();
-    if (!dirPath) {
-        showToast('请输入目录路径', 'warning');
-        return;
-    }
-
+async function validateScrape() {
+    const filePath = el.manualFilePath.value.trim();
+    if (!filePath) { showToast('请输入文件路径', 'warning'); return; }
+    setButtonLoading(el.validateScrapeBtn, true);
+    el.validateResult.style.display = 'none';
     try {
-        const result = await apiRequest('/manual/scan', {
-            method: 'POST',
-            body: JSON.stringify({
-                directory: dirPath,
-                recursive: elements.recursiveScanCheck.checked
-            })
-        });
+        const result = await validateScrapeViaApi(filePath);
+        el.validateResult.style.display = 'block';
+        if (result.success) {
+            const icon = result.tmdb_matched ? '✅' : '❌';
+            const typeLabel = { tv: '电视剧', movie: '电影' }[result.media_type] || result.media_type || '未知';
+            el.validateContent.innerHTML = `
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                    <div class="form-group"><label class="form-label">原始文件名</label>
+                        <div style="font-family:monospace;word-break:break-all">${escapeHtml(result.original_name)}</div></div>
+                    <div class="form-group"><label class="form-label">识别标题</label>
+                        <div style="font-size:16px;font-weight:600">${icon} ${escapeHtml(result.title || '未能识别')}</div></div>
+                    <div class="form-group"><label class="form-label">年份</label>
+                        <div>${result.year || '-'}</div></div>
+                    <div class="form-group"><label class="form-label">媒体类型</label>
+                        <span class="badge badge-info">${typeLabel}</span></div>
+                    ${result.season ? `<div class="form-group"><label class="form-label">季</label><div>${result.season}</div></div>` : ''}
+                    ${result.episode ? `<div class="form-group"><label class="form-label">集</label><div>${result.episode}</div></div>` : ''}
+                    ${result.episode_title ? `<div class="form-group" style="grid-column:1/-1"><label class="form-label">集标题</label><div>${escapeHtml(result.episode_title)}</div></div>` : ''}
+                    ${result.quality_tags ? `<div class="form-group"><label class="form-label">质量标签</label><div>${escapeHtml(result.quality_tags)}</div></div>` : ''}
+                    ${result.release_group ? `<div class="form-group"><label class="form-label">发布组</label><div>${escapeHtml(result.release_group)}</div></div>` : ''}
+                    <div class="form-group"><label class="form-label">TMDB刮削</label>
+                        <span class="badge ${result.tmdb_matched ? 'badge-success' : 'badge-danger'}">${result.tmdb_matched ? '成功' : '失败'}</span></div>
+                    ${result.confidence ? `<div class="form-group"><label class="form-label">匹配分数</label><div>${(result.confidence * 100).toFixed(1)}%</div></div>` : ''}
+                    ${result.suggested_name ? `<div class="form-group" style="grid-column:1/-1">
+                        <label class="form-label">建议命名</label>
+                        <div style="font-family:monospace;color:var(--accent-primary);word-break:break-all">${escapeHtml(result.suggested_name)}</div></div>` : ''}
+                    ${result.suggested_path ? `<div class="form-group" style="grid-column:1/-1">
+                        <label class="form-label">建议路径</label>
+                        <div style="font-family:monospace;color:var(--text-muted);font-size:13px;word-break:break-all">${escapeHtml(result.suggested_path)}</div></div>` : ''}
+                </div>
+                ${result.tmdb_info ? `
+                <div style="margin-top:16px;padding:12px;background:var(--bg-primary);border-radius:8px">
+                    <div style="font-weight:600;margin-bottom:8px">TMDB 匹配详情</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">
+                        <div><label style="color:var(--text-muted)">ID</label><div>${result.tmdb_info.id}</div></div>
+                        <div><label style="color:var(--text-muted)">原始标题</label><div>${escapeHtml(result.tmdb_info.original_title || '-')}</div></div>
+                        <div style="grid-column:1/-1"><label style="color:var(--text-muted)">简介</label>
+                            <div>${escapeHtml(result.tmdb_info.overview || '暂无')}</div></div>
+                    </div>
+                </div>` : ''}`;
+        } else {
+            el.validateContent.innerHTML = `<div style="color:var(--accent-danger)">${escapeHtml(result.error)}</div>`;
+        }
+    } catch (e) { showToast(`验证失败: ${e.message}`, 'error'); }
+    finally { setButtonLoading(el.validateScrapeBtn, false); }
+}
 
-        if (result.files.length === 0) {
+async function scanDirectory() {
+    const dirPath = el.scanDirPath.value.trim();
+    if (!dirPath) { showToast('请输入目录路径', 'warning'); return; }
+    setButtonLoading(el.scanDirBtn, true);
+    try {
+        const result = await scanDirectoryViaApi(dirPath, el.recursiveScanCheck.checked);
+        if (!result.files || result.files.length === 0) {
             showToast('未找到视频文件', 'warning');
+            el.scanResults.style.display = 'none';
             return;
         }
-
-        elements.scanResults.style.display = 'block';
-        elements.scannedFilesList.innerHTML = result.files.map((file, index) => {
-            const path = new Path(file);
-            return `
-                <tr>
-                    <td><input type="checkbox" class="file-checkbox" data-path="${escapeHtml(file)}"></td>
-                    <td>${escapeHtml(path.basename || file)}</td>
-                    <td>-</td>
-                </tr>
-            `;
-        }).join('');
-
+        el.scanResults.style.display = 'block';
+        el.scannedFilesList.innerHTML = result.files.map((file, i) =>
+            `<tr><td><input type="checkbox" class="file-checkbox" data-path="${escapeHtml(file)}"></td>
+            <td>${escapeHtml(new Path(file).basename || file)}</td><td>-</td></tr>`
+        ).join('');
         showToast(`找到 ${result.files.length} 个视频文件`, 'success');
-    } catch (error) {
-        showToast(`扫描失败: ${error.message}`, 'error');
-    }
+    } catch (e) { showToast(`扫描失败: ${e.message}`, 'error'); }
+    finally { setButtonLoading(el.scanDirBtn, false); }
 }
 
-// 全选/取消全选
 function toggleSelectAllFiles() {
-    const checkboxes = document.querySelectorAll('.file-checkbox');
-    checkboxes.forEach(cb => cb.checked = elements.selectAllFiles.checked);
+    document.querySelectorAll('.file-checkbox').forEach(cb => cb.checked = el.selectAllFiles.checked);
 }
 
-// 处理选中文件
 async function processSelectedFiles() {
-    const checkboxes = document.querySelectorAll('.file-checkbox:checked');
-    if (checkboxes.length === 0) {
-        showToast('请选择要处理的文件', 'warning');
-        return;
-    }
-
-    const files = Array.from(checkboxes).map(cb => cb.dataset.path);
-
+    const checked = document.querySelectorAll('.file-checkbox:checked');
+    if (checked.length === 0) { showToast('请选择要处理的文件', 'warning'); return; }
+    const files = Array.from(checked).map(cb => cb.dataset.path);
+    setButtonLoading(el.processSelectedBtn, true);
     try {
-        const result = await apiRequest('/manual/process-batch', {
-            method: 'POST',
-            body: JSON.stringify(files)
-        });
+        const result = await processBatchViaApi(files);
         showToast(result.message, 'success');
         loadTasks();
-    } catch (error) {
-        showToast(`批量处理失败: ${error.message}`, 'error');
-    }
+    } catch (e) { showToast(`批量处理失败: ${e.message}`, 'error'); }
+    finally { setButtonLoading(el.processSelectedBtn, false); }
 }
 
-// 加载下载器
+// ===== 下载器 =====
+
 async function loadDownloaders() {
     try {
-        const result = await apiRequest('/downloaders');
-        
-        if (result.downloaders.length === 0) {
-            elements.downloaderList.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-muted);">暂无下载器</td></tr>`;
+        const result = await loadDownloadersFromApi();
+        if (!result.downloaders || result.downloaders.length === 0) {
+            el.downloaderList.innerHTML = `<tr><td colspan="3"><div class="empty-state"><p>暂无下载器</p></div></td></tr>`;
             return;
         }
-
-        elements.downloaderList.innerHTML = result.downloaders.map(d => `
-            <tr>
-                <td>${escapeHtml(d.name)}</td>
-                <td>${escapeHtml(d.type)}</td>
-                <td>
-                    <span class="badge ${d.connected ? 'badge-success' : 'badge-danger'}">
-                        ${d.connected ? '已连接' : '未连接'}
-                    </span>
-                </td>
-            </tr>
-        `).join('');
-    } catch (error) {
-        console.error('加载下载器失败:', error);
-    }
+        el.downloaderList.innerHTML = result.downloaders.map(d => `<tr>
+            <td>${escapeHtml(d.name)}</td>
+            <td>${escapeHtml(d.type)}</td>
+            <td><span class="badge ${d.connected ? 'badge-success' : 'badge-danger'}">${d.connected ? '已连接' : '未连接'}</span></td>
+        </tr>`).join('');
+    } catch (e) { if (!e.message.includes('登录已过期')) console.error('加载下载器失败:', e); }
 }
 
-// 显示模态框
-function showModal() {
-    elements.modalOverlay.classList.add('show');
-}
+// ===== 上传进度 WebSocket（带指数退避重连）=====
 
-// 隐藏模态框
-function hideModal() {
-    elements.modalOverlay.classList.remove('show');
-}
+const uploadState = { progresses: {}, ws: null, reconnectTimer: null, reconnectAttempt: 0, isConnected: false };
+const WS_BASE_DELAY = 1000;
+const WS_MAX_DELAY = 30000;
 
-// 显示 Toast
-function showToast(message, type = 'info') {
-    const toast = document.createElement('div');
-    toast.className = `toast ${type}`;
-    toast.innerHTML = `
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            ${type === 'success' ? '<path d="M20 6L9 17l-5-5"/>' : 
-              type === 'error' ? '<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>' :
-              '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>'}
-        </svg>
-        <span>${escapeHtml(message)}</span>
-    `;
-    elements.toastContainer.appendChild(toast);
-    
-    setTimeout(() => {
-        toast.style.animation = 'slideIn 0.3s ease reverse';
-        setTimeout(() => toast.remove(), 300);
-    }, 3000);
-}
-
-// HTML 转义
-function escapeHtml(str) {
-    if (!str) return '';
-    return str
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-}
-
-// 格式化文件大小
-function formatSize(bytes) {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-}
-
-// Path polyfill for Windows paths
-class Path {
-    constructor(pathStr) {
-        this.path = pathStr;
-    }
-    get basename() {
-        const parts = this.path.split(/[/\\]/);
-        return parts[parts.length - 1];
-    }
-    get dirname() {
-        const parts = this.path.split(/[/\\]/);
-        return parts.slice(0, -1).join('/');
-    }
-    get extname() {
-        const idx = this.basename.lastIndexOf('.');
-        return idx >= 0 ? this.basename.slice(idx) : '';
-    }
-}
-
-// ==================== 上传进度 WebSocket ====================
-
-const uploadProgressState = {
-    progresses: {},  // { file_path: { filename, uploader, progress, ... } }
-    ws: null,
-    reconnectTimer: null,
-    isConnected: false
-};
-
-// 连接 WebSocket
 function connectUploadProgressWebSocket() {
-    if (uploadProgressState.ws) {
-        return;  // 已经连接
-    }
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/tasks/ws/progress`;
-
+    if (uploadState.ws) return;
     try {
-        uploadProgressState.ws = new WebSocket(wsUrl);
-
-        uploadProgressState.ws.onopen = () => {
-            console.log('[UploadProgress] WebSocket 已连接');
-            uploadProgressState.isConnected = true;
+        uploadState.ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/tasks/ws/progress`);
+        uploadState.ws.onopen = () => {
+            const token = getAuthToken();
+            if (token) uploadState.ws.send(JSON.stringify({ type: 'auth', token }));
+            uploadState.isConnected = true;
+            uploadState.reconnectAttempt = 0;
             updateUploadStatusDot(true);
-            // 连接后获取当前进度
             loadUploadProgress();
         };
-
-        uploadProgressState.ws.onmessage = (event) => {
+        uploadState.ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
-                if (data.type === 'progress') {
-                    handleUploadProgressUpdate(data);
-                }
-            } catch (e) {
-                console.error('[UploadProgress] 解析消息失败:', e);
-            }
+                if (data.type === 'progress') handleUploadProgressUpdate(data);
+            } catch (e) { console.error('[Upload] 解析消息失败:', e); }
         };
-
-        uploadProgressState.ws.onclose = () => {
-            console.log('[UploadProgress] WebSocket 已断开');
-            uploadProgressState.isConnected = false;
+        uploadState.ws.onclose = () => {
+            uploadState.isConnected = false;
             updateUploadStatusDot(false);
-            uploadProgressState.ws = null;
-            // 5秒后尝试重连
-            if (!uploadProgressState.reconnectTimer) {
-                uploadProgressState.reconnectTimer = setTimeout(() => {
-                    uploadProgressState.reconnectTimer = null;
-                    connectUploadProgressWebSocket();
-                }, 5000);
-            }
+            uploadState.ws = null;
+            scheduleReconnect();
         };
-
-        uploadProgressState.ws.onerror = (error) => {
-            console.error('[UploadProgress] WebSocket 错误:', error);
-        };
-    } catch (e) {
-        console.error('[UploadProgress] 连接失败:', e);
-    }
+        uploadState.ws.onerror = () => {};
+    } catch (e) { console.error('[Upload] 连接失败:', e); scheduleReconnect(); }
 }
 
-// 断开 WebSocket
+function scheduleReconnect() {
+    if (uploadState.reconnectTimer) return;
+    const delay = Math.min(WS_BASE_DELAY * Math.pow(2, uploadState.reconnectAttempt), WS_MAX_DELAY);
+    uploadState.reconnectAttempt++;
+    uploadState.reconnectTimer = setTimeout(() => {
+        uploadState.reconnectTimer = null;
+        connectUploadProgressWebSocket();
+    }, delay);
+}
+
 function disconnectUploadProgressWebSocket() {
-    if (uploadProgressState.ws) {
-        uploadProgressState.ws.close();
-        uploadProgressState.ws = null;
-    }
-    if (uploadProgressState.reconnectTimer) {
-        clearTimeout(uploadProgressState.reconnectTimer);
-        uploadProgressState.reconnectTimer = null;
-    }
+    if (uploadState.ws) { uploadState.ws.close(); uploadState.ws = null; }
+    if (uploadState.reconnectTimer) { clearTimeout(uploadState.reconnectTimer); uploadState.reconnectTimer = null; }
 }
 
-// 加载当前上传进度
 async function loadUploadProgress() {
     try {
-        const result = await apiRequest('/tasks/progress');
-        if (result.progresses) {
-            uploadProgressState.progresses = result.progresses;
+        const result = await loadUploadProgressFromApi();
+        if (result && result.progresses) {
+            uploadState.progresses = result.progresses;
             updateUploadProgressList();
         }
-    } catch (error) {
-        console.error('[UploadProgress] 加载进度失败:', error);
-    }
+    } catch (e) { console.error('[Upload] 加载进度失败:', e); }
 }
 
-// 处理上传进度更新
 function handleUploadProgressUpdate(data) {
     const { file_path, filename, uploader, progress, uploaded_bytes, total_bytes, speed, status, error } = data;
-
-    // 更新状态
-    uploadProgressState.progresses[file_path] = {
-        filename,
-        uploader,
-        progress,
-        uploaded_bytes,
-        total_bytes,
-        speed,
-        status,
-        error,
-        timestamp: Date.now()
-    };
-
-    // 如果已完成或失败，5秒后移除
+    uploadState.progresses[file_path] = { filename, uploader, progress, uploaded_bytes, total_bytes, speed, status, error, timestamp: Date.now() };
     if (status === 'completed' || status === 'failed') {
-        setTimeout(() => {
-            delete uploadProgressState.progresses[file_path];
-            updateUploadProgressList();
-        }, 5000);
+        setTimeout(() => { delete uploadState.progresses[file_path]; updateUploadProgressList(); }, 5000);
     }
-
     updateUploadProgressList();
 }
 
-// 更新上传状态点
 function updateUploadStatusDot(isActive) {
-    const dot = document.getElementById('uploadStatusDot');
-    if (dot) {
-        dot.className = isActive ? 'upload-status-dot active' : 'upload-status-dot';
+    if (el.uploadStatusDot) {
+        el.uploadStatusDot.className = isActive ? 'upload-status-dot active' : 'upload-status-dot';
     }
 }
 
-// 更新上传进度列表
 function updateUploadProgressList() {
-    const listEl = document.getElementById('upload-progress-list');
-    if (!listEl) return;
-
-    const progresses = Object.values(uploadProgressState.progresses);
+    if (!el.uploadProgressList) return;
+    const progresses = Object.values(uploadState.progresses);
     const activeUploads = progresses.filter(p => p.status === 'uploading');
-
-    // 更新状态点
     updateUploadStatusDot(activeUploads.length > 0);
 
     if (progresses.length === 0) {
-        listEl.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">暂无上传任务</td></tr>`;
+        el.uploadProgressList.innerHTML = `<tr><td colspan="5"><div class="empty-state"><p>暂无上传任务</p></div></td></tr>`;
         return;
     }
 
-    listEl.innerHTML = progresses.map(p => {
-        // 状态标签
-        let statusBadge = '';
-        if (p.status === 'uploading') {
-            statusBadge = '<span class="badge badge-warning">上传中</span>';
-        } else if (p.status === 'completed') {
-            statusBadge = '<span class="badge badge-success">已完成</span>';
-        } else if (p.status === 'failed') {
-            statusBadge = '<span class="badge badge-danger">失败</span>';
-        }
-
-        // 云盘标签
-        const uploaderClass = `uploader-${p.uploader}`;
-        const uploaderNames = {
-            'cloud189': '天翼云盘',
-            'yun139': '139云盘',
-            'p123': '123云盘',
-            'emos': 'Emos'
-        };
-        const uploaderName = uploaderNames[p.uploader] || p.uploader;
-
-        // 进度条
-        const progressPercent = Math.min(100, Math.max(0, p.progress || 0));
-        const progressBar = `
-            <div class="progress-bar-container">
-                <div class="progress-bar" style="width: ${progressPercent}%"></div>
-            </div>
-            <div class="progress-text">${formatSize(p.uploaded_bytes || 0)} / ${formatSize(p.total_bytes || 0)}</div>
-        `;
-
-        return `
-            <tr>
-                <td style="font-family: monospace; font-size: 0.8125rem;">${escapeHtml(p.filename || '未知文件')}</td>
-                <td><span class="uploader-badge ${uploaderClass}">${escapeHtml(uploaderName)}</span></td>
-                <td style="min-width: 150px;">
-                    ${progressBar}
-                    <small style="color: var(--text-muted);">${progressPercent.toFixed(1)}%</small>
-                </td>
-                <td>${escapeHtml(p.speed || '-')}</td>
-                <td>${statusBadge}${p.error ? `<br><small style="color: var(--accent-danger);">${escapeHtml(p.error)}</small>` : ''}</td>
-            </tr>
-        `;
+    el.uploadProgressList.innerHTML = progresses.map(p => {
+        const statusBadge = p.status === 'uploading' ? '<span class="badge badge-warning">上传中</span>'
+            : p.status === 'completed' ? '<span class="badge badge-success">已完成</span>'
+            : p.status === 'failed' ? '<span class="badge badge-danger">失败</span>' : '';
+        const uploaderNames = { 'cloud189': '天翼云盘', 'yun139': '139云盘', 'p123': '123云盘', 'emos': 'Emos' };
+        const pct = Math.min(100, Math.max(0, p.progress || 0));
+        return `<tr>
+            <td style="font-family:monospace;font-size:0.8125rem">${escapeHtml(p.filename || '未知文件')}</td>
+            <td><span class="uploader-badge uploader-${p.uploader}">${escapeHtml(uploaderNames[p.uploader] || p.uploader)}</span></td>
+            <td style="min-width:150px">
+                <div class="progress-bar-container"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
+                <div class="progress-text">${formatSize(p.uploaded_bytes || 0)} / ${formatSize(p.total_bytes || 0)}</div>
+                <small style="color:var(--text-muted)">${pct.toFixed(1)}%</small>
+            </td>
+            <td>${escapeHtml(p.speed || '-')}</td>
+            <td>${statusBadge}${p.error ? `<br><small style="color:var(--accent-danger)">${escapeHtml(p.error)}</small>` : ''}</td>
+        </tr>`;
     }).join('');
 }

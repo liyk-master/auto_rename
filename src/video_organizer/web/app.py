@@ -21,7 +21,9 @@ from .routers import (
     logs_router,
     manual_router,
     downloaders_router,
+    auth_router,
 )
+from .auth import auth_middleware
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,26 @@ def create_app(
     Returns:
         FastAPI 应用实例
     """
+    # 如果状态管理器中的配置为空，尝试自动加载默认配置
+    state = get_state_manager()
+    if not state.get_config():
+        try:
+            from ..core.config_loader import load_config
+            config_path = Path("config.ini")
+            if config_path.exists():
+                config = load_config(str(config_path))
+                state.set_config(config, config_path)
+                logger.info(f"已自动加载配置文件: {config_path.resolve()}")
+            else:
+                # 尝试从启动目录的 config 目录加载
+                alt_path = Path("config") / "config.ini"
+                if alt_path.exists():
+                    config = load_config(str(alt_path))
+                    state.set_config(config, alt_path)
+                    logger.info(f"已自动加载配置文件: {alt_path.resolve()}")
+        except Exception as e:
+            logger.warning(f"自动加载配置失败（部分功能可能受限）: {e}")
+    
     app = FastAPI(
         title=title,
         version=version,
@@ -58,12 +80,16 @@ def create_app(
         allow_headers=["*"],
     )
     
-    # 注册路由
+    # 注册路由（认证路由需要先注册，不受认证中间件影响）
+    app.include_router(auth_router, prefix="/api/auth", tags=["认证管理"])
     app.include_router(config_router, prefix="/api/config", tags=["配置管理"])
     app.include_router(tasks_router, prefix="/api/tasks", tags=["任务监控"])
     app.include_router(logs_router, prefix="/api/logs", tags=["日志查看"])
     app.include_router(manual_router, prefix="/api/manual", tags=["手动处理"])
     app.include_router(downloaders_router, prefix="/api/downloaders", tags=["下载器监控"])
+    
+    # 认证中间件（对 API 请求进行登录检查）
+    app.middleware("http")(auth_middleware)
     
     # 静态文件目录
     static_dir = Path(__file__).parent / "static"

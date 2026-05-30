@@ -18,6 +18,8 @@ httpx>=0.24.0
 # Web 服务依赖 - 管理后台
 fastapi>=0.100.0
 uvicorn[standard]>=0.23.0
+# WebSocket依赖 - uvicorn[standard]已包含，此处显式声明确保可用
+websockets>=14.0
 
 # 数据库依赖 - 用于 emya 入库功能
 SQLAlchemy>=2.0.0

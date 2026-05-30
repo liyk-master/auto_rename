@@ -199,6 +199,8 @@ class GuessItParser:
             compact_match = None if has_season_episode_pattern else re.match(r'^(.+?)(\d{1,3})$', stem_only)
             if compact_match:
                 potential_show_name = compact_match.group(1).strip()
+                # 移除中文预处理可能留下的 "E" 尾缀（如 "逐玉 E" -> "逐玉"）
+                potential_show_name = re.sub(r'\s+E\s*$', '', potential_show_name).strip()
                 episode_num = int(compact_match.group(2))
 
                 # 排除明显无效的剧名片段
@@ -620,6 +622,11 @@ class GuessItParser:
                 # 清理父目录名中的年份和其他干扰信息
                 clean_name = re.sub(r'[（\(]\d{4}[）\)]', '', part_str)
                 clean_name = re.sub(r'\s*\d{4}\s*$', '', clean_name)
+                # 清理质量标签（4k、1080p、HD 等）
+                clean_name = re.sub(
+                    r'\s*(?:4[kK](?:[^a-zA-Z]|$)|1080p|720p|2160p|480p|360p|HD|FHD|UHD|QHD|HDR|SDR|REMUX)\s*$',
+                    '', clean_name, flags=re.IGNORECASE,
+                )
                 clean_name = clean_name.strip()
 
                 if not clean_name:

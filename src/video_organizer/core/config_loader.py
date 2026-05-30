@@ -116,6 +116,11 @@ DEFAULT_CONFIG = {
         "default_tv_library": "电视剧",
         "default_movie_library": "电影",
     },
+    "auth": {
+        "enabled": False,
+        "username": "admin",
+        "password": "admin",
+    },
 }
 
 def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:

@@ -62,6 +62,33 @@ class PreviewResponse(BaseModel):
     error: Optional[str] = None
 
 
+class ValidateRequest(BaseModel):
+    """刮削验证请求"""
+    file_path: str
+
+
+class ValidateResponse(BaseModel):
+    """刮削验证响应"""
+    success: bool
+    file_path: str
+    original_name: str
+    title: Optional[str] = None
+    year: Optional[int] = None
+    season: Optional[int] = None
+    episode: Optional[int] = None
+    episode_title: Optional[str] = None
+    media_type: Optional[str] = None
+    tmdb_matched: bool = False
+    tmdb_info: Optional[dict] = None
+    suggested_name: Optional[str] = None
+    suggested_path: Optional[str] = None
+    confidence: Optional[float] = None
+    quality_tags: Optional[str] = None
+    release_group: Optional[str] = None
+    episode_title: Optional[str] = None
+    error: Optional[str] = None
+
+
 @router.post("/process", response_model=ProcessFileResponse)
 async def process_file(request: ProcessFileRequest):
     """
@@ -346,6 +373,108 @@ async def preview_rename(request: PreviewRequest):
     except Exception as e:
         logger.error(f"预览重命名失败: {e}")
         raise HTTPException(status_code=500, detail=f"预览重命名失败: {e}")
+
+
+@router.post("/validate", response_model=ValidateResponse)
+async def validate_scrape(request: ValidateRequest):
+    """
+    验证命名是否能被刮削识别（文件可不存
+    在，仅测试命名解析和 TMDB 匹配）
+    """
+    try:
+        raw_path = request.file_path.strip().strip('"').strip("'")
+        file_path = Path(raw_path)
+        file_exists = file_path.exists()
+
+        original_name = file_path.stem if file_path.suffix else file_path.name
+        parse_input = raw_path
+
+        state = get_state_manager()
+        config = state.get_config()
+        tmdb_config = config.get("tmdb", {})
+
+        from ...core.renamer import VideoRenamer
+        from ...core.tmdb_client import TMDBClient
+
+        tmdb_client = None
+        if tmdb_config.get("api_key"):
+            tmdb_client = TMDBClient(
+                api_key=tmdb_config.get("api_key", ""),
+                retry_count=tmdb_config.get("retry_count", 3),
+                timeout=tmdb_config.get("timeout", 30),
+            )
+
+        renamer = VideoRenamer(
+            tmdb_api_key=tmdb_config.get("api_key", ""),
+            naming_rules=config.get("naming_rules", config.get("naming", {})),
+            config=config,
+        )
+        if tmdb_client:
+            renamer.tmdb_client = tmdb_client
+
+        metadata = renamer.extract_metadata(parse_input)
+
+        title = metadata.get("show_name") or metadata.get("title") or None
+        raw_year = metadata.get("year")
+        year = int(raw_year) if raw_year and str(raw_year).strip().isdigit() else None
+        raw_season = metadata.get("season")
+        season = int(raw_season) if raw_season else None
+        raw_episode = metadata.get("episode")
+        episode = int(raw_episode) if raw_episode else None
+        episode_title = metadata.get("episode_title") or None
+        media_type = metadata.get("media_type")
+        quality_tags = metadata.get("quality_tags") or None
+        release_group = metadata.get("release_group") or None
+
+        tmdb_matched = False
+        tmdb_info = None
+        confidence = None
+        suggested_name = None
+        suggested_path = None
+
+        if metadata.get("tmdb_id"):
+            tmdb_matched = True
+            tmdb_info = {
+                "id": metadata.get("tmdb_id"),
+                "title": title or metadata.get("show_name"),
+                "overview": metadata.get("overview"),
+            }
+
+        try:
+            new_path = renamer.generate_new_path(
+                metadata,
+                original_path=file_path,
+            )
+            if new_path:
+                suggested_path = str(new_path)
+                suggested_name = str(new_path.name)
+        except Exception:
+            pass
+
+        return ValidateResponse(
+            success=True,
+            file_path=request.file_path,
+            original_name=original_name,
+            title=title,
+            year=year,
+            season=season,
+            episode=episode,
+            episode_title=episode_title,
+            media_type=media_type,
+            tmdb_matched=tmdb_matched,
+            tmdb_info=tmdb_info,
+            suggested_name=suggested_name,
+            suggested_path=suggested_path,
+            confidence=confidence,
+            quality_tags=quality_tags,
+            release_group=release_group,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"验证刮削失败: {e}")
+        raise HTTPException(status_code=500, detail=f"验证刮削失败: {e}")
 
 
 @router.get("/browse")

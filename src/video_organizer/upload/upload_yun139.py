@@ -695,10 +695,28 @@ class Yun139Uploader:
                     )
                     result['strm_path'] = strm_path
 
-                # 上传完成后删除云端文件（不依赖 STRM 生成）
-                # 注意：139云盘暂不支持直接删除云端文件
+                # 上传完成后删除云端文件（移入回收站）
                 if self.delete_after:
-                    print(f"   ⚠️ delete_after 已启用，但139云盘暂不支持删除云端文件")
+                    file_id = result.get('file_id', '')
+                    if file_id:
+                        try:
+                            from datetime import datetime
+                            file_info = FileInfo(
+                                id=file_id,
+                                name=result.get('name', target_filename),
+                                size=result.get('size', 0),
+                                is_folder=False,
+                                created_time=datetime.now(),
+                                modified_time=datetime.now(),
+                            )
+                            if self.client.delete(file_info):
+                                print(f"   ✅ 云端文件已删除: {target_filename}")
+                            else:
+                                print(f"   ⚠️ 删除云端文件失败: {target_filename}")
+                        except Exception as e:
+                            print(f"   ⚠️ 删除云端文件异常: {e}")
+                    else:
+                        print(f"   ⚠️ 无法删除云端文件: 未获取到文件ID")
 
                 # 上传同目录下的字幕文件
                 print(f"\n📝 开始上传字幕文件...")

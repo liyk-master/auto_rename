@@ -45,6 +45,11 @@ class FailedTaskListResponse(BaseModel):
     files: Dict[str, str]  # file_path -> error_message
 
 
+class RetryRequest(BaseModel):
+    """重试请求"""
+    file_path: str
+
+
 class UploadProgressResponse(BaseModel):
     """上传进度响应"""
     filename: str
@@ -289,12 +294,12 @@ async def websocket_progress(websocket: WebSocket):
 
 
 @router.post("/retry")
-async def retry_failed_task(file_path: str):
+async def retry_failed_task(request: RetryRequest):
     """
     重试失败的任务
     
     Args:
-        file_path: 失败的文件路径
+        request: 包含 file_path 的请求
     """
     try:
         state = get_state_manager()
@@ -303,6 +308,7 @@ async def retry_failed_task(file_path: str):
         if handler is None:
             raise HTTPException(status_code=503, detail="系统未就绪")
         
+        file_path = request.file_path
         failed_files = state.get_failed_files()
         if file_path not in failed_files:
             raise HTTPException(status_code=404, detail="文件不在失败列表中")
