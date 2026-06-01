@@ -118,6 +118,13 @@
                 </svg>
                 <span>下载器</span>
             </a>
+            <a class="nav-item" data-page="users">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/>
+                    <path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>
+                </svg>
+                <span>用户管理</span>
+            </a>
         </aside>
 
         <main class="main-content">
@@ -139,11 +146,27 @@
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
                             最近活动
                         </h3>
+                        <div style="display:flex;gap:8px;align-items:center">
+                            <div class="search-input-wrap" style="position:relative;width:200px">
+                                <input type="text" id="recentSearchInput" class="form-input" placeholder="搜索文件..." style="padding-right:30px;height:32px;font-size:0.8125rem">
+                                <button id="recentSearchBtn" style="position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-muted);cursor:pointer;padding:4px" title="搜索">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                                </button>
+                            </div>
+                        </div>
                     </div>
                     <div class="table-container">
                         <table><thead><tr><th>文件</th><th>状态</th><th>时间</th></tr></thead>
                             <tbody id="recent-activity"><tr><td colspan="3"><div class="empty-state"><p>暂无数据</p></div></td></tr></tbody>
                         </table>
+                    </div>
+                    <div class="pagination" id="recentPagination" style="display:none;padding:12px 16px;border-top:1px solid var(--border-color);align-items:center;justify-content:space-between">
+                        <div style="font-size:0.8125rem;color:var(--text-muted)">共 <span id="recentTotal">0</span> 条</div>
+                        <div style="display:flex;gap:4px;align-items:center">
+                            <button class="btn btn-sm btn-secondary page-btn" id="recentPrevBtn" disabled>上一页</button>
+                            <span style="font-size:0.8125rem;color:var(--text-muted);padding:0 8px"><span id="recentPage">1</span>/<span id="recentTotalPages">1</span></span>
+                            <button class="btn btn-sm btn-secondary page-btn" id="recentNextBtn" disabled>下一页</button>
+                        </div>
                     </div>
                 </div>
                 <div class="card">
@@ -179,16 +202,30 @@
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title">任务列表</h3>
-                        <div>
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                            <div class="search-input-wrap" style="position:relative;width:180px">
+                                <input type="text" id="taskSearchInput" class="form-input" placeholder="搜索文件..." style="padding-right:30px;height:32px;font-size:0.8125rem">
+                                <button id="taskSearchBtn" style="position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-muted);cursor:pointer;padding:4px" title="搜索">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                                </button>
+                            </div>
                             <button class="btn btn-secondary btn-sm" id="refreshTasksBtn">刷新</button>
                             <button class="btn btn-danger btn-sm" id="clearFailedBtn" style="display:none">清除失败记录</button>
                             <button class="btn btn-primary btn-sm" id="retryAllBtn" style="display:none">重试全部</button>
                         </div>
                     </div>
                     <div class="table-container">
-                        <table><thead><tr><th>文件路径</th><th>状态</th><th>操作</th></tr></thead>
-                            <tbody id="task-list"><tr><td colspan="3"><div class="empty-state"><p>暂无数据</p></div></td></tr></tbody>
+                        <table><thead><tr><th>文件路径</th><th>状态</th><th>时间</th><th>操作</th></tr></thead>
+                            <tbody id="task-list"><tr><td colspan="4"><div class="empty-state"><p>暂无数据</p></div></td></tr></tbody>
                         </table>
+                    </div>
+                    <div class="pagination" id="taskPagination" style="display:none;padding:12px 16px;border-top:1px solid var(--border-color);align-items:center;justify-content:space-between">
+                        <div style="font-size:0.8125rem;color:var(--text-muted)">共 <span id="taskTotal">0</span> 条</div>
+                        <div style="display:flex;gap:4px;align-items:center">
+                            <button class="btn btn-sm btn-secondary page-btn" id="taskPrevBtn" disabled>上一页</button>
+                            <span style="font-size:0.8125rem;color:var(--text-muted);padding:0 8px"><span id="taskPage">1</span>/<span id="taskTotalPages">1</span></span>
+                            <button class="btn btn-sm btn-secondary page-btn" id="taskNextBtn" disabled>下一页</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -196,18 +233,141 @@
             <!-- 配置管理 -->
             <div id="page-config" class="page">
                 <div class="page-header">
-                    <h1 class="page-title">配置管理</h1>
-                    <p class="page-subtitle">查看和修改系统配置</p>
-                </div>
-                <div class="card">
-                    <div class="card-header">
-                        <h3 class="card-title">系统配置</h3>
-                        <div>
-                            <button class="btn btn-secondary" id="reloadConfigBtn">重新加载</button>
-                            <button class="btn btn-primary" id="saveConfigBtn">保存配置</button>
-                        </div>
+                    <div class="page-header-left">
+                        <h1 class="page-title">配置管理</h1>
+                        <p class="page-subtitle">广播控制台 · 系统配置与控制面板</p>
                     </div>
-                    <div id="config-editor"></div>
+                    <div class="page-header-actions">
+                        <div class="config-search" id="configSearchWrapper">
+                            <svg class="search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                            <input type="text" id="configSearchInput" placeholder="搜索参数...">
+                            <kbd class="search-hint">⌘K</kbd>
+                        </div>
+                        <button class="btn btn-console" id="reloadConfigBtn">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+                            <span>重新加载</span>
+                        </button>
+                        <button class="btn btn-console primary" id="saveConfigBtn">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                            <span>保存配置</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="config-layout">
+                    <nav class="config-nav" id="configNav">
+                        <div class="cnav-header">
+                            <span class="cnav-header-icon">⎔</span>
+                            <span>SECTION</span>
+                            <span class="cnav-header-channel">CH</span>
+                        </div>
+                        <div class="cnav-group">
+                            <div class="cnav-group-title">
+                                <span class="led led-green"></span>
+                                系统配置
+                            </div>
+                            <a class="cnav-item active" data-section="monitoring">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">监控配置</span>
+                                <span class="cnav-badge">6</span>
+                            </a>
+                            <a class="cnav-item" data-section="tmdb">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">TMDB 配置</span>
+                                <span class="cnav-badge">3</span>
+                            </a>
+                            <a class="cnav-item" data-section="naming">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">命名规则</span>
+                                <span class="cnav-badge">3</span>
+                            </a>
+                            <a class="cnav-item" data-section="processing">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">处理配置</span>
+                                <span class="cnav-badge">3</span>
+                            </a>
+                            <a class="cnav-item" data-section="logging">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">日志配置</span>
+                                <span class="cnav-badge">4</span>
+                            </a>
+                        </div>
+                        <div class="cnav-group">
+                            <div class="cnav-group-title">
+                                <span class="led led-cyan"></span>
+                                云盘配置
+                            </div>
+                            <a class="cnav-item" data-section="p123">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">123云盘</span>
+                                <span class="cnav-badge">3</span>
+                            </a>
+                            <a class="cnav-item" data-section="cloud189">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">天翼云盘</span>
+                                <span class="cnav-badge">—</span>
+                            </a>
+                            <a class="cnav-item" data-section="yun139">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">139云盘</span>
+                                <span class="cnav-badge">—</span>
+                            </a>
+                            <a class="cnav-item" data-section="emos">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">Emby 云盘</span>
+                                <span class="cnav-badge">—</span>
+                            </a>
+                        </div>
+                        <div class="cnav-group">
+                            <div class="cnav-group-title">
+                                <span class="led led-green"></span>
+                                通知与工具
+                            </div>
+                            <a class="cnav-item" data-section="telegram">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">Telegram</span>
+                                <span class="cnav-badge">—</span>
+                            </a>
+                            <a class="cnav-item" data-section="guessit">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">GuessIt 解析</span>
+                                <span class="cnav-badge">—</span>
+                            </a>
+                            <a class="cnav-item" data-section="emya_db">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">Emby 数据库</span>
+                                <span class="cnav-badge">—</span>
+                            </a>
+                        </div>
+                        <div class="cnav-group">
+                            <div class="cnav-group-title">
+                                <span class="led led-amber"></span>
+                                数据库配置
+                            </div>
+                            <a class="cnav-item" data-section="__manual_rules">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">手动规则</span>
+                                <span class="cnav-badge" id="mrCount">0</span>
+                            </a>
+                            <a class="cnav-item" data-section="__release_groups">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">字幕组映射</span>
+                                <span class="cnav-badge" id="rgCount">0</span>
+                            </a>
+                            <a class="cnav-item" data-section="__llm_providers">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">LLM 提供商</span>
+                                <span class="cnav-badge" id="lpCount">0</span>
+                            </a>
+                            <a class="cnav-item" data-section="__runtime">
+                                <span class="cnav-led"></span>
+                                <span class="cnav-label">运行时配置</span>
+                                <span class="cnav-badge" id="rtCount">0</span>
+                            </a>
+                        </div>
+                    </nav>
+                    <div class="config-content">
+                        <div id="config-editor"></div>
+                    </div>
                 </div>
             </div>
 
@@ -307,12 +467,42 @@
                 </div>
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title">下载器状态</h3>
+                        <h3 class="card-title">运行中的下载器</h3>
                         <button class="btn btn-secondary btn-sm" id="refreshDownloadersBtn">刷新</button>
                     </div>
                     <div class="table-container">
                         <table><thead><tr><th>名称</th><th>类型</th><th>状态</th></tr></thead>
                             <tbody id="downloader-list"><tr><td colspan="3"><div class="empty-state"><p>暂无下载器</p></div></td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card" style="margin-top:1.5rem">
+                    <div class="card-header">
+                        <h3 class="card-title">下载器配置</h3>
+                        <button class="btn btn-primary btn-sm" id="addDownloaderConfigBtn">+ 添加下载器</button>
+                    </div>
+                    <div class="table-container">
+                        <table><thead><tr><th>名称</th><th>类型</th><th>主机</th><th>端口</th><th>用户名</th><th>RPC 地址</th><th>操作</th></tr></thead>
+                            <tbody id="downloader-config-list"><tr><td colspan="7"><div class="empty-state"><p>暂无配置</p></div></td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 用户管理 -->
+            <div id="page-users" class="page">
+                <div class="page-header">
+                    <h1 class="page-title">用户管理</h1>
+                    <p class="page-subtitle">管理系统用户和权限</p>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">所有用户</h3>
+                        <button class="btn btn-primary btn-sm" id="addUserBtn">+ 添加用户</button>
+                    </div>
+                    <div class="table-container">
+                        <table><thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+                            <tbody id="user-list"><tr><td colspan="6"><div class="empty-state"><p>暂无用户</p></div></td></tr></tbody>
                         </table>
                     </div>
                 </div>

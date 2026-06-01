@@ -85,6 +85,23 @@ async function loadTasksFromApi() {
     };
 }
 
+async function loadTaskListPaginated(page = 1, pageSize = 20, status = '', search = '') {
+    const params = new URLSearchParams();
+    params.set('page', page);
+    params.set('page_size', pageSize);
+    if (status) params.set('status', status);
+    if (search) params.set('search', search);
+    return await apiRequest(`/tasks/list?${params.toString()}`);
+}
+
+async function loadRecentActivityPaginated(page = 1, pageSize = 20, search = '') {
+    const params = new URLSearchParams();
+    params.set('page', page);
+    params.set('page_size', pageSize);
+    if (search) params.set('search', search);
+    return await apiRequest(`/tasks/recent?${params.toString()}`);
+}
+
 async function loadConfigFromApi() {
     const result = await apiRequest('/config');
     return result.config;
@@ -99,6 +116,10 @@ async function saveConfigToApi(section, values) {
         method: 'PUT',
         body: JSON.stringify({ section, values })
     });
+}
+
+async function deleteConfigSectionApi(section) {
+    return await apiRequest(`/config/section/${encodeURIComponent(section)}`, { method: 'DELETE' });
 }
 
 async function loadLogFilesFromApi() {
@@ -178,4 +199,68 @@ async function retryAllFailedViaApi() {
 
 async function loadUploadProgressFromApi() {
     return await apiRequest('/tasks/progress');
+}
+
+// ===== 数据库配置 API =====
+
+async function loadManualRulesFromApi() {
+    return await apiRequest('/config/db/manual-rules');
+}
+async function createManualRuleViaApi(data) {
+    return await apiRequest('/config/db/manual-rules', { method: 'POST', body: JSON.stringify(data) });
+}
+async function updateManualRuleViaApi(id, data) {
+    return await apiRequest(`/config/db/manual-rules/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+async function deleteManualRuleViaApi(id) {
+    return await apiRequest(`/config/db/manual-rules/${id}`, { method: 'DELETE' });
+}
+
+async function loadReleaseGroupsFromApi() {
+    return await apiRequest('/config/db/release-groups');
+}
+async function createReleaseGroupViaApi(data) {
+    return await apiRequest('/config/db/release-groups', { method: 'POST', body: JSON.stringify(data) });
+}
+async function updateReleaseGroupViaApi(id, data) {
+    return await apiRequest(`/config/db/release-groups/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+async function deleteReleaseGroupViaApi(id) {
+    return await apiRequest(`/config/db/release-groups/${id}`, { method: 'DELETE' });
+}
+
+async function loadLlmProvidersFromApi() {
+    return await apiRequest('/config/db/llm-providers');
+}
+async function createLlmProviderViaApi(data) {
+    return await apiRequest('/config/db/llm-providers', { method: 'POST', body: JSON.stringify(data) });
+}
+async function updateLlmProviderViaApi(id, data) {
+    return await apiRequest(`/config/db/llm-providers/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+async function deleteLlmProviderViaApi(id) {
+    return await apiRequest(`/config/db/llm-providers/${id}`, { method: 'DELETE' });
+}
+
+async function loadRuntimeConfigFromApi() {
+    return await apiRequest('/config/db/runtime');
+}
+async function updateRuntimeConfigViaApi(key, data) {
+    return await apiRequest(`/config/db/runtime/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+
+// ===== 用户管理 API =====
+
+async function loadUsersFromApi() {
+    const r = await apiRequest('/auth/users');
+    return r.users || [];
+}
+async function createUserViaApi(data) {
+    return await apiRequest('/auth/users', { method: 'POST', body: JSON.stringify(data) });
+}
+async function updateUserViaApi(id, data) {
+    return await apiRequest(`/auth/users/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+async function deleteUserViaApi(id) {
+    return await apiRequest(`/auth/users/${id}`, { method: 'DELETE' });
 }

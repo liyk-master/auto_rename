@@ -20,6 +20,28 @@ logger = logging.getLogger(__name__)
 # 服务器启动时生成的随机密钥
 _secret_key = secrets.token_hex(32)
 
+# 密码哈希 — 使用 hashlib.pbkdf2_hmac (SHA-256 + 随机盐)
+_PWHASH_ALGO = "sha256"
+_PWHASH_ITER = 600000
+_PWHASH_SALT_LEN = 16
+
+
+def hash_password(password: str) -> str:
+    """返回 salt$digest （十六进制）"""
+    salt = secrets.token_hex(_PWHASH_SALT_LEN)
+    dk = hashlib.pbkdf2_hmac(_PWHASH_ALGO, password.encode(), salt.encode(), _PWHASH_ITER)
+    return f"{salt}${dk.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    """验证密码是否与存储的 salt$digest 匹配"""
+    try:
+        salt, digest = stored.split("$", 1)
+        dk = hashlib.pbkdf2_hmac(_PWHASH_ALGO, password.encode(), salt.encode(), _PWHASH_ITER)
+        return hmac.compare_digest(dk.hex(), digest)
+    except (ValueError, AttributeError):
+        return False
+
 # 不受认证保护的路径前缀
 PUBLIC_PATHS = [
     "/api/auth/",

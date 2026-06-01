@@ -1348,11 +1348,16 @@ class DownloaderMonitorFactory:
             path_mappings = DownloaderMonitorFactory._parse_path_mappings(
                 config.get("path_mappings", {})
             )
+            rpc_url = config.get("rpc_url")
+            if not rpc_url:
+                host = config.get("host", "localhost")
+                port = config.get("port", "6800")
+                rpc_url = f"http://{host}:{port}/jsonrpc"
             
             return Aria2Monitor(
                 callback,
-                rpc_url=config.get("rpc_url", "http://localhost:6800/jsonrpc"),
-                secret=config.get("secret"),
+                rpc_url=rpc_url,
+                secret=config.get("secret") or config.get("password"),
                 supported_extensions=config.get(
                     "supported_extensions",
                     (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".strm"),
@@ -1366,10 +1371,15 @@ class DownloaderMonitorFactory:
             path_mappings = DownloaderMonitorFactory._parse_path_mappings(
                 config.get("path_mappings", {})
             )
+            rpc_url = config.get("rpc_url")
+            if not rpc_url:
+                host = config.get("host", "localhost")
+                port = config.get("port", "8080")
+                rpc_url = f"http://{host}:{port}/api/v2"
             
             monitor = QBittorrentMonitor(
                 callback,
-                rpc_url=config.get("rpc_url", "http://localhost:8080/api/v2"),
+                rpc_url=rpc_url,
                 username=config.get("username", "admin"),
                 password=config.get("password", "adminadmin"),
                 supported_extensions=config.get(

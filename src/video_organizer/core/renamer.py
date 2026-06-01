@@ -745,16 +745,25 @@ class VideoRenamer:
         if custom_mapping:
             logger.info(f"加载了 {len(custom_mapping)} 个自定义字幕组映射")
 
-        # LLM 兜底识别初始化（从配置读取）
+        # LLM 兜底识别初始化（优先从 DB 读取，兜底从 INI 配置读取）
         self.llm_translator = None
         self._llm_semaphore = threading.Semaphore(2)
         self._llm_fallback_enabled = False
-        if config and isinstance(config, dict):
-            llm_fallback_config = config.get("llm_fallback", {})
-            if llm_fallback_config.get("enabled", False):
-                # 收集所有启用的 Provider
+        llm_fallback_config = config.get("llm_fallback", {}) if config and isinstance(config, dict) else {}
+        if llm_fallback_config.get("enabled", False):
+            # 收集所有启用的 Provider
+            providers = []
+
+            # 优先从 DB 读取（懒导入避免循环依赖）
+            try:
+                from src.video_organizer.database.config_operations import get_llm_providers
+                providers = get_llm_providers()
+            except Exception:
                 providers = []
-                for i in range(1, 10):  # 支持多个 Provider
+
+            # DB 无数据时，从 INI 配置中读取（兼容旧版）
+            if not providers and config and isinstance(config, dict):
+                for i in range(1, 10):
                     provider_config = config.get(f"llm_provider_{i}", {})
                     if provider_config.get("enabled", False):
                         providers.append({
@@ -768,21 +777,21 @@ class VideoRenamer:
                             "max_retries": provider_config.get("max_retries", 2),
                         })
 
-                if providers:
-                    # 初始化 LLMTranslator（仅在有可用 Provider 时）
-                    self.llm_translator = LLMTranslator(providers=providers)
-                    if self.llm_translator.enabled:
-                        self._llm_fallback_enabled = True
-                        max_concurrent = llm_fallback_config.get("max_concurrent", 2)
-                        if max_concurrent > 0:
-                            self._llm_semaphore = threading.Semaphore(max_concurrent)
-                        logger.info(
-                            f"VideoRenamer: LLM 兜底识别已启用 "
-                            f"(providers={len(self.llm_translator.providers)}, "
-                            f"strategy={self.llm_translator.strategy.value})"
-                        )
-                else:
-                    logger.warning("VideoRenamer: llm_fallback 已启用但没有可用的 Provider")
+            if providers:
+                # 初始化 LLMTranslator（仅在有可用 Provider 时）
+                self.llm_translator = LLMTranslator(providers=providers)
+                if self.llm_translator.enabled:
+                    self._llm_fallback_enabled = True
+                    max_concurrent = llm_fallback_config.get("max_concurrent", 2)
+                    if max_concurrent > 0:
+                        self._llm_semaphore = threading.Semaphore(max_concurrent)
+                    logger.info(
+                        f"VideoRenamer: LLM 兜底识别已启用 "
+                        f"(providers={len(self.llm_translator.providers)}, "
+                        f"strategy={self.llm_translator.strategy.value})"
+                    )
+            else:
+                logger.warning("VideoRenamer: llm_fallback 已启用但没有可用的 Provider")
 
         # 初始化 GuessIt 解析器（增强视频文件名识别）
         self._guessit_parser = None

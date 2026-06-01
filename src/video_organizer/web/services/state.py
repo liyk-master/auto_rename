@@ -15,6 +15,7 @@ from datetime import datetime
 
 from ...database.operations import get_completed_tasks as db_get_completed
 from ...database.operations import get_failed_tasks as db_get_failed
+from ...database.operations import get_task_counts as db_get_task_counts
 
 
 @dataclass
@@ -168,11 +169,17 @@ class StateManager:
             if hasattr(handler, "_uploading_files"):
                 status.uploading_count = len(handler._uploading_files)
             
-            if hasattr(handler, "_uploaded_files"):
-                status.completed_count = len(handler._uploaded_files)
+            runtime_completed = len(handler._uploaded_files) if hasattr(handler, "_uploaded_files") else 0
+            runtime_failed = len(handler._failed_files) if hasattr(handler, "_failed_files") else 0
             
-            if hasattr(handler, "_failed_files"):
-                status.failed_count = len(handler._failed_files)
+            # 从数据库获取持久化计数（重启后不丢失），取与运行时计数的较大值
+            try:
+                db_counts = db_get_task_counts()
+                status.completed_count = max(runtime_completed, db_counts.get("completed", 0))
+                status.failed_count = max(runtime_failed, db_counts.get("failed", 0))
+            except Exception:
+                status.completed_count = runtime_completed
+                status.failed_count = runtime_failed
                 
         except Exception as e:
             self._logger.error(f"获取系统状态失败: {e}")

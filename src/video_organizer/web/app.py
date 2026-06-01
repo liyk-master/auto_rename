@@ -24,6 +24,7 @@ from .routers import (
     auth_router,
 )
 from .auth import auth_middleware
+from ..database.config_operations import seed_from_ini
 
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,14 @@ def create_app(
                     logger.info(f"已自动加载配置文件: {alt_path.resolve()}")
         except Exception as e:
             logger.warning(f"自动加载配置失败（部分功能可能受限）: {e}")
+    
+    # 将 INI 配置导入数据库（首次运行时）
+    config = state.get_config()
+    if config:
+        try:
+            seed_from_ini(config)
+        except Exception as e:
+            logger.warning(f"导入配置到数据库失败: {e}")
     
     app = FastAPI(
         title=title,

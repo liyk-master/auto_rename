@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import configparser
 import logging
 from typing import Dict, Any, List, Optional
@@ -257,6 +258,13 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
                     # 对于未知配置项，保留为字符串
                     config_dict[section][key] = value
     
+    # 保留不在 DEFAULT_CONFIG 中的自定义节（如 downloader.xxx）
+    for section in config.sections():
+        if section not in DEFAULT_CONFIG:
+            config_dict[section] = {}
+            for key, value in config[section].items():
+                config_dict[section][key] = value
+    
     # 特殊处理 manual_rules 节中的规则配置
     if "manual_rules" in config_dict and "manual_rules" in config:
         rules_list = []
@@ -383,6 +391,8 @@ def update_config(
     
     # 转换字典为配置对象
     for section, options in config_dict.items():
+        if not isinstance(options, dict):
+            continue
         # 特殊处理naming_rules
         if section == "naming_rules":
             if "naming" not in config:
@@ -392,10 +402,40 @@ def update_config(
         else:
             config[section] = {}
             for key, value in options.items():
+                # manual_rules.rules 由下面的 ruleN 写回，跳过
+                if section == "manual_rules" and key == "rules":
+                    continue
                 if isinstance(value, list):
-                    config[section][key] = ",".join(value)
+                    try:
+                        config[section][key] = ",".join(value)
+                    except TypeError:
+                        config[section][key] = json.dumps(value, ensure_ascii=False)
+                elif isinstance(value, dict):
+                    config[section][key] = json.dumps(value, ensure_ascii=False)
                 else:
                     config[section][key] = str(value)
+
+    # 写回 manual_rules.rules 为 rule1, rule2, ... 条目
+    manual_rules = config_dict.get("manual_rules", {})
+    rules_list = manual_rules.get("rules", [])
+    if isinstance(rules_list, list) and "manual_rules" in config:
+        rule_idx = 1
+        for rule_entry in rules_list:
+            if isinstance(rule_entry, dict):
+                rule_text = rule_entry.get("rule", "").strip()
+                if rule_text:
+                    config["manual_rules"][f"rule{rule_idx}"] = rule_text
+                    rule_idx += 1
+    
+    # 写回 downloader.xxx 节（从 config_dict 中的 dict 键直接写入）
+    for section_name in list(config_dict.keys()):
+        if section_name.startswith("downloader."):
+            options = config_dict[section_name]
+            if not isinstance(options, dict):
+                continue
+            config[section_name] = {}
+            for key, value in options.items():
+                config[section_name][key] = str(value)
     
     # 保存配置文件
     with open(config_path, "w", encoding="utf-8") as f:

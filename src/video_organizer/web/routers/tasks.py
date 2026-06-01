@@ -10,10 +10,11 @@ import threading
 from typing import Dict, List, Optional
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query
 from pydantic import BaseModel
 
 from ..services.state import get_state_manager
+from ...database.operations import get_tasks_paginated, get_recent_activity_paginated
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ class FailedTaskListResponse(BaseModel):
 
 class RecentActivityItem(BaseModel):
     """最近活动项"""
+    id: Optional[int] = None
     path: str
     status: str
     error: Optional[str] = None
@@ -76,6 +78,27 @@ class RecentActivityResponse(BaseModel):
     """最近活动响应"""
     success: bool
     items: List[RecentActivityItem]
+    total: int = 0
+    page: int = 1
+    page_size: int = 20
+
+
+class TaskListItem(BaseModel):
+    """任务列表项"""
+    id: int
+    path: str
+    status: str
+    error: Optional[str] = None
+    time: Optional[str] = None
+
+
+class TaskListPaginatedResponse(BaseModel):
+    """分页任务列表响应"""
+    success: bool
+    items: List[TaskListItem]
+    total: int
+    page: int
+    page_size: int
 
 
 class RetryRequest(BaseModel):
@@ -233,30 +256,62 @@ async def get_failed_tasks():
 
 
 @router.get("/recent", response_model=RecentActivityResponse)
-async def get_recent_activity():
+async def get_recent_activity(
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    search: Optional[str] = Query(None, description="搜索关键词"),
+):
     """
-    获取最近活动
+    获取最近活动（分页）
     
     返回最近的已完成和失败任务（含时间戳），用于仪表盘展示。
     """
     try:
-        state = get_state_manager()
-        completed = state.get_completed_with_time()
-        failed_dict = state.get_failed_with_time()
-        
-        items = []
-        for f in completed:
-            items.append(RecentActivityItem(path=f["path"], status="completed", time=f["time"]))
-        for p, v in failed_dict.items():
-            items.append(RecentActivityItem(path=p, status="failed", error=v["error"], time=v["time"]))
-        
-        items.sort(key=lambda x: x.time or "", reverse=True)
-        items = items[:20]
-        
-        return RecentActivityResponse(success=True, items=items)
+        items, total = get_recent_activity_paginated(
+            page=page,
+            page_size=page_size,
+            search=search,
+        )
+        return RecentActivityResponse(
+            success=True,
+            items=[RecentActivityItem(**item) for item in items],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
     except Exception as e:
         logger.error(f"获取最近活动失败: {e}")
         raise HTTPException(status_code=500, detail=f"获取最近活动失败: {e}")
+
+
+@router.get("/list", response_model=TaskListPaginatedResponse)
+async def get_task_list(
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    status: Optional[str] = Query(None, description="按状态过滤"),
+    search: Optional[str] = Query(None, description="搜索关键词"),
+):
+    """
+    获取分页任务列表，支持按状态过滤和搜索
+    """
+    try:
+        offset = (page - 1) * page_size
+        items, total = get_tasks_paginated(
+            status=status,
+            search=search,
+            offset=offset,
+            limit=page_size,
+        )
+        return TaskListPaginatedResponse(
+            success=True,
+            items=[TaskListItem(**item) for item in items],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
+    except Exception as e:
+        logger.error(f"获取任务列表失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取任务列表失败: {e}")
 
 
 @router.get("/progress", response_model=AllProgressResponse)
