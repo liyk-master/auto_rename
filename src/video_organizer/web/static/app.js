@@ -376,18 +376,19 @@ async function updateRecentActivity() {
         const items = data.items || [];
         state.recentTotal = data.total || 0;
         if (items.length === 0) {
-            el.recentActivity.innerHTML = `<tr><td colspan="3"><div class="empty-state"><p>暂无数据</p></div></td></tr>`;
+            el.recentActivity.innerHTML = `<div class="empty-state"><p>暂无数据</p></div>`;
         } else {
-            el.recentActivity.innerHTML = items.map(t => `<tr>
-                <td style="font-family:monospace;font-size:0.8125rem">${escapeHtml(t.path)}</td>
-                <td><span class="badge ${t.status === 'completed' ? 'badge-success' : 'badge-danger'}">${t.status === 'completed' ? '已完成' : '失败'}</span></td>
-                <td style="color:var(--text-muted);white-space:nowrap">${formatRelativeTime(t.time)}</td>
-            </tr>`).join('');
+            el.recentActivity.innerHTML = items.map((t, i) => `<div class="activity-item" style="animation-delay:${i * 30}ms">
+                <div class="activity-dot ${t.status === 'completed' ? 'activity-dot-success' : 'activity-dot-danger'}"></div>
+                <div class="activity-path" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
+                <div class="activity-status ${t.status === 'completed' ? 'activity-status-success' : 'activity-status-danger'}">${t.status === 'completed' ? '已完成' : '失败'}</div>
+                <div class="activity-time">${formatRelativeTime(t.time)}</div>
+            </div>`).join('');
         }
         updateRecentPagination(data);
     } catch (e) {
         if (!e.message.includes('登录已过期')) {
-            el.recentActivity.innerHTML = `<tr><td colspan="3"><div class="empty-state"><p>加载失败</p></div></td></tr>`;
+            el.recentActivity.innerHTML = `<div class="empty-state"><p>加载失败</p></div>`;
         }
     }
 }
