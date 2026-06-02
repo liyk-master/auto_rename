@@ -607,54 +607,60 @@ class VideoFileHandler:
                         # 1. 先暂停下载器中的种子，提前释放文件句柄
                         self._release_file_lock_via_downloader(file_path)
 
-                        # 2. 再从下载器中强制删除任务，让下载器释放文件句柄
-                        self._force_cleanup_download_task(file_path)
+                        # 2. 再从下载器中强制删除任务
+                        task_removed = self._force_cleanup_download_task(file_path)
 
-                        # 等待一段时间让下载器完全释放文件
-                        import time
+                        if task_removed:
+                            # 任务已删除，等待一段时间让下载器完全释放文件
+                            import time
 
-                        time.sleep(3.0)
+                            time.sleep(3.0)
 
-                        # 3. 然后尝试删除文件 (文件可能已被下载器删除)
-                        delete_success = False
-                        max_retries = 5
-                        retry_delay = 3.0
+                            # 3. 然后尝试删除文件 (文件可能已被下载器删除)
+                            delete_success = False
+                            max_retries = 5
+                            retry_delay = 3.0
 
-                        for attempt in range(max_retries):
-                            try:
-                                if os.path.exists(file_path):
-                                    os.remove(file_path)
-                                    delete_success = True
-                                    console_log(f"✅ 上传成功后已删除原文件: {file_path}")
-                                    self.logger.info(
-                                        f"上传成功后已删除原文件: {file_path}"
-                                    )
-                                    break
-                                else:
-                                    # 文件已不存在，视为删除成功
-                                    delete_success = True
-                                    console_log(f"⚠️ 上传成功后原文件已不存在: {file_path}")
-                                    self.logger.info(
-                                        f"上传成功后原文件已不存在: {file_path}"
-                                    )
-                                    break
-                            except (PermissionError, OSError) as e:
-                                # WinError 32 (ERROR_SHARING_VIOLATION) - 文件被另一个程序占用
-                                if attempt < max_retries - 1:
-                                    error_code = (
-                                        e.winerror
-                                        if hasattr(e, "winerror")
-                                        else e.errno
-                                    )
-                                    self.logger.warning(
-                                        f"文件被占用 ({error_code})，{retry_delay}秒后重试: {e}"
-                                    )
-                                    time.sleep(retry_delay)
-                                else:
-                                    self.logger.error(
-                                        f"删除原文件失败，已从下载器清理，启动后台重试: {file_path}, 错误: {e}"
-                                    )
-                                    self._delete_file_with_background_retry(file_path)
+                            for attempt in range(max_retries):
+                                try:
+                                    if os.path.exists(file_path):
+                                        os.remove(file_path)
+                                        delete_success = True
+                                        console_log(f"✅ 上传成功后已删除原文件: {file_path}")
+                                        self.logger.info(
+                                            f"上传成功后已删除原文件: {file_path}"
+                                        )
+                                        break
+                                    else:
+                                        # 文件已不存在，视为删除成功
+                                        delete_success = True
+                                        console_log(f"⚠️ 上传成功后原文件已不存在: {file_path}")
+                                        self.logger.info(
+                                            f"上传成功后原文件已不存在: {file_path}"
+                                        )
+                                        break
+                                except (PermissionError, OSError) as e:
+                                    # WinError 32 (ERROR_SHARING_VIOLATION) - 文件被另一个程序占用
+                                    if attempt < max_retries - 1:
+                                        error_code = (
+                                            e.winerror
+                                            if hasattr(e, "winerror")
+                                            else e.errno
+                                        )
+                                        self.logger.warning(
+                                            f"文件被占用 ({error_code})，{retry_delay}秒后重试: {e}"
+                                        )
+                                        time.sleep(retry_delay)
+                                    else:
+                                        self.logger.error(
+                                            f"删除原文件失败，已从下载器清理，启动后台重试: {file_path}, 错误: {e}"
+                                        )
+                                        self._delete_file_with_background_retry(file_path)
+                        else:
+                            # 任务未删除（种子中还有其他视频），跳过文件删除
+                            self.logger.info(
+                                f"种子中还有其他视频未处理，跳过文件删除: {file_path}"
+                            )
                     except Exception as e:
                         console_log(f"❌ 上传成功后删除原文件失败: {e}")
                         self.logger.error(
@@ -1414,67 +1420,26 @@ class VideoFileHandler:
                 deleted = False
                 if self.delete_after_upload:
                     try:
-                        # 1. 先暂停下载器中的种子，提前释放文件句柄
-                        self._release_file_lock_via_downloader(file_path)
+                        # 尝试从下载器中删除任务
+                        #   每次调用都会标记当前文件已上传完成
+                        #   qB 会在种子内所有视频都上传完后自动 deleteFiles=true
+                        task_removed = self._cleanup_download_task(file_path)
 
-                        # 2. 再尝试从下载器中删除任务
-                        self._cleanup_download_task(file_path)
-
-                        # 3. 等待一段时间让下载器完全释放文件
-                        import time
-
-                        time.sleep(3.0)
-
-                        # 4. 然后尝试删除文件
-                        delete_success = False
-                        max_retries = 5
-                        retry_delay = 3.0
-
-                        for attempt in range(max_retries):
-                            try:
-                                if os.path.exists(file_path):
-                                    os.remove(file_path)
-                                    delete_success = True
-                                    deleted = True
-                                    print(
-                                        f"✅ [线程#{worker_id}] 所有云盘上传成功后已删除原文件"
-                                    )
-                                    self.logger.info(
-                                        f"所有云盘上传成功后已删除原文件: {file_path}"
-                                    )
-                                    break
-                                else:
-                                    delete_success = True
-                                    deleted = True
-                                    print(
-                                        f"⚠️ [线程#{worker_id}] 原文件已不存在: {file_path}"
-                                    )
-                                    self.logger.info(
-                                        f"所有云盘上传成功后原文件已不存在: {file_path}"
-                                    )
-                                    break
-                            except (PermissionError, OSError) as e:
-                                # WinError 32 (ERROR_SHARING_VIOLATION) - 文件被另一个程序占用
-                                if attempt < max_retries - 1:
-                                    error_code = (
-                                        e.winerror
-                                        if hasattr(e, "winerror")
-                                        else e.errno
-                                    )
-                                    self.logger.warning(
-                                        f"[线程#{worker_id}] 文件被占用 ({error_code})，{retry_delay}秒后重试..."
-                                    )
-
-                                    # 等待后重试
-                                    time.sleep(retry_delay)
-                                else:
-                                    self.logger.warning(
-                                        f"[线程#{worker_id}] 文件删除失败，启动后台重试: {file_path}"
-                                    )
-                                    self._delete_file_with_background_retry(file_path)
+                        if task_removed:
+                            deleted = True
+                            print(
+                                f"✅ [线程#{worker_id}] 种子中所有视频均上传完成，qB 已自动删除任务及文件"
+                            )
+                            self.logger.info(
+                                f"qB 已自动删除种子及文件: {file_path}"
+                            )
+                        else:
+                            self.logger.info(
+                                f"[线程#{worker_id}] 种子中还有视频未上传完成，文件暂不删除"
+                            )
                     except Exception as e:
-                        console_log(f"❌ [线程#{worker_id}] 删除原文件失败: {e}")
-                        self.logger.error(f"删除原文件失败: {file_path}, 错误: {e}")
+                        console_log(f"❌ [线程#{worker_id}] 删除任务失败: {e}")
+                        self.logger.error(f"删除任务失败: {file_path}, 错误: {e}")
 
                 # 更新日志
                 log_success(
@@ -1673,12 +1638,15 @@ class VideoFileHandler:
         print(f"DEBUG: 未找到匹配的映射路径")
         return file_path
 
-    def _cleanup_download_task(self, file_path):
+    def _cleanup_download_task(self, file_path) -> bool:
         """
         从下载器中删除对应的下载任务
 
         Args:
             file_path: 文件路径 (本地路径)
+
+        Returns:
+            bool: 是否成功从下载器中删除了任务
         """
         # 反向映射路径，因为下载器使用的是它自己的路径系统
         downloader_file_path = self._reverse_apply_path_mapping(file_path)
@@ -1719,7 +1687,7 @@ class VideoFileHandler:
                 self.logger.error(f"从映射的下载器删除任务失败: {e}")
 
         if task_removed:
-            return
+            return True
 
         # 2. 如果映射中没有或删除失败，尝试遍历所有注册的下载器
         # 这在 --process 模式下很有用，因为那时文件可能没有被添加到映射中
@@ -1740,22 +1708,25 @@ class VideoFileHandler:
                                 self.logger.info(
                                     f"已从下载器中删除任务 (遍历查找): {path}"
                                 )
-                                return
+                                return True
                 except Exception as e:
                     self.logger.warning(f"尝试从下载器删除任务时出错: {e}")
 
-        if not task_removed:
-            console_log(f"⚠️ 未能从下载器删除任务 (未找到匹配任务): {downloader_file_path}")
-            self.logger.debug(
-                f"未能从下载器删除任务: {file_path} -> {downloader_file_path}"
-            )
+        console_log(f"⚠️ 未能从下载器删除任务 (未找到匹配任务): {downloader_file_path}")
+        self.logger.debug(
+            f"未能从下载器删除任务: {file_path} -> {downloader_file_path}"
+        )
+        return False
 
-    def _force_cleanup_download_task(self, file_path: str):
+    def _force_cleanup_download_task(self, file_path: str) -> bool:
         """
         强制从下载器中删除任务及其文件 (用于文件删除失败时的清理)
 
         Args:
             file_path: 文件路径 (本地路径)
+
+        Returns:
+            bool: 是否成功从下载器中删除了任务
         """
         # 反向映射路径
         downloader_file_path = self._reverse_apply_path_mapping(file_path)
@@ -1787,7 +1758,7 @@ class VideoFileHandler:
                             console_log(f"✅ 已强制从下载器中删除任务及文件")
                             self.logger.info(f"已强制从下载器中删除任务及文件: {path}")
                             del self._file_downloader_map[map_key]
-                            return
+                            return True
             except Exception as e:
                 self.logger.error(f"从映射的下载器强制删除失败: {e}")
 
@@ -1808,11 +1779,12 @@ class VideoFileHandler:
                                 self.logger.info(
                                     f"已强制从下载器中删除任务及文件 (遍历查找): {path}"
                                 )
-                                return
+                                return True
                 except Exception as e:
                     self.logger.warning(f"尝试从下载器强制删除时出错: {e}")
 
         self.logger.debug(f"未能从下载器强制删除任务: {file_path}")
+        return False
 
     def _process_subtitle_file(self, subtitle_path: str) -> bool:
         """

@@ -14,7 +14,12 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Qu
 from pydantic import BaseModel
 
 from ..services.state import get_state_manager
-from ...database.operations import get_tasks_paginated, get_recent_activity_paginated
+from ...database.operations import (
+    get_tasks_paginated,
+    get_recent_activity_paginated,
+    delete_failed_task,
+    delete_all_failed_tasks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -408,6 +413,94 @@ async def websocket_progress(websocket: WebSocket):
             pass
 
 
+@router.websocket("/ws/dashboard")
+async def websocket_dashboard(websocket: WebSocket):
+    """
+    WebSocket 仪表盘实时更新
+
+    连接时推送当前状态快照，任务状态变更时实时推送更新。
+    """
+    await websocket.accept()
+
+    state = get_state_manager()
+    update_queue = []
+    queue_lock = threading.Lock()
+
+    def on_dashboard_update():
+        """仪表盘更新回调（在 record_task 线程中触发）"""
+        with queue_lock:
+            update_queue.append({"type": "update"})
+
+    # 注册回调
+    state.register_dashboard_callback(on_dashboard_update)
+
+    try:
+        # 连接时推送初始快照
+        try:
+            status = state.get_system_status()
+            items, total = get_recent_activity_paginated(page=1, page_size=20)
+            await websocket.send_json({
+                "type": "snapshot",
+                "stats": {
+                    "queue": status.queue_size,
+                    "processing": status.processing_count,
+                    "uploading": status.uploading_count,
+                    "completed": status.completed_count,
+                    "failed": status.failed_count,
+                },
+                "recent": {
+                    "items": items,
+                    "total": total,
+                }
+            })
+        except Exception as e:
+            logger.warning(f"仪表盘初始快照失败: {e}")
+
+        while True:
+            # 发送队列中的更新
+            needs_refresh = False
+            with queue_lock:
+                if update_queue:
+                    update_queue.clear()
+                    needs_refresh = True
+
+            if needs_refresh:
+                try:
+                    status = state.get_system_status()
+                    items, total = get_recent_activity_paginated(page=1, page_size=20)
+                    await websocket.send_json({
+                        "type": "update",
+                        "stats": {
+                            "queue": status.queue_size,
+                            "processing": status.processing_count,
+                            "uploading": status.uploading_count,
+                            "completed": status.completed_count,
+                            "failed": status.failed_count,
+                        },
+                        "recent": {
+                            "items": items,
+                            "total": total,
+                        }
+                    })
+                except Exception as e:
+                    logger.warning(f"仪表盘推送更新失败: {e}")
+
+            # 心跳
+            await websocket.send_json({"type": "heartbeat"})
+            await asyncio.sleep(3)
+
+    except WebSocketDisconnect:
+        logger.debug("仪表盘 WebSocket 连接已断开")
+    except Exception as e:
+        logger.debug(f"仪表盘 WebSocket 连接关闭: {e}")
+    finally:
+        state.unregister_dashboard_callback(on_dashboard_update)
+        try:
+            await websocket.close()
+        except:
+            pass
+
+
 @router.post("/retry")
 async def retry_failed_task(request: RetryRequest):
     """
@@ -495,11 +588,12 @@ async def clear_failed_task(file_path: str):
         state = get_state_manager()
         handler = state.get_video_handler()
         
-        if handler is None:
-            raise HTTPException(status_code=503, detail="系统未就绪")
-        
-        if hasattr(handler, "_failed_files") and file_path in handler._failed_files:
+        if handler is not None and hasattr(handler, "_failed_files") and file_path in handler._failed_files:
             del handler._failed_files[file_path]
+        
+        db_deleted = delete_failed_task(file_path)
+        
+        if db_deleted:
             logger.info(f"已清除失败任务记录: {file_path}")
             return {"success": True, "message": f"已清除失败任务记录: {file_path}"}
         else:
@@ -521,16 +615,13 @@ async def clear_all_failed_tasks():
         state = get_state_manager()
         handler = state.get_video_handler()
         
-        if handler is None:
-            raise HTTPException(status_code=503, detail="系统未就绪")
-        
-        if hasattr(handler, "_failed_files"):
-            count = len(handler._failed_files)
+        if handler is not None and hasattr(handler, "_failed_files"):
             handler._failed_files.clear()
-            logger.info(f"已清除所有失败任务记录: {count} 条")
-            return {"success": True, "message": f"已清除 {count} 条失败任务记录"}
-        else:
-            return {"success": True, "message": "没有失败任务记录"}
+        
+        db_count = delete_all_failed_tasks()
+        
+        logger.info(f"已清除 {db_count} 条失败任务记录")
+        return {"success": True, "message": f"已清除 {db_count} 条失败任务记录"}
             
     except HTTPException:
         raise

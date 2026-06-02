@@ -101,6 +101,9 @@ class StateManager:
         self._upload_progress: Dict[str, UploadProgress] = {}  # file_path -> UploadProgress
         self._progress_callbacks: List[Callable] = []  # 进度更新回调列表
         
+        # 仪表盘更新回调
+        self._dashboard_callbacks: List[Callable] = []
+        
         # 状态锁
         self._state_lock = threading.Lock()
     
@@ -363,6 +366,33 @@ class StateManager:
         with self._state_lock:
             if file_path in self._upload_progress:
                 del self._upload_progress[file_path]
+
+    # ========== 仪表盘实时更新 ==========
+
+    def register_dashboard_callback(self, callback: Callable) -> None:
+        """注册仪表盘更新回调"""
+        with self._state_lock:
+            self._dashboard_callbacks.append(callback)
+
+    def unregister_dashboard_callback(self, callback: Callable) -> None:
+        """注销仪表盘更新回调"""
+        with self._state_lock:
+            if callback in self._dashboard_callbacks:
+                self._dashboard_callbacks.remove(callback)
+
+    def notify_dashboard_update(self) -> None:
+        """
+        通知所有仪表盘监听器：有新的任务完成/失败
+        回调在独立线程中执行，不阻塞调用方。
+        """
+        callbacks = []
+        with self._state_lock:
+            callbacks = list(self._dashboard_callbacks)
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception as e:
+                self._logger.error(f"仪表盘回调执行失败: {e}")
 
 
 def get_state_manager() -> StateManager:

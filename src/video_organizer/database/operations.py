@@ -37,6 +37,12 @@ def record_task(
             )
             db.add(record)
             db.commit()
+        # 通知仪表盘更新（惰性导入避免循环依赖）
+        try:
+            from ..web.services.state import get_state_manager
+            get_state_manager().notify_dashboard_update()
+        except Exception:
+            pass
         return True
     except Exception as e:
         logger.warning(f"写入任务历史到数据库失败: {e}")
@@ -227,6 +233,64 @@ def get_tasks_paginated(
     except Exception as e:
         logger.warning(f"分页查询任务失败: {e}")
         return [], 0
+
+
+def delete_failed_task(file_path: str) -> bool:
+    """
+    从数据库删除指定的失败任务记录
+
+    Returns:
+        是否删除了记录
+    """
+    try:
+        session_local = get_session_local()
+    except Exception:
+        return False
+
+    try:
+        with session_local() as db:
+            result = (
+                db.query(TaskHistory)
+                .filter(
+                    TaskHistory.status == "failed",
+                    TaskHistory.file_path == file_path,
+                )
+                .delete()
+            )
+            db.commit()
+            if result:
+                logger.info(f"已从数据库删除失败任务记录: {file_path}")
+            return result > 0
+    except Exception as e:
+        logger.warning(f"从数据库删除失败任务失败: {e}")
+        return False
+
+
+def delete_all_failed_tasks() -> int:
+    """
+    从数据库删除所有失败任务记录
+
+    Returns:
+        删除的记录数
+    """
+    try:
+        session_local = get_session_local()
+    except Exception:
+        return 0
+
+    try:
+        with session_local() as db:
+            result = (
+                db.query(TaskHistory)
+                .filter(TaskHistory.status == "failed")
+                .delete()
+            )
+            db.commit()
+            logger.info(f"已从数据库删除 {result} 条失败任务记录")
+            return result
+    except Exception as e:
+        logger.warning(f"从数据库删除所有失败任务失败: {e}")
+        return 0
 
 
 def get_recent_activity_paginated(

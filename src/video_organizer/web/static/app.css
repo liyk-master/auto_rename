@@ -314,16 +314,21 @@ body {
 
 /* ===== Tables ===== */
 .table-container { overflow-x: auto; border-radius: var(--radius-md); border: 1px solid var(--border); }
-table { width: 100%; border-collapse: collapse; }
-th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); }
+table { width: 100%; border-collapse: collapse; min-width: 500px; }
+th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
 th {
     font-weight: 600; color: var(--text-muted);
     font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.05em;
-    background: var(--bg-secondary); white-space: nowrap;
+    background: var(--bg-secondary);
 }
 td { font-size: 0.875rem; }
 tr:last-child td { border-bottom: none; }
 tr:hover td { background: color-mix(in srgb, var(--accent) 3%, transparent); }
+
+table .col-path { min-width: 200px; max-width: 400px; overflow: hidden; text-overflow: ellipsis; }
+table .col-status { min-width: 70px; }
+table .col-time { min-width: 60px; }
+table .col-actions { min-width: 110px; }
 
 /* ===== Activity Feed ===== */
 .activity-feed {
@@ -765,19 +770,20 @@ tr:hover td { background: color-mix(in srgb, var(--accent) 3%, transparent); }
 /* --- DB config table --- */
 .config-table-wrap {
     border: 1px solid var(--border); border-radius: var(--radius-md);
-    overflow: hidden; background: var(--bg-primary);
+    overflow-x: auto; background: var(--bg-primary);
 }
-.config-table { width: 100%; border-collapse: collapse; }
+.config-table { width: 100%; border-collapse: collapse; min-width: 640px; }
 .config-table thead { background: rgba(255,255,255,0.01); }
 .config-table th {
     text-align: left; font-size: 0.625rem; font-weight: 700;
     text-transform: uppercase; letter-spacing: 0.06em;
     color: var(--text-muted); padding: 10px 12px;
-    border-bottom: 1px solid var(--border); opacity: 0.6;
+    border-bottom: 1px solid var(--border); opacity: 0.6; white-space: nowrap;
 }
 .config-table td {
     padding: 8px 12px; font-size: 0.8125rem;
     border-bottom: 1px solid rgba(255,255,255,0.025); vertical-align: middle;
+    white-space: nowrap;
 }
 .config-table tbody tr:last-child td { border-bottom: none; }
 .config-table tbody tr:hover td { background: rgba(255,255,255,0.012); }
@@ -793,6 +799,15 @@ tr:hover td { background: color-mix(in srgb, var(--accent) 3%, transparent); }
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 5%, transparent);
 }
 .config-table select { cursor: pointer; }
+
+.config-table .col-name { min-width: 90px; }
+.config-table .col-url { min-width: 140px; }
+.config-table .col-key { min-width: 100px; }
+.config-table .col-model { min-width: 90px; }
+.config-table .col-num { min-width: 50px; width: 60px; }
+.config-table .col-check { min-width: 40px; width: 50px; text-align: center; }
+.config-table .col-actions { min-width: 100px; width: 110px; }
+.config-table td.col-check input { width: auto; margin: 0 auto; display: block; }
 
 /* --- Table action buttons --- */
 .btn-cell { display: flex; gap: 4px; align-items: center; }

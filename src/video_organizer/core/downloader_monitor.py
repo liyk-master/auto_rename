@@ -790,6 +790,7 @@ class QBittorrentMonitor(DownloaderMonitor):
         self.session = requests.Session()  # 使用 Session 管理 Cookie
         self._processed_torrents = set()  # 存储已处理的种子哈希，避免重复处理
         self._processed_files = set()  # 存储已处理的文件路径，避免重复回调同一文件
+        self._upload_completed_files = set()  # 存储真正上传完成的文件路径，用于判定是否可删种子
     
     def _apply_path_mapping(self, file_path: str) -> str:
         """
@@ -918,6 +919,10 @@ class QBittorrentMonitor(DownloaderMonitor):
 
             torrent_hash = target_torrent["hash"]
 
+            # 标记当前文件已上传完成（使用标准化路径）
+            norm_input_path = os.path.normpath(file_path).lower()
+            self._upload_completed_files.add(norm_input_path)
+
             # 检查种子内是否还有其他待处理的视频文件
             all_files = self._get_torrent_files(torrent_hash)
             remaining_videos = []
@@ -929,18 +934,10 @@ class QBittorrentMonitor(DownloaderMonitor):
                     f_full_path = str(
                         Path(os.path.join(target_torrent.get("save_path", ""), f_name))
                     )
-                    # 检查该文件是否在已处理集合中
-                    if f_full_path not in self._processed_files:
-                        # 再次尝试标准化匹配一次
-                        is_processed = False
-                        norm_f_full = os.path.normpath(f_full_path).lower()
-                        for p_file in self._processed_files:
-                            if os.path.normpath(p_file).lower() == norm_f_full:
-                                is_processed = True
-                                break
-
-                        if not is_processed:
-                            remaining_videos.append(f_name)
+                    # 检查该文件是否已上传完成
+                    norm_f_full = os.path.normpath(f_full_path).lower()
+                    if norm_f_full not in self._upload_completed_files:
+                        remaining_videos.append(f_name)
 
             if remaining_videos:
                 logger.info(
@@ -950,7 +947,7 @@ class QBittorrentMonitor(DownloaderMonitor):
 
             # 所有视频都已处理，执行删除
             delete_url = f"{self.rpc_url}/torrents/delete"
-            data = {"hashes": torrent_hash, "deleteFiles": "false"}
+            data = {"hashes": torrent_hash, "deleteFiles": "true"}
 
             response = self.session.post(delete_url, data=data, timeout=30)
             if response.status_code == 200:

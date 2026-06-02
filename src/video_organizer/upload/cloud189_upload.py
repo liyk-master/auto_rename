@@ -380,6 +380,7 @@ class Cloud189Client:
         # Token 缓存
         self._token_info = TokenInfo()
         self._rsa_key: Optional[Dict[str, Any]] = None
+        self._session_lock = threading.Lock()
         
         # 加载保存的 token
         self._load_token()
@@ -475,24 +476,29 @@ class Cloud189Client:
     
     def get_session_key(self) -> str:
         """获取 sessionKey"""
-        # 检查缓存的 session_key 是否有效（有过期时间检查）
+        # 第一次检查（无锁快速路径）
         if self._token_info.session_key and self._token_info.expires_at > time.time():
             return self._token_info.session_key
         
-        # 如果缓存过期或不存在，重新获取
-        if self._token_info.session_key:
-            print(f'[Token] SessionKey 可能已过期，重新获取...')
-        
-        result = self._get_session()
-        self._token_info.session_key = result.get('sessionKey', '')
-        self._token_info.access_token = result.get('accessToken', '')
-        self._token_info.refresh_token = result.get('refreshToken', '')
-        self._token_info.family_session_key = result.get('familySessionKey', '')
-        self._token_info.family_session_secret = result.get('familySessionSecret', '')
-        self._token_info.expires_at = time.time() + 6 * 24 * 60 * 60
-        self._save_token()
-        
-        return self._token_info.session_key
+        # 加锁防止并发重登录（双重检查锁定）
+        with self._session_lock:
+            # 获得锁后再次检查，可能已被其他线程刷新
+            if self._token_info.session_key and self._token_info.expires_at > time.time():
+                return self._token_info.session_key
+            
+            if self._token_info.session_key:
+                print(f'[Token] SessionKey 可能已过期，重新获取...')
+            
+            result = self._get_session()
+            self._token_info.session_key = result.get('sessionKey', '')
+            self._token_info.access_token = result.get('accessToken', '')
+            self._token_info.refresh_token = result.get('refreshToken', '')
+            self._token_info.family_session_key = result.get('familySessionKey', '')
+            self._token_info.family_session_secret = result.get('familySessionSecret', '')
+            self._token_info.expires_at = time.time() + 6 * 24 * 60 * 60
+            self._save_token()
+            
+            return self._token_info.session_key
     
     def get_access_token(self) -> str:
         """获取 accessToken"""

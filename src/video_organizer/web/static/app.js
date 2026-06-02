@@ -41,6 +41,7 @@ async function initApp() {
     cacheElements();
     bindEvents();
     await loadInitialData();
+    connectDashboardWebSocket();
     startAutoRefresh();
     connectUploadProgressWebSocket();
     initKeyboardShortcuts();
@@ -216,9 +217,13 @@ async function loadInitialData() {
 
 function startAutoRefresh() {
     state.autoRefresh = setInterval(() => {
-        loadStatus();
+        if (!dashboardState.isConnected) {
+            loadStatus();
+        }
         if (document.querySelector('#page-tasks.active')) loadTasks();
-        if (document.querySelector('#page-dashboard.active')) updateRecentActivity();
+        if (!dashboardState.isConnected) {
+            if (document.querySelector('#page-dashboard.active')) updateRecentActivity();
+        }
     }, 5000);
 }
 
@@ -299,10 +304,10 @@ async function updateTaskList() {
             el.taskList.innerHTML = `<tr><td colspan="4"><div class="empty-state"><p>暂无数据</p></div></td></tr>`;
         } else {
             el.taskList.innerHTML = files.map(file => `<tr>
-                <td style="font-family:monospace;font-size:0.8125rem">${escapeHtml(file.path)}</td>
-                <td>${statusBadge}</td>
-                <td style="color:var(--text-muted)">-</td>
-                <td></td>
+                <td class="col-path" style="font-family:monospace;font-size:0.8125rem">${escapeHtml(file.path)}</td>
+                <td class="col-status">${statusBadge}</td>
+                <td class="col-time" style="color:var(--text-muted)">-</td>
+                <td class="col-actions"></td>
             </tr>`).join('');
         }
         if (el.taskPagination) el.taskPagination.style.display = 'none';
@@ -322,10 +327,10 @@ async function updateTaskList() {
                 ? '<span class="badge badge-success">已完成</span>'
                 : '<span class="badge badge-danger">失败</span>';
             el.taskList.innerHTML = items.map(file => `<tr>
-                <td style="font-family:monospace;font-size:0.8125rem">${escapeHtml(file.path)}</td>
-                <td>${statusBadge}${file.error ? `<br><small style="color:var(--accent-danger)">${escapeHtml(file.error)}</small>` : ''}</td>
-                <td style="color:var(--text-muted);white-space:nowrap;font-size:0.8125rem">${formatRelativeTime(file.time)}</td>
-                <td>${tab === 'failed' ? `<button class="btn btn-primary btn-sm" onclick="retryTask('${escapeHtml(file.path)}')">重试</button>
+                <td class="col-path" style="font-family:monospace;font-size:0.8125rem">${escapeHtml(file.path)}</td>
+                <td class="col-status">${statusBadge}${file.error ? `<br><small style="color:var(--accent-danger)">${escapeHtml(file.error)}</small>` : ''}</td>
+                <td class="col-time" style="color:var(--text-muted);font-size:0.8125rem">${formatRelativeTime(file.time)}</td>
+                <td class="col-actions">${tab === 'failed' ? `<button class="btn btn-primary btn-sm" onclick="retryTask('${escapeHtml(file.path)}')">重试</button>
                     <button class="btn btn-danger btn-sm" onclick="confirmClearFailed('${escapeHtml(file.path)}')">清除</button>` : ''}</td>
             </tr>`).join('');
         }
@@ -763,17 +768,17 @@ function renderLlmProviders() {
         html += `<div class="config-empty"><span class="empty-icon">⌀</span><span>暂无提供商</span></div>`;
     } else {
         html += `<div class="config-table-wrap"><table class="config-table">
-            <thead><tr><th>名称</th><th>API URL</th><th>API Key</th><th>模型</th><th>权重</th><th>超时</th><th>启用</th><th style="width:110px">操作</th></tr></thead><tbody>`;
+            <thead><tr><th class="col-name">名称</th><th class="col-url">API URL</th><th class="col-key">API Key</th><th class="col-model">模型</th><th class="col-num">权重</th><th class="col-num">超时</th><th class="col-check">启用</th><th class="col-actions">操作</th></tr></thead><tbody>`;
         providers.forEach(p => {
             const keyPlaceholder = p.has_key ? '已设置，留空不变' : '未设置';
             html += `<tr>
-                <td><input class="lp-name" data-id="${p.id}" value="${escapeHtml(p.name)}" style="width:80px"></td>
-                <td><input class="lp-url" data-id="${p.id}" value="${escapeHtml(p.api_url)}" style="width:160px;font-family:monospace"></td>
-                <td><input class="lp-apikey" data-id="${p.id}" value="" placeholder="${keyPlaceholder}" type="password" style="width:110px"></td>
-                <td><input class="lp-model" data-id="${p.id}" value="${escapeHtml(p.model || '')}" style="width:100px"></td>
-                <td><input class="lp-weight" data-id="${p.id}" value="${p.weight}" type="number" min="0" style="width:48px"></td>
-                <td><input class="lp-timeout" data-id="${p.id}" value="${p.timeout}" type="number" min="1" style="width:48px"></td>
-                <td><input class="lp-enabled" data-id="${p.id}" type="checkbox" ${p.enabled ? 'checked' : ''} style="width:auto"></td>
+                <td><input class="lp-name" data-id="${p.id}" value="${escapeHtml(p.name)}" style="width:85px"></td>
+                <td><input class="lp-url" data-id="${p.id}" value="${escapeHtml(p.api_url)}" style="font-family:monospace"></td>
+                <td><input class="lp-apikey" data-id="${p.id}" value="" placeholder="${keyPlaceholder}" type="password"></td>
+                <td><input class="lp-model" data-id="${p.id}" value="${escapeHtml(p.model || '')}" style="width:85px"></td>
+                <td><input class="lp-weight" data-id="${p.id}" value="${p.weight}" type="number" min="0"></td>
+                <td><input class="lp-timeout" data-id="${p.id}" value="${p.timeout}" type="number" min="1"></td>
+                <td class="col-check"><input class="lp-enabled" data-id="${p.id}" type="checkbox" ${p.enabled ? 'checked' : ''}></td>
                 <td><div class="btn-cell">
                     <button class="save-btn" onclick="saveLlmProvider(${p.id})">保存</button>
                     <button class="del-btn" onclick="deleteLlmProvider(${p.id})">删除</button>
@@ -782,11 +787,11 @@ function renderLlmProviders() {
         });
         html += `</tbody></table></div>`;
     }
-    html += `<div class="add-row-bar" style="flex-wrap:wrap">
-        <input type="text" id="newLpName" placeholder="名称..." style="width:100px">
-        <input type="text" id="newLpUrl" placeholder="API URL..." style="width:180px;font-family:monospace">
-        <input type="password" id="newLpApiKey" placeholder="API Key..." style="width:130px">
-        <input type="text" id="newLpModel" placeholder="模型..." style="width:100px">
+    html += `<div class="add-row-bar">
+        <input type="text" id="newLpName" placeholder="名称..." style="width:90px">
+        <input type="text" id="newLpUrl" placeholder="API URL..." style="font-family:monospace">
+        <input type="password" id="newLpApiKey" placeholder="API Key...">
+        <input type="text" id="newLpModel" placeholder="模型..." style="width:90px">
         <button class="add-btn" onclick="addLlmProvider()">+ 添加</button>
     </div></div>`;
     el.configEditor.innerHTML = html;
@@ -1359,6 +1364,102 @@ async function deleteDownloaderConfig(section) {
     } catch (e) { showToast(`删除失败: ${e.message}`, 'error'); }
 }
 window.deleteDownloaderConfig = deleteDownloaderConfig;
+
+// ===== 仪表盘 WebSocket（带指数退避重连）=====
+
+const dashboardState = { ws: null, reconnectTimer: null, reconnectAttempt: 0, isConnected: false };
+
+function connectDashboardWebSocket() {
+    if (dashboardState.ws) return;
+    try {
+        dashboardState.ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/tasks/ws/dashboard`);
+        dashboardState.ws.onopen = () => {
+            const token = getAuthToken();
+            if (token) dashboardState.ws.send(JSON.stringify({ type: 'auth', token }));
+            dashboardState.isConnected = true;
+            dashboardState.reconnectAttempt = 0;
+        };
+        dashboardState.ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.type === 'snapshot' || data.type === 'update') {
+                    handleDashboardUpdate(data);
+                }
+            } catch (e) { console.error('[Dashboard] 解析消息失败:', e); }
+        };
+        dashboardState.ws.onclose = () => {
+            dashboardState.isConnected = false;
+            dashboardState.ws = null;
+            dashboardScheduleReconnect();
+        };
+        dashboardState.ws.onerror = () => {};
+    } catch (e) { console.error('[Dashboard] 连接失败:', e); dashboardScheduleReconnect(); }
+}
+
+function dashboardScheduleReconnect() {
+    if (dashboardState.reconnectTimer) return;
+    const delay = Math.min(1000 * Math.pow(2, dashboardState.reconnectAttempt), 30000);
+    dashboardState.reconnectAttempt++;
+    dashboardState.reconnectTimer = setTimeout(() => {
+        dashboardState.reconnectTimer = null;
+        connectDashboardWebSocket();
+    }, delay);
+}
+
+function disconnectDashboardWebSocket() {
+    if (dashboardState.ws) { dashboardState.ws.close(); dashboardState.ws = null; }
+    if (dashboardState.reconnectTimer) { clearTimeout(dashboardState.reconnectTimer); dashboardState.reconnectTimer = null; }
+}
+
+function handleDashboardUpdate(data) {
+    // 更新状态卡片
+    if (data.stats) {
+        const s = data.stats;
+        if (el.statusDot) {
+            el.statusDot.className = `status-dot ${state.status && state.status.is_running ? 'running' : 'stopped'}`;
+        }
+        if (el.statQueue) el.statQueue.textContent = s.queue || 0;
+        if (el.statProcessing) el.statProcessing.textContent = s.processing || 0;
+        if (el.statCompleted) el.statCompleted.textContent = s.completed || 0;
+        if (el.statFailed) el.statFailed.textContent = s.failed || 0;
+        if (el.queueCount) el.queueCount.textContent = s.queue || 0;
+        if (state.status) {
+            state.status.queue_size = s.queue || 0;
+            state.status.processing_count = s.processing || 0;
+            state.status.completed_count = s.completed || 0;
+            state.status.failed_count = s.failed || 0;
+        }
+    }
+    // 更新最近活动
+    if (data.recent) {
+        const items = data.recent.items || [];
+        state.recentTotal = data.recent.total || 0;
+        if (items.length === 0) {
+            el.recentActivity.innerHTML = `<div class="empty-state"><p>暂无数据</p></div>`;
+        } else {
+            el.recentActivity.innerHTML = items.map((t, i) => `<div class="activity-item" style="animation-delay:${i * 30}ms">
+                <div class="activity-dot ${t.status === 'completed' ? 'activity-dot-success' : 'activity-dot-danger'}"></div>
+                <div class="activity-path" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
+                <div class="activity-status ${t.status === 'completed' ? 'activity-status-success' : 'activity-status-danger'}">${t.status === 'completed' ? '已完成' : '失败'}</div>
+                <div class="activity-time">${formatRelativeTime(t.time)}</div>
+            </div>`).join('');
+        }
+        // 重置分页到第一页
+        state.recentPage = 1;
+        if (el.recentTotal) el.recentTotal.textContent = data.recent.total || 0;
+        if (el.recentPage) el.recentPage.textContent = 1;
+        if (el.recentTotalPages) {
+            const totalPages = Math.ceil((data.recent.total || 0) / 20) || 1;
+            el.recentTotalPages.textContent = totalPages;
+        }
+        if (el.recentPrevBtn) el.recentPrevBtn.disabled = true;
+        if (el.recentNextBtn) {
+            const totalPages = Math.ceil((data.recent.total || 0) / 20) || 1;
+            el.recentNextBtn.disabled = 1 >= totalPages;
+        }
+        if (el.recentPagination) el.recentPagination.style.display = (data.recent.total || 0) > 0 ? 'flex' : 'none';
+    }
+}
 
 // ===== 上传进度 WebSocket（带指数退避重连）=====
 

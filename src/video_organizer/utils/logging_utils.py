@@ -78,11 +78,15 @@ def setup_logging(config: Optional[Dict[str, Any]] = None) -> None:
             os.makedirs(log_dir)
 
         try:
-            file_handler = logging.FileHandler(log_file, encoding="utf-8")
+            max_bytes = int(default_config.get("log_max_bytes", 10 * 1024 * 1024))
+            backup_count = int(default_config.get("log_backup_count", 5))
+            file_handler = logging.handlers.RotatingFileHandler(
+                log_file, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
+            )
             file_handler.setLevel(log_level)
             file_handler.setFormatter(formatter)
             root_logger.addHandler(file_handler)
-            root_logger.info(f"日志文件已设置: {log_file}")
+            root_logger.info(f"日志文件已设置: {log_file} (maxBytes={max_bytes}, backupCount={backup_count})")
         except Exception as e:
             print(f"设置日志文件失败: {e}")
 

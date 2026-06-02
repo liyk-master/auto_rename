@@ -23,3 +23,20 @@
 ## 语言规范
 - 所有对话和文档都使用中文
 - 文档使用 markdown 格式
+
+## 调试
+
+### 启动测试服务器（避免卡住）
+```powershell
+# 正确方式：使用 -WindowStyle Hidden，不要用 -NoNewWindow
+$p = Start-Process -WindowStyle Hidden -PassThru -FilePath "python" -ArgumentList "-m", "src.video_organizer.main", "--web-only", "--web-port", "8095"; Write-Output $p.Id
+```
+
+### 停止测试服务器
+```powershell
+Get-Process -Id (Get-NetTCPConnection -LocalPort 8095 -ErrorAction SilentlyContinue).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
+### 查看日志
+```powershell
+python -c "import sys; sys.path.insert(0,'src'); from pathlib import Path; p=Path('logs'); [print(f.read_text()[:2000]) for f in sorted(p.glob('*.log'))[-3:]]"
