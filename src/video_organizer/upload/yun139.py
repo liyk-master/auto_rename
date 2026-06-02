@@ -226,6 +226,34 @@ class Yun139:
 
         return result
     
+    def check_task(
+        self,
+        task_id: str,
+        is_personal: bool = False,
+        max_retries: int = 10,
+        interval: float = 1.0,
+    ) -> Dict:
+        """轮询检查异步任务执行结果\n
+        POST /hcy/task/get，直到 taskInfo.status 为 Succeed/Failed
+        """
+        import time
+        for i in range(max_retries):
+            try:
+                result = self._request(
+                    "/hcy/task/get",
+                    {"taskId": task_id},
+                    is_personal=is_personal,
+                )
+                task_info = result.get("data", {}).get("taskInfo", {})
+                status = task_info.get("status", "")
+                if status in ("Succeed", "Failed"):
+                    return result
+                logger.info(f"Yun139 任务 {task_id} 状态: {status}, 等待重试 ({i+1}/{max_retries})")
+            except Exception as e:
+                logger.warning(f"Yun139 检查任务 {task_id} 失败: {e}")
+            time.sleep(interval)
+        return {"success": False, "message": "超时"}
+
     def _parse_time(self, t: str, fmt: str = "%Y%m%d%H%M%S") -> datetime:
         """解析时间字符串"""
         try:
@@ -1171,6 +1199,61 @@ class Yun139:
         )
         
         return True
+
+    def rapid_upload(
+        self,
+        sha256: str,
+        size: int,
+        filename: str,
+        parent_id: str = "/",
+        part_infos: Optional[List[Dict[str, Any]]] = None,
+        is_app_mode: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        秒传文件（不实际上传，通过 SHA256 匹配已有文件）
+
+        Args:
+            sha256: 文件 SHA256 哈希值
+            size: 文件大小（字节）
+            filename: 文件名
+            parent_id: 目标文件夹ID
+            part_infos: 分片信息列表，为 None 时自动计算一个默认分片
+            is_app_mode: 是否使用 App 模式（突破 5G 限制）
+
+        Returns:
+            dict: {success, fileId, fileName, exist, rapidUpload, uploadId, partInfos}
+        """
+        if not part_infos:
+            part_infos = [{"partNumber": 1, "partSize": 1000, "parallelHashCtx": {"partOffset": 0}}]
+
+        data = {
+            "contentHash": sha256,
+            "contentHashAlgorithm": "SHA256",
+            "contentType": "application/octet-stream",
+            "parallelUpload": False,
+            "partInfos": part_infos,
+            "size": size,
+            "parentFileId": parent_id,
+            "name": filename,
+            "type": "file",
+            "fileRenameMode": "auto_rename",
+        }
+
+        if is_app_mode:
+            data["appMode"] = "1"
+
+        result = self._request("/hcy/file/create", data, is_personal=True)
+        upload_data = result.get("data", {})
+
+        return {
+            "success": upload_data.get("exist", False) or upload_data.get("rapidUpload", False),
+            "fileId": upload_data.get("fileId", ""),
+            "fileName": upload_data.get("fileName", ""),
+            "exist": upload_data.get("exist", False),
+            "rapidUpload": upload_data.get("rapidUpload", False),
+            "uploadId": upload_data.get("uploadId", ""),
+            "partInfos": upload_data.get("partInfos", []),
+        }
 
 
 # ==================== 使用示例 ====================

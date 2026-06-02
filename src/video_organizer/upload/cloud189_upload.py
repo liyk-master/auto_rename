@@ -8,6 +8,8 @@ import os
 import re
 import json
 import time
+import hmac
+import uuid
 import hashlib
 import secrets
 import requests
@@ -80,6 +82,7 @@ class TokenInfo:
     access_token: str = ''
     refresh_token: str = ''
     session_key: str = ''
+    session_secret: str = ''  # 个人云 sessionSecret（用于 HMAC-SHA1 签名）
     family_session_key: str = ''  # 家庭云专用 sessionKey
     family_session_secret: str = ''  # 家庭云专用 sessionSecret
     expires_in: int = 0
@@ -403,6 +406,7 @@ class Cloud189Client:
                         access_token=data.get('access_token') or data.get('accessToken', ''),
                         refresh_token=data.get('refresh_token') or data.get('refreshToken', ''),
                         session_key=data.get('session_key') or data.get('sessionKey', ''),
+                        session_secret=data.get('session_secret') or data.get('sessionSecret', ''),
                         family_session_key=data.get('family_session_key') or data.get('familySessionKey', ''),
                         family_session_secret=data.get('family_session_secret') or data.get('familySessionSecret', ''),
                         expires_in=int(expires_in),
@@ -420,6 +424,7 @@ class Cloud189Client:
                 'accessToken': self._token_info.access_token,
                 'refreshToken': self._token_info.refresh_token,
                 'sessionKey': self._token_info.session_key,
+                'sessionSecret': self._token_info.session_secret,
                 'familySessionKey': self._token_info.family_session_key,
                 'familySessionSecret': self._token_info.family_session_secret,
                 'expiresIn': int(self._token_info.expires_at * 1000)  # 毫秒时间戳
@@ -491,6 +496,7 @@ class Cloud189Client:
             
             result = self._get_session()
             self._token_info.session_key = result.get('sessionKey', '')
+            self._token_info.session_secret = result.get('sessionSecret', '')
             self._token_info.access_token = result.get('accessToken', '')
             self._token_info.refresh_token = result.get('refreshToken', '')
             self._token_info.family_session_key = result.get('familySessionKey', '')
@@ -517,6 +523,7 @@ class Cloud189Client:
         
         self._token_info.access_token = result.get('accessToken', '')
         self._token_info.session_key = result.get('sessionKey', '')
+        self._token_info.session_secret = result.get('sessionSecret', '')
         self._token_info.refresh_token = result.get('refreshToken', '')
         self._token_info.family_session_key = result.get('familySessionKey', '')
         self._token_info.family_session_secret = result.get('familySessionSecret', '')
@@ -721,6 +728,44 @@ class Cloud189Client:
             'AppKey': '600100422',
             'SessionKey': session_key
         }
+    
+    def _sign_pc_request(self, url: str, method: str = 'GET', params: Optional[Dict[str, str]] = None,
+                          is_family: bool = False) -> Dict[str, str]:
+        """PC API 请求签名（HMAC-SHA1，用于 api.cloud.189.cn）
+        
+        模仿 cloud189_pc.py 的 _sign_headers + _request 模式：
+        - 签名数据: SessionKey={sk}&Operate={method}&RequestURI={uri}&Date={date}
+        - 参数作为 URL query 参数，不加密
+        - is_family=True 时使用 family_session_key/secret
+        """
+        from email.utils import formatdate
+        
+        date_str = formatdate(usegmt=True)
+        
+        if is_family:
+            session_key = self._token_info.family_session_key
+            session_secret = self._token_info.family_session_secret
+        else:
+            session_key = self._token_info.session_key
+            session_secret = self._token_info.session_secret
+        
+        uri = urlparse(url).path
+        sign_data = f'SessionKey={session_key}&Operate={method}&RequestURI={uri}&Date={date_str}'
+        signature = hmac.new(
+            session_secret.encode('utf-8'),
+            sign_data.encode('utf-8'),
+            hashlib.sha1
+        ).hexdigest().upper()
+        
+        headers = {
+            'Date': date_str,
+            'SessionKey': session_key,
+            'X-Request-ID': str(uuid.uuid4()),
+            'Signature': signature,
+            'Accept': 'application/json;charset=UTF-8',
+        }
+        
+        return headers
     
     # ============== 文件操作 ==============
     
@@ -995,7 +1040,38 @@ class Cloud189Client:
             return self.delete_file(file_id, file_name, is_folder, srcParentId, _retry=False)
         
         return result
-    
+
+    def check_batch_task(
+        self,
+        task_id: str,
+        task_type: str = 'DELETE',
+        family_id: str = '0',
+        max_retries: int = 5,
+        interval: float = 1.0,
+    ) -> Dict[str, Any]:
+        """轮询检查批量任务执行结果"""
+        url = f'{WEB_URL}/api/open/batch/checkBatchTask.action'
+
+        for attempt in range(max_retries):
+            data = {'taskId': task_id, 'type': task_type}
+            if family_id != '0':
+                data['familyId'] = family_id
+
+            headers = self._sign_web_request(url)
+            headers['Content-Type'] = 'application/x-www-form-urlencoded'
+
+            resp = self.session.post(url, data=data, headers=headers)
+            result = resp.json()
+
+            task_status = result.get('taskStatus', 0)
+            if task_status == 4:  # 任务完成
+                return result
+
+            if attempt < max_retries - 1:
+                time.sleep(interval)
+
+        return result  # 超时返回最后状态
+
     def empty_recycle(
         self,
         familyId: str = "0",

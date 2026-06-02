@@ -57,6 +57,7 @@ venv.bak/
 config.ini
 src/video_organizer/config.ini
 *.log
+*.log.*
 *.nfo
 src/data/
 

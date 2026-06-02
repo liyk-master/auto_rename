@@ -140,6 +140,27 @@ class StateManager:
         """获取下载器监控器列表"""
         return self._downloader_monitors.copy()
     
+    def get_cloud_client(self, provider: str):
+        """
+        获取云盘客户端实例
+        
+        Args:
+            provider: 云盘类型 ("cloud189" 或 "yun139")
+            
+        Returns:
+            云盘客户端实例，如果不可用则返回 None
+        """
+        handler = self._video_handler
+        if not handler:
+            return None
+        if provider == "cloud189" and hasattr(handler, "cloud189_uploader"):
+            uploader = handler.cloud189_uploader
+            return uploader.client if uploader else None
+        if provider == "yun139" and hasattr(handler, "yun139_uploader"):
+            uploader = handler.yun139_uploader
+            return uploader.client if uploader else None
+        return None
+    
     def set_system_running(self, running: bool) -> None:
         """设置系统运行状态"""
         self._system_running = running
