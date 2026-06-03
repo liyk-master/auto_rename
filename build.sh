@@ -60,11 +60,13 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 # 收集 babelfish 和 guessit 的数据文件
 datas = [('config.ini', '.')]
+datas += [('src/video_organizer/web/static', 'video_organizer/web/static')]
 datas += collect_data_files('babelfish')
 datas += collect_data_files('guessit')
 
 # 收集所有子模块
 hiddenimports = [
+    'src',
     'src.video_organizer',
     'babelfish',
     'guessit',
@@ -79,7 +81,7 @@ hiddenimports += collect_submodules('rebulk')
 
 a = Analysis(
     ['run_organizer.py'],
-    pathex=[],
+    pathex=['.'],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
