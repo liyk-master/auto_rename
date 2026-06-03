@@ -15,7 +15,7 @@ class TestVideoRenamer:
     @pytest.fixture
     def renamer(self):
         """Create a VideoRenamer instance for testing."""
-        return VideoRenamer("f321777b05714595e09a5de9db77fdec")
+        return VideoRenamer("your_tmdb_api_key")
     
     def test_extract_with_regex(self, renamer):
         """Test metadata extraction using regex patterns."""

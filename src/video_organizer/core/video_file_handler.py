@@ -135,7 +135,7 @@ class VideoFileHandler:
         self.cloud189_cookie = str(raw_cloud189_cookie).split("#")[0].split(";")[0].strip()
         raw_cloud189_parent_id = self.cloud189_config.get("parent_folder_id", "-11")
         self.cloud189_parent_id = str(raw_cloud189_parent_id).split("#")[0].split(";")[0].strip()
-        raw_cloud189_family_id = self.cloud189_config.get("family_id", "623471237149826045")
+        raw_cloud189_family_id = self.cloud189_config.get("family_id", "")
         self.cloud189_family_id = str(raw_cloud189_family_id).split("#")[0].split(";")[0].strip()
         self.cloud189_max_workers = int(self.cloud189_config.get("max_workers", 5))
         raw_cloud189_strm_server = self.cloud189_config.get("strm_server", "")

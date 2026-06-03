@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class TMDBClient:
     """Client for interacting with The Movie Database API."""
 
-    BASE_URL = "https://proxy1.liyk001.eu.org/https://api.themoviedb.org/3"
+    BASE_URL = "https://api.themoviedb.org/3"
 
     def __init__(self, api_key: str, retry_count=3, timeout=30, rate_limit=40, base_url=None):
         self.api_key = api_key

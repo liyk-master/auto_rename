@@ -40,9 +40,9 @@ DEFAULT_CONFIG = {
         "password": "",
         "cookie": "",
         "parent_folder_id": "-11",
-        "family_id": "124822297192865",
+        "family_id": "",
         "max_workers": 5,
-        "strm_server": "",  # STRM 服务器地址，如 http://192.168.2.148:5000
+        "strm_server": "",  # STRM 服务器地址，如 http://192.0.2.0:5000
         "strm_output_dir": "",  # STRM 文件输出目录
         "delete_after": False,  # 上传完成后删除云端文件
         "empty_recycle_bin": False,  # 上传完成后清空回收站
@@ -54,7 +54,7 @@ DEFAULT_CONFIG = {
         "parent_id": "/",  # 根目录文件夹ID，空字符串表示根目录
         "custom_part_size": 0,  # 自定义分片大小，0为自动
         "max_workers": 3,  # 并行上传视频数量（每个视频内分片串行上传）
-        "strm_server": "",  # STRM 服务器地址，如 http://192.168.2.148:5010
+        "strm_server": "",  # STRM 服务器地址，如 http://192.0.2.0:5010
         "strm_output_dir": "",  # STRM 文件输出目录
         "delete_after": False,  # 上传完成后删除云端文件
     },

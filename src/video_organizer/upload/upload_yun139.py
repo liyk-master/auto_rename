@@ -84,7 +84,7 @@ class Yun139Uploader:
             parent_id: 根目录文件夹ID
             custom_part_size: 自定义分片大小，0为自动
             telegram_config: Telegram 配置
-            strm_server: STRM 服务器地址，如 http://192.168.2.148:5010
+            strm_server: STRM 服务器地址，如 http://192.0.2.0:5010
             strm_output_dir: STRM 文件输出目录
             delete_after: 上传完成后删除云端文件
         """
@@ -499,7 +499,7 @@ class Yun139Uploader:
         """
         生成 139 云盘 STRM 播放链接
 
-        格式: http://192.168.2.148:5010/139getDownloadUrl/{sha256}/{size}/{encoded_filename}?part_info={base64_encoded_parts}
+        格式: http://192.0.2.0:5010/139getDownloadUrl/{sha256}/{size}/{encoded_filename}?part_info={base64_encoded_parts}
 
         Args:
             content_hash: 文件 SHA256 哈希值

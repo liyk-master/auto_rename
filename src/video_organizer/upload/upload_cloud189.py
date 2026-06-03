@@ -41,7 +41,7 @@ class Cloud189Uploader:
         password: Optional[str] = None,
         cookie: Optional[str] = None,
         parent_folder_id: str = "-11",
-        family_id: str = "623471237149826045",
+        family_id: str = "",
         token_file: Optional[str] = None,
         max_workers: int = 5,
         telegram_config: Optional[Dict[str, Any]] = None,
@@ -60,7 +60,7 @@ class Cloud189Uploader:
             token_file: Token 缓存文件路径
             max_workers: 并发上传线程数
             telegram_config: Telegram 通知配置
-            strm_server: STRM 服务器地址，如 http://192.168.2.148:5000
+            strm_server: STRM 服务器地址，如 http://192.0.2.0:5000
             strm_output_dir: STRM 文件输出目录
             delete_after: 上传完成后是否删除云端文件
         """
