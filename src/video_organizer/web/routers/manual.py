@@ -290,6 +290,7 @@ async def preview_rename(request: PreviewRequest):
                 api_key=tmdb_config.get("api_key", ""),
                 retry_count=tmdb_config.get("retry_count", 3),
                 timeout=tmdb_config.get("timeout", 30),
+                base_url=tmdb_config.get("base_url"),
             )
 
         renamer = VideoRenamer(
@@ -376,6 +377,7 @@ async def validate_scrape(request: ValidateRequest):
                 api_key=tmdb_config.get("api_key", ""),
                 retry_count=tmdb_config.get("retry_count", 3),
                 timeout=tmdb_config.get("timeout", 30),
+                base_url=tmdb_config.get("base_url"),
             )
 
         renamer = VideoRenamer(

@@ -173,6 +173,7 @@ class VideoFileHandler:
                     api_key=tmdb_config["api_key"],
                     retry_count=tmdb_config.get("retry_count", 3),
                     timeout=tmdb_config.get("timeout", 30),
+                    base_url=tmdb_config.get("base_url"),
                 )
                 self.logger.info("TMDB客户端初始化成功")
             except Exception as e:

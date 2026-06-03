@@ -15,11 +15,12 @@ class TMDBClient:
 
     BASE_URL = "https://proxy1.liyk001.eu.org/https://api.themoviedb.org/3"
 
-    def __init__(self, api_key: str, retry_count=3, timeout=30, rate_limit=40):
+    def __init__(self, api_key: str, retry_count=3, timeout=30, rate_limit=40, base_url=None):
         self.api_key = api_key
         self.retry_count = retry_count
         self.timeout = timeout
-        self.rate_limit = rate_limit  # 每分钟最大请求数
+        self.BASE_URL = base_url or self.BASE_URL
+        self.rate_limit = rate_limit
         self._request_timestamps: deque = deque()
         self.session = requests.Session()
         self.last_request_failed = False

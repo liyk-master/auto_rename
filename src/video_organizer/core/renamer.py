@@ -729,7 +729,11 @@ class VideoRenamer:
         naming_rules: Optional[Dict] = None,
         config: Optional[Dict] = None,
     ):
-        self.tmdb_client = TMDBClient(tmdb_api_key) if tmdb_api_key else None
+        tmdb_config = (config or {}).get("tmdb", {}) if config else {}
+        self.tmdb_client = TMDBClient(
+            tmdb_api_key,
+            base_url=tmdb_config.get("base_url"),
+        ) if tmdb_api_key else None
         self.ai_service_url = ai_service_url
         self.watch_path = watch_path
         self.naming_rules = naming_rules or self.DEFAULT_NAMING_RULES
