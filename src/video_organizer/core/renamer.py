@@ -3115,6 +3115,10 @@ class VideoRenamer:
                     )
 
                 if exact_matches:
+                    logger.info(f"[DEBUG] 精确匹配共 {len(exact_matches)} 个:")
+                    for _m in exact_matches:
+                        logger.info(f"  [DEBUG]   id={_m.get('id')}, name={_m.get('name')}, genre_ids={_m.get('genre_ids')}, popularity={_m.get('popularity')}, media_type={_m.get('media_type')}")
+
                     # 获取字幕组类型映射
                     release_group = original_release_group or metadata.get("release_group", "")
                     preferred_type = None
@@ -3138,11 +3142,13 @@ class VideoRenamer:
                         best_match = exact_matches[0]
                     elif preferred_type == "anime":
                         anime_matches = [r for r in exact_matches if has_anime_genre(r)]
+                        logger.info(f"[DEBUG] 动漫过滤后 anime_matches={len(anime_matches)}个: {[{'id':_m.get('id'),'genre_ids':_m.get('genre_ids')} for _m in anime_matches]}")
                         if anime_matches:
                             best_match = max(anime_matches, key=lambda r: r.get("popularity", 0))
-                            logger.info(f"字幕组 '{release_group}' 映射为动漫，优先选择动画类型结果")
+                            logger.info(f"字幕组 '{release_group}' 映射为动漫，优先选择动画类型结果: id={best_match.get('id')}, name={best_match.get('name')}")
                         else:
                             best_match = max(exact_matches, key=lambda r: r.get("popularity", 0))
+                            logger.warning(f"[DEBUG] 无动画匹配结果，按 popularity 选择: id={best_match.get('id')}, name={best_match.get('name')}, genre_ids={best_match.get('genre_ids')}")
                     elif preferred_type == "drama":
                         drama_matches = [r for r in exact_matches if not has_anime_genre(r)]
                         if drama_matches:
@@ -3924,6 +3930,7 @@ class VideoRenamer:
         origin_countries = metadata.get("origin_country", [])
         genres = metadata.get("genres", [])
         genre_names = [genre.lower() for genre in genres]
+        logger.info(f"[DEBUG] _determine_category 入口: tmdb_id={metadata.get('tmdb_id')}, forced_content_type={forced_content_type}, genres={genres}, genre_names={genre_names}, media_type={metadata.get('media_type')}")
 
         # 扩展的国家/地区识别列表
         chinese_countries = ["CN", "HK", "TW"]
