@@ -9,9 +9,11 @@ const state = {
     recentPage: 1,
     recentSearch: '',
     recentTotal: 0,
+    recentPageSize: 20,
     taskPage: 1,
     taskSearch: '',
-    taskTotal: 0
+    taskTotal: 0,
+    taskPageSize: 20
 };
 
 const el = {};
@@ -112,6 +114,7 @@ function cacheElements() {
     el.recentTotalPages = document.getElementById('recentTotalPages');
     el.recentTotal = document.getElementById('recentTotal');
     el.recentPagination = document.getElementById('recentPagination');
+    el.recentPageSize = document.getElementById('recentPageSize');
     el.taskSearchInput = document.getElementById('taskSearchInput');
     el.taskSearchBtn = document.getElementById('taskSearchBtn');
     el.taskPrevBtn = document.getElementById('taskPrevBtn');
@@ -120,6 +123,7 @@ function cacheElements() {
     el.taskTotalPages = document.getElementById('taskTotalPages');
     el.taskTotal = document.getElementById('taskTotal');
     el.taskPagination = document.getElementById('taskPagination');
+    el.taskPageSize = document.getElementById('taskPageSize');
 }
 
 function bindEvents() {
@@ -156,6 +160,7 @@ function bindEvents() {
         if (e.target === el.modalOverlay) hideModal();
     });
     // 最近活动分页
+    if (el.recentPageSize) el.recentPageSize.addEventListener('change', () => { state.recentPageSize = parseInt(el.recentPageSize.value); state.recentPage = 1; updateRecentActivity(); });
     if (el.recentPrevBtn) el.recentPrevBtn.addEventListener('click', () => { state.recentPage--; updateRecentActivity(); });
     if (el.recentNextBtn) el.recentNextBtn.addEventListener('click', () => { state.recentPage++; updateRecentActivity(); });
     if (el.recentSearchBtn) el.recentSearchBtn.addEventListener('click', () => {
@@ -171,6 +176,7 @@ function bindEvents() {
         }
     });
     // 任务列表分页与搜索
+    if (el.taskPageSize) el.taskPageSize.addEventListener('change', () => { state.taskPageSize = parseInt(el.taskPageSize.value); state.taskPage = 1; updateTaskList(); });
     if (el.taskPrevBtn) el.taskPrevBtn.addEventListener('click', () => { state.taskPage--; updateTaskList(); });
     if (el.taskNextBtn) el.taskNextBtn.addEventListener('click', () => { state.taskPage++; updateTaskList(); });
     if (el.taskSearchBtn) el.taskSearchBtn.addEventListener('click', () => {
@@ -316,7 +322,7 @@ async function updateTaskList() {
 
     // 已完成/失败：使用分页 API
     try {
-        const data = await loadTaskListPaginated(state.taskPage, 20, tab === 'failed' ? 'failed' : 'completed', state.taskSearch);
+        const data = await loadTaskListPaginated(state.taskPage, state.taskPageSize, tab === 'failed' ? 'failed' : 'completed', state.taskSearch);
         const items = data.items || [];
         state.taskTotal = data.total || 0;
 
@@ -377,7 +383,7 @@ function formatRelativeTime(isoTime) {
 
 async function updateRecentActivity() {
     try {
-        const data = await loadRecentActivityPaginated(state.recentPage, 20, state.recentSearch);
+        const data = await loadRecentActivityPaginated(state.recentPage, state.recentPageSize, state.recentSearch);
         const items = data.items || [];
         state.recentTotal = data.total || 0;
         if (items.length === 0) {
@@ -1448,13 +1454,14 @@ function handleDashboardUpdate(data) {
         state.recentPage = 1;
         if (el.recentTotal) el.recentTotal.textContent = data.recent.total || 0;
         if (el.recentPage) el.recentPage.textContent = 1;
+        const recentPs = state.recentPageSize || 20;
         if (el.recentTotalPages) {
-            const totalPages = Math.ceil((data.recent.total || 0) / 20) || 1;
+            const totalPages = Math.ceil((data.recent.total || 0) / recentPs) || 1;
             el.recentTotalPages.textContent = totalPages;
         }
         if (el.recentPrevBtn) el.recentPrevBtn.disabled = true;
         if (el.recentNextBtn) {
-            const totalPages = Math.ceil((data.recent.total || 0) / 20) || 1;
+            const totalPages = Math.ceil((data.recent.total || 0) / recentPs) || 1;
             el.recentNextBtn.disabled = 1 >= totalPages;
         }
         if (el.recentPagination) el.recentPagination.style.display = (data.recent.total || 0) > 0 ? 'flex' : 'none';

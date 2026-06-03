@@ -385,7 +385,9 @@ async def update_config_section(request: ConfigSectionUpdateRequest):
         state = get_state_manager()
         config = state.get_config()
         config_path = state.get_config_path()
-        config[request.section] = request.values
+        if request.section not in config:
+            config[request.section] = {}
+        config[request.section].update(request.values)
         if config_path:
             from ...core.config_loader import update_config, load_config
             update_config(config, config_path)
