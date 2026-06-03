@@ -580,6 +580,10 @@ class FileSystemMonitor:
             if self.directory_metadata_format in ["json", "both"]:
                 self._save_json_metadata(json_path, metadata)
 
+            # 逐集 NFO（仅电视剧）
+            if media_type == 'tv' and (self.directory_metadata_format in ["nfo", "both"]):
+                self._save_episode_nfo(file_path, metadata)
+
             # 下载图片（海报和背景图）- 只下载一次
             self._download_images_for_series(media_dir, metadata)
 
@@ -587,6 +591,76 @@ class FileSystemMonitor:
 
         except Exception as e:
             logger.error(f"刮削元数据时发生错误: {file_path}, 错误: {e}")
+
+    def _save_episode_nfo(self, file_path: Path, metadata: dict):
+        """
+        保存逐集 NFO（Emby/Kodi episodedetails 格式）
+
+        Args:
+            file_path: 视频文件路径
+            metadata: 元数据字典（含剧集级和剧集根级信息）
+        """
+        try:
+            episode_nfo_path = file_path.with_suffix('.nfo')
+            show_name = metadata.get('show_name') or metadata.get('title', '')
+            episode_name = metadata.get('episode_name', '')
+            season = metadata.get('season', 1)
+            episode = metadata.get('episode', 1)
+            overview = metadata.get('episode_overview') or metadata.get('overview', '')
+            air_date = metadata.get('air_date', '')
+            rating = metadata.get('episode_rating') or metadata.get('rating', 0)
+            still_path = metadata.get('still_path', '')
+
+            nfo = '<?xml version="1.0" encoding="UTF-8"?>\n<episodedetails>\n'
+
+            if episode_name:
+                nfo += f'  <title>{episode_name}</title>\n'
+            if show_name:
+                nfo += f'  <showtitle>{show_name}</showtitle>\n'
+            nfo += f'  <season>{season}</season>\n'
+            nfo += f'  <episode>{episode}</episode>\n'
+            if overview:
+                nfo += f'  <plot>{overview}</plot>\n'
+            if air_date:
+                nfo += f'  <aired>{air_date}</aired>\n'
+            if rating:
+                nfo += f'  <rating>{rating}</rating>\n'
+            if still_path:
+                nfo += '  <thumb>thumb.jpg</thumb>\n'
+
+            tmdb_id = metadata.get('tmdb_id', '')
+            if tmdb_id:
+                nfo += f'  <uniqueid type="tmdb">{tmdb_id}</uniqueid>\n'
+            imdb_id = metadata.get('imdb_id', '')
+            if imdb_id:
+                nfo += f'  <uniqueid type="imdb">{imdb_id}</uniqueid>\n'
+
+            cast = metadata.get('cast', [])
+            for actor in cast:
+                if isinstance(actor, dict):
+                    nfo += f'  <actor>\n    <name>{actor.get("name", "")}</name>\n    <role>{actor.get("character", "")}</role>\n  </actor>\n'
+                else:
+                    nfo += f'  <actor>\n    <name>{str(actor)}</name>\n  </actor>\n'
+
+            crew = metadata.get('crew', [])
+            for member in crew:
+                if isinstance(member, dict):
+                    job = member.get('job', '')
+                    name = member.get('name', '')
+                    if job == 'Director' and name:
+                        nfo += f'  <director>{name}</director>\n'
+                    elif job == 'Writer' and name:
+                        nfo += f'  <credits>{name}</credits>\n'
+
+            nfo += '</episodedetails>\n'
+
+            episode_nfo_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(episode_nfo_path, 'w', encoding='utf-8') as f:
+                f.write(nfo)
+            logger.debug(f"逐集 NFO 已保存: {episode_nfo_path}")
+
+        except Exception as e:
+            logger.warning(f"保存逐集 NFO 失败: {file_path}, 错误: {e}")
 
     def _save_nfo_metadata(self, nfo_path: Path, metadata: dict):
         """
