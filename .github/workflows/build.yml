@@ -2,7 +2,7 @@ name: Build Cross-Platform Executables
 
 on:
   push:
-    branches: [ main, dev-upload123pan ]
+    branches: [ main, dev-upload123pan, feature/llm-tmdb-fallback ]
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
@@ -14,26 +14,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
+          - os: ubuntu-latest
             platform: linux
-            builder: pyinstaller
             ext: ""
-            python-version: '3.12'
-          - os: ubuntu-22.04
-            platform: linux
-            builder: nuitka
-            ext: ""
-            python-version: '3.12'
           - os: windows-latest
             platform: windows
-            builder: pyinstaller
             ext: ".exe"
-            python-version: '3.12'
           - os: macos-latest
             platform: macos
-            builder: pyinstaller
             ext: ""
-            python-version: '3.12'
 
     runs-on: ${{ matrix.os }}
 
@@ -44,7 +33,7 @@ jobs:
     - name: Set up Python 3.12
       uses: actions/setup-python@v5
       with:
-        python-version: ${{ matrix.python-version }}
+        python-version: '3.12'
 
     - name: Install system dependencies (Linux)
       if: matrix.platform == 'linux'
@@ -52,128 +41,54 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential patchelf
 
-    - name: Install system dependencies (macOS)
-      if: matrix.platform == 'macos'
-      run: |
-        brew install create-dmg
-
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-
-    - name: Install PyInstaller
-      if: matrix.builder == 'pyinstaller'
-      run: pip install pyinstaller>=5.0.0
-
-    - name: Install Nuitka
-      if: matrix.builder == 'nuitka'
-      run: pip install nuitka>=1.0.0
+        pip install pyinstaller>=6.0.0
 
     - name: Build with PyInstaller
       shell: bash
-      if: matrix.builder == 'pyinstaller'
       run: |
-        pyinstaller --noconfirm --onefile --console --name "VideoOrganizer-ubuntu22-${{ matrix.platform }}" --clean --hidden-import=src.video_organizer run_organizer.py
-
-    - name: Build with Nuitka
-      shell: bash
-      if: matrix.builder == 'nuitka'
-      run: |
-        python -m nuitka --standalone --onefile --follow-imports --include-module=src.video_organizer --output-filename=VideoOrganizer-ubuntu22-${{ matrix.platform }}${{ matrix.ext }} run_organizer.py
+        pyinstaller --noconfirm --onefile --console \
+          --name "VideoOrganizer-${{ matrix.platform }}" \
+          --add-data "config_template.ini:." \
+          --add-data "src/video_organizer/web/static:video_organizer/web/static" \
+          --clean \
+          run_organizer.py
 
     - name: List build artifacts
       shell: bash
       run: |
         ls -la dist/
-        file dist/* || true
 
-    - name: Test executable (Linux)
-      if: matrix.platform == 'linux'
+    - name: Test executable
       shell: bash
       run: |
-        chmod +x dist/VideoOrganizer-ubuntu22-${{ matrix.platform }} && ./dist/VideoOrganizer-ubuntu22-${{ matrix.platform }} --help || echo "Help command failed, but executable was created"
-
-    - name: Test executable (Windows)
-      if: matrix.platform == 'windows'
-      shell: bash
-      run: |
-        dist/VideoOrganizer-ubuntu22-${{ matrix.platform }}${{ matrix.ext }} --help || echo "Help command failed, but executable was created"
-
-    - name: Test executable (macOS)
-      if: matrix.platform == 'macos'
-      shell: bash
-      run: |
-        chmod +x dist/VideoOrganizer-ubuntu22-${{ matrix.platform }} && ./dist/VideoOrganizer-ubuntu22-${{ matrix.platform }} --help || echo "Help command failed, but executable was created"
+        chmod +x dist/VideoOrganizer-${{ matrix.platform }}${{ matrix.ext }} 2>/dev/null || true
+        ./dist/VideoOrganizer-${{ matrix.platform }}${{ matrix.ext }} --help || echo "Executable created (help may exit non-zero)"
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: VideoOrganizer-ubuntu22-${{ matrix.platform }}-${{ matrix.builder }}
-        path: |
-          dist/VideoOrganizer*
+        name: VideoOrganizer-${{ matrix.platform }}
+        path: dist/VideoOrganizer-${{ matrix.platform }}${{ matrix.ext }}
         retention-days: 30
 
     - name: Prepare release files
       if: startsWith(github.ref, 'refs/tags/')
       run: |
-        mkdir release
-        cp dist/VideoOrganizer* release/
-        cd release
-        if [ "${{ matrix.platform }}" = "windows" ]; then
-          zip -r VideoOrganizer-ubuntu22-${{ matrix.platform }}-${{ matrix.builder }}.zip *
-        else
-          tar -czf VideoOrganizer-ubuntu22-${{ matrix.platform }}-${{ matrix.builder }}.tar.gz *
-        fi
-        cd ..
+        mkdir -p release
+        cp dist/VideoOrganizer-${{ matrix.platform }}${{ matrix.ext }} release/
+        cp config_template.ini release/
 
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
-        files: |
-          release/*.zip
-          release/*.tar.gz
+        files: release/*
         draft: false
         prerelease: false
+        fail_on_unmatched_files: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-ubuntu22-docker:
-    runs-on: ubuntu-latest
-    container: ubuntu:22.04
-
-    steps:
-    - name: Install system dependencies
-      run: |
-        apt-get update && apt-get install -y \
-            python3.12 python3.12-dev python3.12-venv python3-pip \
-            build-essential git && \
-            ln -sf /usr/bin/python3.12 /usr/bin/python && \
-            rm -rf /var/lib/apt/lists/*
-
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller>=6.0.0
-        pip install -r requirements.txt
-
-    - name: Build with PyInstaller
-      shell: bash
-      run: |
-        pyinstaller --noconfirm --onefile --console --name "VideoOrganizer-ubuntu22-linux" --clean --hidden-import=src.video_organizer run_organizer.py
-
-    - name: Check dependencies
-      shell: bash
-      run: |
-        ldd dist/VideoOrganizer-ubuntu22-linux | head -10 && file dist/VideoOrganizer-ubuntu22-linux
-
-    - name: Upload Ubuntu 22.04 build
-      uses: actions/upload-artifact@v4
-      with:
-        name: VideoOrganizer-ubuntu22-linux
-        path: dist/VideoOrganizer-ubuntu22-linux
-        retention-days: 30
