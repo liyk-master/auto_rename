@@ -3165,14 +3165,7 @@ class VideoRenamer:
                         else:
                             best_match = max(exact_matches, key=lambda r: r.get("popularity", 0))
                     else:
-                        # 无字幕组映射时的安全兜底：检查是否有动画类型结果
-                        anime_matches = [r for r in exact_matches if has_anime_genre(r)]
-                        non_anime_matches = [r for r in exact_matches if not has_anime_genre(r)]
-                        if anime_matches and non_anime_matches:
-                            logger.info(f"[DEBUG] 无映射但有动画/非动画混合结果，默认选动画: anime_ids={[m.get('id') for m in anime_matches]}")
-                            best_match = max(anime_matches, key=lambda r: r.get("popularity", 0))
-                        else:
-                            best_match = max(exact_matches, key=lambda r: r.get("popularity", 0))
+                        best_match = max(exact_matches, key=lambda r: r.get("popularity", 0))
 
                     logger.info(
                         f"找到完全匹配: {best_match.get('name', best_match.get('title'))}"
