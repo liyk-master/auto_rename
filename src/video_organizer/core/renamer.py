@@ -900,11 +900,21 @@ class VideoRenamer:
             else:
                 metadata = {}
 
+            # 预先从文件名提取发布组（独立于 _extract_with_regex，避免因函数异常而丢失）
+            release_group_from_filename = ""
+            rg_match = re.match(r"^\[([^\]]+)\]", processed_filename)
+            if rg_match:
+                potential_group = rg_match.group(1)
+                is_chinese_only = bool(re.match(r'^[\u4e00-\u9fff]+$', potential_group))
+                if not (is_chinese_only and metadata.get("show_name") == potential_group):
+                    release_group_from_filename = potential_group
+            logger.debug(f"预提取发布组: '{release_group_from_filename}'")
+
             # 1. 首先尝试从文件名提取（使用可能被规则修改过的文件名）
-            regex_meta = self._extract_with_regex(processed_filename)
-            print(f"DEBUG: regex_meta keys={list(regex_meta.keys()) if regex_meta else None}, has extension={regex_meta.get('extension') if regex_meta else None}")
+            regex_meta = self._extract_with_regex(processed_filename) or {}
+            print(f"DEBUG: regex_meta keys={list(regex_meta.keys()) if regex_meta else None}, release_group={regex_meta.get('release_group') if regex_meta else None}")
             metadata = self._merge_metadata(metadata, regex_meta, locked_fields)
-            print(f"DEBUG: after merge, metadata keys={list(metadata.keys())}, extension={metadata.get('extension')}")
+            print(f"DEBUG: after merge, metadata release_group='{metadata.get('release_group')}', show_name='{metadata.get('show_name')}'")
 
             # 1.5 使用 GuessIt 增强识别（如果已启用）
             if self._guessit_enabled and self._guessit_parser:
@@ -926,6 +936,7 @@ class VideoRenamer:
                     for k, v in locked_values_before_guessit.items():
                         guessit_merged[k] = v
                     metadata = guessit_merged
+                    logger.info(f"[DEBUG]  after guessit merge: release_group='{metadata.get('release_group')}', guessit_prefer={self._guessit_prefer}")
                     logger.debug(f"GuessIt 增强识别完成: show_name={metadata.get('show_name')}, "
                                 f"season={metadata.get('season')}, episode={metadata.get('episode')}")
                     
@@ -938,6 +949,11 @@ class VideoRenamer:
                             logger.warning(f"GuessIt 后应用规则失败: {e}")
                 except Exception as e:
                     logger.warning(f"GuessIt 解析失败，使用正则表达式结果: {e}")
+
+            # 确保预提取的发布组不被 GuessIt 覆盖（预提取 = 文件名前缀[XX]，优先级高于 GuessIt）
+            if release_group_from_filename:
+                metadata['release_group'] = release_group_from_filename
+                logger.debug(f"使用文件名预提取发布组（覆盖 GuessIt）: {release_group_from_filename}")
 
             # 2. 判断是否需要从父目录补全信息
             # 注意：GuessIt 本身支持传入完整路径进行解析，已经能利用父目录信息
@@ -1096,6 +1112,7 @@ class VideoRenamer:
                     metadata["show_name"] = show_name
 
                     if self.tmdb_client:
+                        logger.info(f"[DEBUG]  before _enrich_with_tmdb: release_group='{metadata.get('release_group')}', show_name='{metadata.get('show_name')}'")
                         tmdb_meta = self._enrich_with_tmdb(metadata)
                         # 确保 tmdb_meta 是字典
                         if tmdb_meta is None:
@@ -2284,6 +2301,9 @@ class VideoRenamer:
 
             print(f"DEBUG _extract_with_regex: returning, metadata is None: {metadata is None}, keys: {list(metadata.keys()) if metadata else None}")
             return metadata
+
+        # Ensure we always return a dict (fallback when show_name not in metadata)
+        return metadata or {}
 
     def _roman_to_digit(self, roman: str) -> Optional[int]:
         """将罗马数字转换为阿拉伯数字 (I-X)"""
@@ -3717,7 +3737,11 @@ class VideoRenamer:
                     ]  # 限制数量
 
                 # 如果有剧集信息，尝试找到对应的剧集
-                if "season" in metadata and "episode" in metadata:
+                if not metadata.get("season") and metadata.get("episode"):
+                    metadata["season"] = 1
+                    logger.debug(f"未检测到季号，默认使用第一季")
+
+                if metadata.get("season") and metadata.get("episode"):
                     # 处理连集 (如 115-120)，提取第一个集号用于搜索
                     search_episode = (
                         str(metadata["episode"]).split("-")[0]
