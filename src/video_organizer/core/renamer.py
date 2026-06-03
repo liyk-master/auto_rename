@@ -2819,13 +2819,18 @@ class VideoRenamer:
                             credits = self.tmdb_client.get_tv_credits(best_match["id"])
                             if credits:
                                 metadata["cast"] = [
-                                    actor["name"] for actor in credits.get("cast", [])[:10]
+                                    {
+                                        "name": actor["name"],
+                                        "character": actor.get("character", ""),
+                                        "profile_path": actor.get("profile_path", ""),
+                                    }
+                                    for actor in credits.get("cast", [])[:10]
                                 ]
-                                metadata["director"] = [
-                                    crew["name"]
+                                metadata["crew"] = [
+                                    {"name": crew["name"], "job": crew.get("job", "")}
                                     for crew in credits.get("crew", [])
-                                    if crew.get("job") == "Director"
-                                ]
+                                    if crew.get("job") in ["Director", "Writer", "Creator"]
+                                ][:5]
                             
                             # 获取网络信息
                             if "networks" in details:
@@ -2901,13 +2906,18 @@ class VideoRenamer:
                             credits = self.tmdb_client.get_movie_credits(best_match["id"])
                             if credits:
                                 metadata["cast"] = [
-                                    actor["name"] for actor in credits.get("cast", [])[:10]
+                                    {
+                                        "name": actor["name"],
+                                        "character": actor.get("character", ""),
+                                        "profile_path": actor.get("profile_path", ""),
+                                    }
+                                    for actor in credits.get("cast", [])[:10]
                                 ]
-                                metadata["director"] = [
-                                    crew["name"]
+                                metadata["crew"] = [
+                                    {"name": crew["name"], "job": crew.get("job", "")}
                                     for crew in credits.get("crew", [])
-                                    if crew.get("job") == "Director"
-                                ]
+                                    if crew.get("job") in ["Director", "Writer", "Creator"]
+                                ][:5]
                             
                             # 恢复原始的quality_tags和release_group
                             metadata["quality_tags"] = original_quality_tags
@@ -3655,6 +3665,8 @@ class VideoRenamer:
                 # 无论标题是否为中文，都设置完整的元数据
                 metadata["overview"] = details.get("overview", "")
                 metadata["rating"] = details.get("vote_average", 0)
+                metadata["vote_count"] = details.get("vote_count", 0)
+                metadata["tagline"] = details.get("tagline", "")
                 metadata["genres"] = [
                     genre["name"] for genre in details.get("genres", [])
                 ]
@@ -3667,6 +3679,26 @@ class VideoRenamer:
                 metadata["number_of_seasons"] = details.get("number_of_seasons", 0)
                 metadata["number_of_episodes"] = details.get("number_of_episodes", 0)
                 metadata["tmdb_id"] = best_match["id"]
+
+                # 内容分级
+                content_ratings = details.get("content_ratings", {}).get("results", [])
+                for cr in content_ratings:
+                    if cr.get("iso_3166_1") in ("US", "CN"):
+                        metadata["certification"] = cr.get("rating", "")
+                        break
+
+                # 外部ID（IMDB, TVDB）
+                try:
+                    external_ids = self.tmdb_client.get_external_ids(best_match["id"], "tv")
+                    if external_ids:
+                        if external_ids.get("imdb_id"):
+                            metadata["imdb_id"] = external_ids["imdb_id"]
+                        if external_ids.get("tvdb_id"):
+                            metadata["tvdb_id"] = external_ids["tvdb_id"]
+                        if external_ids.get("tvrage_id"):
+                            metadata["tvrage_id"] = external_ids["tvrage_id"]
+                except Exception as e:
+                    logger.debug(f"获取电视剧外部ID失败: {e}")
 
                 # 打印调试信息
                 logger.info(
@@ -3819,6 +3851,8 @@ class VideoRenamer:
                 # 始终设置其他元数据字段
                 metadata["overview"] = details.get("overview", "")
                 metadata["rating"] = details.get("vote_average", 0)
+                metadata["vote_count"] = details.get("vote_count", 0)
+                metadata["tagline"] = details.get("tagline", "")
                 metadata["genres"] = [
                     genre["name"] for genre in details.get("genres", [])
                 ]
@@ -3834,6 +3868,38 @@ class VideoRenamer:
                 metadata["status"] = details.get("status", "")
                 metadata["budget"] = details.get("budget", 0)
                 metadata["revenue"] = details.get("revenue", 0)
+
+                # 内容分级
+                content_ratings = details.get("content_ratings", {}).get("results", [])
+                for cr in content_ratings:
+                    if cr.get("iso_3166_1") in ("US", "CN"):
+                        metadata["certification"] = cr.get("rating", "")
+                        break
+
+                # 演职人员（从 append_to_response=credits 中提取）
+                if "credits" in details and details["credits"].get("cast"):
+                    cast_data = details["credits"]["cast"][:10]
+                    metadata["cast"] = [
+                        {
+                            "name": actor["name"],
+                            "character": actor.get("character", ""),
+                            "profile_path": actor.get("profile_path", ""),
+                        }
+                        for actor in cast_data
+                    ]
+                if "credits" in details and details["credits"].get("crew"):
+                    crew_data = details["credits"]["crew"]
+                    metadata["crew"] = [
+                        {"name": memb["name"], "job": memb.get("job", "")}
+                        for memb in crew_data
+                        if memb.get("job") in ("Director", "Writer", "Creator")
+                    ][:5]
+
+                # 制作公司（用于 studio）
+                if details.get("production_companies"):
+                    metadata["production_companies"] = [
+                        comp["name"] for comp in details["production_companies"]
+                    ]
 
                 # 获取外部ID信息
                 external_ids = self.tmdb_client.get_external_ids(

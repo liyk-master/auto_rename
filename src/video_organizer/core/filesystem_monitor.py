@@ -557,24 +557,22 @@ class FileSystemMonitor:
         """
         try:
             # 确定元数据文件的保存位置
-            # 对于电视剧：保存在剧集目录（Season XX）中
+            # 对于电视剧：tvshow.nfo 保存在剧集根目录，Emby 要求放在 Season 上级
             # 对于电影：保存在电影目录中
             media_type = metadata.get('media_type', 'tv')
-            
+
             if media_type == 'tv':
-                # 电视剧：元数据保存在 Season 目录中
-                season_dir = file_path.parent
-                nfo_path = season_dir / "tvshow.nfo"
-                json_path = season_dir / "tvshow.json"
-                poster_path = season_dir / "poster.jpg"
-                backdrop_path = season_dir / "fanart.jpg"
+                # 电视剧：tvshow.nfo 放在剧集根目录（Season XX 的上级）
+                show_root = file_path.parent.parent
+                nfo_path = show_root / "tvshow.nfo"
+                json_path = show_root / "tvshow.json"
+                media_dir = show_root
             else:
                 # 电影：元数据保存在电影目录中
                 movie_dir = file_path.parent
                 nfo_path = movie_dir / f"{movie_dir.name}.nfo"
                 json_path = movie_dir / f"{movie_dir.name}.json"
-                poster_path = movie_dir / "poster.jpg"
-                backdrop_path = movie_dir / "fanart.jpg"
+                media_dir = movie_dir
 
             # 根据配置选择保存格式
             if self.directory_metadata_format in ["nfo", "both"]:
@@ -583,86 +581,117 @@ class FileSystemMonitor:
                 self._save_json_metadata(json_path, metadata)
 
             # 下载图片（海报和背景图）- 只下载一次
-            self._download_images_for_series(movie_dir if media_type == 'movie' else season_dir, metadata)
+            self._download_images_for_series(media_dir, metadata)
 
-            logger.info(f"元数据刮削完成: {file_path.parent}")
+            logger.info(f"元数据刮削完成: {media_dir}")
 
         except Exception as e:
             logger.error(f"刮削元数据时发生错误: {file_path}, 错误: {e}")
 
     def _save_nfo_metadata(self, nfo_path: Path, metadata: dict):
         """
-        保存 NFO 格式的元数据
+        保存 NFO 格式的元数据（Emby/Jellyfin 兼容）
 
         Args:
             nfo_path: NFO 文件保存路径
             metadata: 元数据字典
         """
+        import datetime
 
-        # 构建 NFO 内容
+        is_movie = metadata.get('media_type') == 'movie'
         nfo_content = '<?xml version="1.0" encoding="UTF-8"?>\n'
-        nfo_content += '<movie>\n' if metadata.get('media_type') == 'movie' else '<tvshow>\n'
+        nfo_content += '<movie>\n' if is_movie else '<tvshow>\n'
 
-        # 添加标题
         title = metadata.get('title') or metadata.get('show_name', '')
         nfo_content += f'  <title>{title}</title>\n'
 
-        # 添加原始标题
         original_title = metadata.get('original_title') or metadata.get('original_name', '')
         if original_title and original_title != title:
             nfo_content += f'  <originaltitle>{original_title}</originaltitle>\n'
 
-        # 添加年份
         year = metadata.get('year', '')
         if year:
             nfo_content += f'  <year>{year}</year>\n'
+
+        premiered = metadata.get('first_air_date') or metadata.get('release_date', '')
+        if premiered:
+            nfo_content += f'  <premiered>{premiered}</premiered>\n'
+        elif year:
             nfo_content += f'  <premiered>{year}-01-01</premiered>\n'
 
-        # 添加评分
         rating = metadata.get('rating', 0)
         if rating:
             nfo_content += f'  <rating>{rating}</rating>\n'
+        vote_count = metadata.get('vote_count', 0)
+        if vote_count:
+            nfo_content += f'  <votes>{vote_count}</votes>\n'
 
-        # 添加概览
         overview = metadata.get('overview', '')
         if overview:
             nfo_content += f'  <plot>{overview}</plot>\n'
 
-        # 添加类型
+        tagline = metadata.get('tagline', '')
+        if tagline:
+            nfo_content += f'  <tagline>{tagline}</tagline>\n'
+
+        runtime = metadata.get('runtime', 0)
+        if runtime:
+            nfo_content += f'  <runtime>{runtime}</runtime>\n'
+
+        certification = metadata.get('certification', '')
+        if certification:
+            nfo_content += f'  <mpaa>{certification}</mpaa>\n'
+
         genres = metadata.get('genres', [])
         for genre in genres:
             nfo_content += f'  <genre>{genre}</genre>\n'
 
-        # 添加 TMDB ID
+        studios = metadata.get('networks') or metadata.get('studios') or metadata.get('production_companies') or []
+        if isinstance(studios, list):
+            for studio in studios:
+                studio_name = studio.get('name', '') if isinstance(studio, dict) else str(studio)
+                if studio_name:
+                    nfo_content += f'  <studio>{studio_name}</studio>\n'
+
         tmdb_id = metadata.get('tmdb_id', '')
+        if tmdb_id:
+            nfo_content += f'  <uniqueid type="tmdb">{tmdb_id}</uniqueid>\n'
+        imdb_id = metadata.get('imdb_id', '')
+        if imdb_id:
+            nfo_content += f'  <uniqueid type="imdb">{imdb_id}</uniqueid>\n'
+        tvdb_id = metadata.get('tvdb_id') or metadata.get('thetvdb_id', '')
+        if tvdb_id:
+            nfo_content += f'  <uniqueid type="tvdb">{tvdb_id}</uniqueid>\n'
         if tmdb_id:
             nfo_content += f'  <tmdbid>{tmdb_id}</tmdbid>\n'
 
-        # 添加海报和背景图路径
-        poster_path = metadata.get('poster_path')
-        if poster_path:
+        if metadata.get('poster_path'):
             nfo_content += f'  <thumb aspect="poster">poster.jpg</thumb>\n'
+        if metadata.get('backdrop_path'):
+            nfo_content += f'  <fanart><thumb>fanart.jpg</thumb></fanart>\n'
 
-        backdrop_path = metadata.get('backdrop_path')
-        if backdrop_path:
-            nfo_content += f'  <fanart><thumb>backdrop.jpg</thumb></fanart>\n'
-
-        # 添加演员
         cast = metadata.get('cast', [])
         for actor in cast:
             nfo_content += f'  <actor>\n'
-            # 兼容 actor 是字典或字符串的情况
             if isinstance(actor, dict):
                 nfo_content += f'    <name>{actor.get("name", "")}</name>\n'
                 nfo_content += f'    <role>{actor.get("character", "")}</role>\n'
             else:
-                # 如果 actor 是字符串，直接作为名字
                 nfo_content += f'    <name>{str(actor)}</name>\n'
                 nfo_content += f'    <role></role>\n'
             nfo_content += f'  </actor>\n'
 
-        # 添加季集信息（仅电视剧）
-        if metadata.get('media_type') == 'tv':
+        crew = metadata.get('crew', [])
+        for member in crew:
+            if isinstance(member, dict):
+                job = member.get('job', '')
+                name = member.get('name', '')
+                if job == 'Director' and name:
+                    nfo_content += f'  <director>{name}</director>\n'
+                elif job in ('Writer', 'Creator') and name:
+                    nfo_content += f'  <writer>{name}</writer>\n'
+
+        if not is_movie:
             season = metadata.get('season', 1)
             episode = metadata.get('episode', 1)
             episode_name = metadata.get('episode_name', '')
@@ -670,15 +699,16 @@ class FileSystemMonitor:
             nfo_content += f'  <episode>{episode}</episode>\n'
             if episode_name:
                 nfo_content += f'  <episodetitle>{episode_name}</episodetitle>\n'
-
-            # 添加剧集缩略图
-            still_path = metadata.get('still_path')
-            if still_path:
+            if metadata.get('still_path'):
                 nfo_content += f'  <thumb>thumb.jpg</thumb>\n'
 
-        nfo_content += '</movie>\n' if metadata.get('media_type') == 'movie' else '</tvshow>\n'
+        file_label = metadata.get('filename', nfo_path.stem)
+        if file_label:
+            nfo_content += f'  <file>{file_label}</file>\n'
 
-        # 保存 NFO 文件
+        nfo_content += '</movie>\n' if is_movie else '</tvshow>\n'
+
+        nfo_path.parent.mkdir(parents=True, exist_ok=True)
         with open(nfo_path, 'w', encoding='utf-8') as f:
             f.write(nfo_content)
 
@@ -716,34 +746,36 @@ class FileSystemMonitor:
 
     def _download_images_for_series(self, series_dir: Path, metadata: dict):
         """
-        下载海报和背景图到剧集/电影目录
-        多个版本共享同一份图片
+        下载海报、背景图和剧集缩略图
+        多个版本共享同一份图片（海报/背景图在媒体根目录，缩略图在季目录）
 
         Args:
-            series_dir: 剧集/电影目录路径
+            series_dir: 媒体根目录路径（电视剧根目录或电影目录）
             metadata: 元数据字典
         """
         try:
-            # 获取 TMDB 图片配置
             tmdb_config = self.config.get("tmdb", {})
             base_url = "https://image.tmdb.org/t/p"
-            poster_size = "w500"  # 海报尺寸
-            backdrop_size = "w1280"  # 背景图尺寸
+            poster_size = "w500"
+            backdrop_size = "w1280"
 
-            # 下载海报
+            # 海报
             poster_path = metadata.get('poster_path')
             if poster_path:
                 poster_url = f"{base_url}/{poster_size}{poster_path}"
                 self._download_image(poster_url, series_dir / "poster.jpg")
 
-            # 下载背景图
+            # 背景图
             backdrop_path = metadata.get('backdrop_path')
             if backdrop_path:
                 backdrop_url = f"{base_url}/{backdrop_size}{backdrop_path}"
                 self._download_image(backdrop_url, series_dir / "fanart.jpg")
 
-            # 不再下载剧集缩略图，因为每个剧集的缩略图不同
-            # 剧集缩略图应该由媒体中心根据剧集 NFO 自动获取
+            # 剧集缩略图
+            still_path = metadata.get('still_path')
+            if still_path:
+                still_url = f"{base_url}/w300{still_path}"
+                self._download_image(still_url, series_dir / "thumb.jpg")
 
         except Exception as e:
             logger.error(f"下载图片时发生错误: {series_dir}, 错误: {e}")
