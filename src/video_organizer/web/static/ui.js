@@ -28,6 +28,24 @@ function classifyLogLine(line) {
 
 // ===== 登录页面 =====
 
+async function checkFirstRunCredentials() {
+    const banner = document.getElementById('firstRunBanner');
+    if (!banner) return;
+    try {
+        const data = await fetchFirstRunCredentials();
+        if (data.has_credentials) {
+            document.getElementById('frUsername').textContent = data.username;
+            document.getElementById('frPassword').textContent = data.password;
+            banner.style.display = 'flex';
+        }
+    } catch {}
+}
+
+function dismissFirstRun() {
+    const banner = document.getElementById('firstRunBanner');
+    if (banner) banner.style.display = 'none';
+}
+
 function showLoginPage(errorMsg) {
     const appEl = document.getElementById('app');
     const loginEl = document.getElementById('login-page');
@@ -42,6 +60,7 @@ function showLoginPage(errorMsg) {
         const pwdInput = loginEl.querySelector('#loginPassword');
         if (pwdInput) pwdInput.value = '';
     }
+    checkFirstRunCredentials();
 }
 
 function hideLoginPage() {
@@ -73,6 +92,7 @@ async function handleLogin(event) {
             throw new Error(data.detail || '登录失败');
         }
         setAuthToken(data.access_token);
+        dismissFirstRun();
         hideLoginPage();
         initApp();
     } catch (e) {

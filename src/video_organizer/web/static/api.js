@@ -35,6 +35,16 @@ async function apiRequest(endpoint, options = {}) {
 
 // ===== 认证 API =====
 
+async function fetchFirstRunCredentials() {
+    try {
+        const resp = await fetch(`${API_BASE}/auth/first-run-credentials`);
+        const data = await resp.json();
+        return data;
+    } catch {
+        return { has_credentials: false };
+    }
+}
+
 async function loginApi(username, password) {
     return await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from ..services.state import get_state_manager
 from ..auth import create_token, verify_token, hash_password, verify_password
 from ...database.models import AuthUser
+from ...database.config_operations import get_first_run_credentials
 from ...database.session import get_db
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,21 @@ class UserListResponse(BaseModel):
 class PasswordChangeRequest(BaseModel):
     old_password: str
     new_password: str
+
+
+# ===== 首次运行凭证 =====
+
+@router.get("/first-run-credentials")
+async def first_run_credentials():
+    """返回首次运行生成的临时账号密码（仅首次运行有效，登录后失效）"""
+    username, password = get_first_run_credentials()
+    if not password:
+        return {"has_credentials": False}
+    return {
+        "has_credentials": True,
+        "username": username,
+        "password": password,
+    }
 
 
 # ===== 登录 =====

@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 from pathlib import Path
 from typing import Generator
@@ -16,7 +17,11 @@ _SessionLocal = None
 
 def get_db_path() -> Path:
     """获取数据库文件路径，存储在 data 目录下"""
-    data_dir = Path(__file__).resolve().parent.parent / "data"
+    if getattr(sys, "frozen", False):
+        base = Path(sys.executable).resolve().parent
+    else:
+        base = Path(__file__).resolve().parent.parent
+    data_dir = base / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir / "video_organizer.db"
 

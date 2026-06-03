@@ -581,6 +581,26 @@ table .col-actions { min-width: 110px; }
     border-radius: var(--radius-md); padding: 8px 12px; margin-bottom: 12px;
     color: var(--red); font-size: 0.8125rem; text-align: center;
 }
+.first-run-banner {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    border-radius: var(--radius-md); padding: 12px; margin-bottom: 16px;
+    display: flex; gap: 10px; align-items: flex-start; text-align: left;
+}
+.first-run-banner-icon { font-size: 1.1rem; line-height: 1.4; flex-shrink: 0; }
+.first-run-banner-content { flex: 1; display: flex; flex-direction: column; gap: 2px; font-size: 0.8125rem; }
+.first-run-banner-content strong { font-size: 0.875rem; color: var(--accent); }
+.first-run-banner-content code {
+    background: var(--bg-secondary); padding: 0 6px; border-radius: 3px;
+    font-family: var(--font-mono); font-size: 0.8125rem; color: var(--text);
+    user-select: all; cursor: text;
+}
+.first-run-hint { color: var(--text-muted); font-size: 0.75rem; margin-top: 2px; }
+.first-run-dismiss {
+    background: none; border: none; color: var(--text-muted); cursor: pointer;
+    font-size: 1.2rem; line-height: 1; padding: 0 2px; flex-shrink: 0;
+}
+.first-run-dismiss:hover { color: var(--text); }
 
 /* ===== Upload Progress ===== */
 .upload-status-dot {

@@ -12,6 +12,15 @@ from .session import get_session_local
 
 logger = logging.getLogger(__name__)
 
+# 存储首次运行生成的临时密码（仅内存，不落盘）
+_first_run_password: str = ""
+_first_run_username: str = ""
+
+
+def get_first_run_credentials() -> tuple:
+    """获取首次运行生成的临时账号密码"""
+    return _first_run_username, _first_run_password
+
 
 def seed_from_ini(config: Dict[str, Any]) -> bool:
     """从 INI 配置字典导入数据到数据库（表为空时才导入）"""
@@ -87,11 +96,14 @@ def seed_from_ini(config: Dict[str, Any]) -> bool:
 
             # 4. Auth Users — 首次运行自动生成随机密码（不依赖 auth.enabled）
             if db.query(AuthUser).count() == 0:
+                global _first_run_username, _first_run_password
                 auth_config = config.get("auth", {})
                 chars = string.ascii_letters + string.digits + "!@#$%^&*"
                 raw_pw = ''.join(secrets.choice(chars) for _ in range(12))
+                _first_run_username = str(auth_config.get("username", "admin"))
+                _first_run_password = raw_pw
                 db.add(AuthUser(
-                    username=str(auth_config.get("username", "admin")),
+                    username=_first_run_username,
                     password_hash=hash_password(raw_pw),
                     role="admin",
                     enabled=True,
@@ -99,9 +111,14 @@ def seed_from_ini(config: Dict[str, Any]) -> bool:
                 ))
                 logger.info("=" * 60)
                 logger.info(f"首次运行，已生成随机密码")
-                logger.info(f"用户名: {auth_config.get('username', 'admin')}")
+                logger.info(f"用户名: {_first_run_username}")
                 logger.info(f"密码: {raw_pw}")
                 logger.info("=" * 60)
+                print("=" * 60, flush=True)
+                print(f"⚠  首次运行，已生成随机密码", flush=True)
+                print(f"   用户名: {_first_run_username}", flush=True)
+                print(f"   密码: {raw_pw}", flush=True)
+                print("=" * 60, flush=True)
                 seeded = True
 
             # 5. Runtime Config
