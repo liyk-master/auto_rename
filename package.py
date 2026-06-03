@@ -92,7 +92,7 @@ def build_executable():
         "--name",
         "video-organizer",  # 可执行文件名称
         "--paths",
-        "src",  # 添加 src 目录到 import 搜索路径
+        ".",  # 添加项目根目录到 import 搜索路径
         "--add-data",
         f"{CONFIG_TEMPLATE};.",  # 添加配置模板文件
         "--add-data",

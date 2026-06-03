@@ -54,7 +54,7 @@ jobs:
           --name "VideoOrganizer-${{ matrix.platform }}" \
           --add-data "config_template.ini:." \
           --add-data "src/video_organizer/web/static:video_organizer/web/static" \
-          --paths src \
+          --paths . \
           --clean \
           run_organizer.py
 
