@@ -3,10 +3,9 @@ TMDB API client for fetching TV show information.
 """
 
 import logging
-from types import resolve_bases
 from typing import List, Dict, Optional
+from collections import deque
 import requests
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -16,10 +15,12 @@ class TMDBClient:
 
     BASE_URL = "https://proxy1.liyk001.eu.org/https://api.themoviedb.org/3"
 
-    def __init__(self, api_key: str, retry_count=3, timeout=30):
+    def __init__(self, api_key: str, retry_count=3, timeout=30, rate_limit=40):
         self.api_key = api_key
         self.retry_count = retry_count
         self.timeout = timeout
+        self.rate_limit = rate_limit  # 每分钟最大请求数
+        self._request_timestamps: deque = deque()
         self.session = requests.Session()
         self.last_request_failed = False
         self.last_request_error = None
@@ -136,6 +137,18 @@ class TMDBClient:
         """发送API请求并处理响应，包含重试机制"""
         import time
         import socket
+
+        # 速率限制：检查是否超过每分钟请求上限
+        now = time.time()
+        while self._request_timestamps and now - self._request_timestamps[0] >= 60:
+            self._request_timestamps.popleft()
+        if len(self._request_timestamps) >= self.rate_limit:
+            sleep_time = 60 - (now - self._request_timestamps[0])
+            if sleep_time > 0:
+                logger.debug(f"TMDB 速率限制已达上限 ({self.rate_limit}/min)，等待 {sleep_time:.1f} 秒")
+                time.sleep(sleep_time)
+            self._request_timestamps.popleft()
+        self._request_timestamps.append(time.time())
 
         retry_count = self.retry_count
         last_error = None
@@ -375,6 +388,19 @@ class TMDBClient:
             Credits dictionary containing cast and crew or None if error
         """
         url = f"{self.BASE_URL}/tv/{show_id}/credits"
+        return self._request_with_retry(url)
+
+    def get_movie_credits(self, movie_id: int) -> Optional[Dict]:
+        """
+        Get cast and crew information for a movie.
+
+        Args:
+            movie_id: TMDB ID of the movie
+
+        Returns:
+            Credits dictionary containing cast and crew or None if error
+        """
+        url = f"{self.BASE_URL}/movie/{movie_id}/credits"
         return self._request_with_retry(url)
 
     def search_multi(

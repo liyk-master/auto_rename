@@ -818,6 +818,8 @@ class VideoRenamer:
         self._tmdb_cache: Dict[str, Dict] = {}
         # 缓存键到 tmdb_id 的映射（用于同一剧集不同集数的快速查找）
         self._tmdb_name_to_id: Dict[str, int] = {}
+        # TMDB 搜索结果缓存：避免重复搜索
+        self._search_cache: Dict[str, List] = {}
         logger.info("VideoRenamer: TMDB 缓存已初始化")
 
         # 手动规则引擎初始化
@@ -912,9 +914,9 @@ class VideoRenamer:
 
             # 1. 首先尝试从文件名提取（使用可能被规则修改过的文件名）
             regex_meta = self._extract_with_regex(processed_filename) or {}
-            print(f"DEBUG: regex_meta keys={list(regex_meta.keys()) if regex_meta else None}, release_group={regex_meta.get('release_group') if regex_meta else None}")
+            logger.debug(f"regex_meta keys={list(regex_meta.keys()) if regex_meta else None}, release_group={regex_meta.get('release_group') if regex_meta else None}")
             metadata = self._merge_metadata(metadata, regex_meta, locked_fields)
-            print(f"DEBUG: after merge, metadata release_group='{metadata.get('release_group')}', show_name='{metadata.get('show_name')}'")
+            logger.debug(f"after merge, metadata release_group='{metadata.get('release_group')}', show_name='{metadata.get('show_name')}'")
 
             # 1.5 使用 GuessIt 增强识别（如果已启用）
             if self._guessit_enabled and self._guessit_parser:
@@ -1256,7 +1258,7 @@ class VideoRenamer:
 
     def _extract_with_regex(self, filename: str) -> Dict:
         """Extract metadata using regular expressions."""
-        print(f"DEBUG _extract_with_regex: called with filename={filename}")
+        logger.debug(f"_extract_with_regex: called with filename={filename}")
         # 预处理：将中文方括号替换为标准方括号，+号替换为空格，冒号替换为中文冒号
         base_name = (
             filename.replace("【", "[")
@@ -2299,7 +2301,7 @@ class VideoRenamer:
                 show_name = show_name.strip()
                 metadata["show_name"] = show_name
 
-            print(f"DEBUG _extract_with_regex: returning, metadata is None: {metadata is None}, keys: {list(metadata.keys()) if metadata else None}")
+            logger.debug(f"_extract_with_regex: returning, metadata is None: {metadata is None}, keys: {list(metadata.keys()) if metadata else None}")
             return metadata
 
         # Ensure we always return a dict (fallback when show_name not in metadata)
@@ -2639,9 +2641,6 @@ class VideoRenamer:
 
         return results
 
-    # 添加缓存机制，避免重复搜索
-    _search_cache = {}
-
     def _save_to_tmdb_cache(self, metadata: Dict) -> None:
         """
         将元数据保存到 TMDB 缓存，供同一剧集的其他集数使用
@@ -2952,7 +2951,8 @@ class VideoRenamer:
             if year:
                 try:
                     year_int = int(year)
-                    current_year = 2026  # 硬编码当前年份，避免循环导入
+                    from datetime import datetime
+                    current_year = datetime.now().year
                     # 检查年份是否在未来（当前年份+1，因为有些文件可能包含下一年的预告）
                     if year_int > current_year + 1:
                         logger.warning(

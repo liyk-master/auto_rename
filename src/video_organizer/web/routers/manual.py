@@ -262,117 +262,91 @@ async def process_batch_files(file_paths: List[str]):
 async def preview_rename(request: PreviewRequest):
     """
     预览重命名结果
-    
-    模拟文件处理流程，返回预期的重命名结果（不实际执行）。
+
+    与 /validate 共用相同逻辑，返回预期的重命名结果（不实际执行）。
     
     Args:
         request: 包含 file_path 的请求
     """
     try:
-        state = get_state_manager()
-        handler = state.get_video_handler()
-        
-        if handler is None:
-            raise HTTPException(status_code=503, detail="系统未就绪")
-        
-        file_path = Path(request.file_path)
-        
+        raw_path = request.file_path.strip().strip('"').strip("'")
+        file_path = Path(raw_path)
+
         if not file_path.exists():
-            raise HTTPException(status_code=404, detail=f"文件不存在: {request.file_path}")
-        
-        # 获取文件名（不含扩展名）
-        original_name = file_path.stem
-        
-        # 尝试使用 renamer 预览
+            raise HTTPException(status_code=404, detail=f"文件不存在: {raw_path}")
+
+        original_name = file_path.stem if file_path.suffix else file_path.name
+
+        state = get_state_manager()
+        config = state.get_config()
+        tmdb_config = config.get("tmdb", {})
+
+        from ...core.renamer import VideoRenamer
+        from ...core.tmdb_client import TMDBClient
+
+        tmdb_client = None
+        if tmdb_config.get("api_key"):
+            tmdb_client = TMDBClient(
+                api_key=tmdb_config.get("api_key", ""),
+                retry_count=tmdb_config.get("retry_count", 3),
+                timeout=tmdb_config.get("timeout", 30),
+            )
+
+        renamer = VideoRenamer(
+            tmdb_api_key=tmdb_config.get("api_key", ""),
+            naming_rules=config.get("naming_rules", config.get("naming", {})),
+            config=config,
+        )
+        if tmdb_client:
+            renamer.tmdb_client = tmdb_client
+
+        metadata = renamer.extract_metadata(raw_path)
+
+        title = metadata.get("show_name") or metadata.get("title") or None
+        raw_year = metadata.get("year")
+        year = int(raw_year) if raw_year and str(raw_year).strip().isdigit() else None
+        season = int(metadata["season"]) if metadata.get("season") else None
+        episode = int(metadata["episode"]) if metadata.get("episode") else None
+        episode_title = metadata.get("episode_title") or None
+        media_type = metadata.get("media_type")
+
+        tmdb_matched = bool(metadata.get("tmdb_id"))
+        suggested_name = None
+
         try:
-            from ...core.renamer import VideoRenamer
-            from ...core.tmdb_client import TMDBClient
-            
-            config = state.get_config()
-            tmdb_config = config.get("tmdb", {})
-            
-            tmdb_client = None
-            if tmdb_config.get("api_key"):
-                tmdb_client = TMDBClient(
-                    api_key=tmdb_config.get("api_key", ""),
-                    language=tmdb_config.get("language", "zh-CN"),
-                )
-            
-            renamer = VideoRenamer(
-                naming_rules=config.get("naming", {}),
-                tmdb_client=tmdb_client,
-            )
-            
-            # 解析文件名
-            metadata = renamer.extract_metadata(original_name)
-            
-            # 尝试获取 TMDB 信息
-            tmdb_info = None
-            if tmdb_client and metadata.get("title"):
-                try:
-                    if metadata.get("season"):
-                        # 电视剧
-                        results = tmdb_client.search_tv_show(metadata["title"])
-                        if results:
-                            tmdb_info = results[0]
-                            media_type = "tv_show"
-                    else:
-                        # 电影
-                        results = tmdb_client.search_movie(metadata["title"])
-                        if results:
-                            tmdb_info = results[0]
-                            media_type = "movie"
-                except Exception as e:
-                    logger.warning(f"获取 TMDB 信息失败: {e}")
-            
-            # 生成建议名称
-            if metadata.get("season"):
-                media_type = "tv_show"
-                suggested_name = renamer.format_tv_show_name(
-                    title=tmdb_info.get("name", metadata.get("title", original_name)) if tmdb_info else metadata.get("title", original_name),
-                    season=metadata.get("season", 1),
-                    episode=metadata.get("episode", 1),
-                    episode_title=metadata.get("episode_title", ""),
-                )
-            elif metadata.get("year"):
-                media_type = "movie"
-                suggested_name = renamer.format_movie_name(
-                    title=tmdb_info.get("title", metadata.get("title", original_name)) if tmdb_info else metadata.get("title", original_name),
-                    year=metadata.get("year"),
-                )
-            else:
-                media_type = "unknown"
-                suggested_name = None
-            
-            return PreviewResponse(
-                success=True,
-                file_path=request.file_path,
-                original_name=original_name,
-                suggested_name=suggested_name,
-                media_type=media_type,
-                metadata={
-                    "title": metadata.get("title"),
-                    "season": metadata.get("season"),
-                    "episode": metadata.get("episode"),
-                    "year": metadata.get("year"),
-                    "episode_title": metadata.get("episode_title"),
-                    "tmdb_matched": tmdb_info is not None,
-                },
-            )
-            
-        except Exception as e:
-            return PreviewResponse(
-                success=False,
-                file_path=request.file_path,
-                original_name=original_name,
-                error=str(e),
-            )
-        
+            new_path = renamer.generate_new_path(metadata, original_path=file_path)
+            if new_path:
+                suggested_name = str(new_path.name)
+        except Exception:
+            pass
+
+        return PreviewResponse(
+            success=True,
+            file_path=raw_path,
+            original_name=original_name,
+            suggested_name=suggested_name,
+            media_type=media_type,
+            metadata={
+                "title": title,
+                "season": season,
+                "episode": episode,
+                "year": year,
+                "episode_title": episode_title,
+                "tmdb_matched": tmdb_matched,
+            },
+        )
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"预览重命名失败: {e}")
-        raise HTTPException(status_code=500, detail=f"预览重命名失败: {e}")
+        detail = str(e) if not isinstance(e, HTTPException) else e.detail
+        return PreviewResponse(
+            success=False,
+            file_path=request.file_path,
+            original_name=Path(request.file_path).stem,
+            error=detail,
+        )
 
 
 @router.post("/validate", response_model=ValidateResponse)
