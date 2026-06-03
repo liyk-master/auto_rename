@@ -85,25 +85,24 @@ def seed_from_ini(config: Dict[str, Any]) -> bool:
                 logger.info("已从 INI 导入 LLM Provider 到数据库")
                 seeded = True
 
-            # 4. Auth Users — 首次运行自动生成随机密码
+            # 4. Auth Users — 首次运行自动生成随机密码（不依赖 auth.enabled）
             if db.query(AuthUser).count() == 0:
                 auth_config = config.get("auth", {})
-                if str(auth_config.get("enabled", "false")).lower() == "true":
-                    chars = string.ascii_letters + string.digits + "!@#$%^&*"
-                    raw_pw = ''.join(secrets.choice(chars) for _ in range(12))
-                    db.add(AuthUser(
-                        username=str(auth_config.get("username", "admin")),
-                        password_hash=hash_password(raw_pw),
-                        role="admin",
-                        enabled=True,
-                        created_at=now,
-                    ))
-                    logger.info("=" * 60)
-                    logger.info(f"首次运行，已生成随机密码")
-                    logger.info(f"用户名: {auth_config.get('username', 'admin')}")
-                    logger.info(f"密码: {raw_pw}")
-                    logger.info("=" * 60)
-                    seeded = True
+                chars = string.ascii_letters + string.digits + "!@#$%^&*"
+                raw_pw = ''.join(secrets.choice(chars) for _ in range(12))
+                db.add(AuthUser(
+                    username=str(auth_config.get("username", "admin")),
+                    password_hash=hash_password(raw_pw),
+                    role="admin",
+                    enabled=True,
+                    created_at=now,
+                ))
+                logger.info("=" * 60)
+                logger.info(f"首次运行，已生成随机密码")
+                logger.info(f"用户名: {auth_config.get('username', 'admin')}")
+                logger.info(f"密码: {raw_pw}")
+                logger.info("=" * 60)
+                seeded = True
 
             # 5. Runtime Config
             if db.query(RuntimeConfig).count() == 0:
