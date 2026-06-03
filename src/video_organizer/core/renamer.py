@@ -3121,15 +3121,22 @@ class VideoRenamer:
 
                     # 获取字幕组类型映射
                     release_group = original_release_group or metadata.get("release_group", "")
+                    logger.info(f"[DEBUG] release_group='{release_group}', original_release_group='{original_release_group}', metadata.release_group='{metadata.get('release_group', '')}'")
                     preferred_type = None
                     if release_group:
                         if release_group in self._release_group_mapping:
                             preferred_type = self._release_group_mapping[release_group]
+                            logger.info(f"[DEBUG] release_group '{release_group}' 精确匹配 -> preferred_type={preferred_type}")
                         else:
                             for group_name, content_type in self._release_group_mapping.items():
                                 if group_name in release_group or release_group in group_name:
                                     preferred_type = content_type
+                                    logger.info(f"[DEBUG] release_group '{release_group}' 模糊匹配 '{group_name}' -> preferred_type={preferred_type}")
                                     break
+                            else:
+                                logger.info(f"[DEBUG] release_group '{release_group}' 未匹配任何映射")
+                    else:
+                        logger.info(f"[DEBUG] release_group 为空，无字幕组提示")
 
                     # 定义内容类型到动画特征的映射
                     def has_anime_genre(result):
@@ -3140,6 +3147,7 @@ class VideoRenamer:
                     best_match = None
                     if len(exact_matches) == 1:
                         best_match = exact_matches[0]
+                        logger.info(f"[DEBUG] 唯一精确匹配: id={best_match.get('id')}")
                     elif preferred_type == "anime":
                         anime_matches = [r for r in exact_matches if has_anime_genre(r)]
                         logger.info(f"[DEBUG] 动漫过滤后 anime_matches={len(anime_matches)}个: {[{'id':_m.get('id'),'genre_ids':_m.get('genre_ids')} for _m in anime_matches]}")
@@ -3157,7 +3165,14 @@ class VideoRenamer:
                         else:
                             best_match = max(exact_matches, key=lambda r: r.get("popularity", 0))
                     else:
-                        best_match = max(exact_matches, key=lambda r: r.get("popularity", 0))
+                        # 无字幕组映射时的安全兜底：检查是否有动画类型结果
+                        anime_matches = [r for r in exact_matches if has_anime_genre(r)]
+                        non_anime_matches = [r for r in exact_matches if not has_anime_genre(r)]
+                        if anime_matches and non_anime_matches:
+                            logger.info(f"[DEBUG] 无映射但有动画/非动画混合结果，默认选动画: anime_ids={[m.get('id') for m in anime_matches]}")
+                            best_match = max(anime_matches, key=lambda r: r.get("popularity", 0))
+                        else:
+                            best_match = max(exact_matches, key=lambda r: r.get("popularity", 0))
 
                     logger.info(
                         f"找到完全匹配: {best_match.get('name', best_match.get('title'))}"
