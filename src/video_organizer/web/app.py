@@ -4,6 +4,7 @@ FastAPI Web 应用
 提供 Video Organizer 的 Web 管理后台。
 """
 
+import sys
 import logging
 import asyncio
 from pathlib import Path
@@ -102,8 +103,12 @@ def create_app(
     # 认证中间件（对 API 请求进行登录检查）
     app.middleware("http")(auth_middleware)
     
-    # 静态文件目录
-    static_dir = Path(__file__).parent / "static"
+    # 静态文件目录（兼容 PyInstaller）
+    if getattr(sys, 'frozen', False):
+        base_dir = Path(sys._MEIPASS) / "video_organizer" / "web"
+    else:
+        base_dir = Path(__file__).parent
+    static_dir = base_dir / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
     

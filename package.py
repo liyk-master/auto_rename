@@ -82,6 +82,9 @@ def build_executable():
     """使用PyInstaller构建可执行文件"""
     print("开始构建可执行文件...")
 
+    # 静态文件目录
+    STATIC_SRC = SRC_DIR / "video_organizer" / "web" / "static"
+
     # 构建PyInstaller命令
     cmd = [
         "pyinstaller",
@@ -90,6 +93,8 @@ def build_executable():
         "video-organizer",  # 可执行文件名称
         "--add-data",
         f"{CONFIG_TEMPLATE};.",  # 添加配置模板文件
+        "--add-data",
+        f"{STATIC_SRC};video_organizer/web/static",  # 添加前端静态文件
         "--hidden-import",
         "configparser",  # 确保包含依赖
         "--hidden-import",
