@@ -46,6 +46,8 @@ DEFAULT_CONFIG = {
         "strm_output_dir": "",  # STRM 文件输出目录
         "delete_after": False,  # 上传完成后删除云端文件
         "empty_recycle_bin": False,  # 上传完成后清空回收站
+        "generate_cas": False,  # 上传成功后生成 .cas 文件（用于秒传校验）
+        "cas_output_dir": "",  # .cas 文件输出目录，留空则输出到程序同级目录下的 cas/ 文件夹
     },
     "yun139": {
         "authorization": "",  # Base64编码的认证信息

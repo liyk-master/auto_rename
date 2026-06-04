@@ -1,4 +1,7 @@
 import os
+import sys
+import json
+import base64
 import shutil
 import subprocess
 import requests
@@ -144,6 +147,9 @@ class VideoFileHandler:
         self.cloud189_strm_output_dir = str(raw_cloud189_strm_output).split("#")[0].split(";")[0].strip()
         self.cloud189_delete_after = self.cloud189_config.get("delete_after", False)
         self.cloud189_empty_recycle_bin = self.cloud189_config.get("empty_recycle_bin", False)
+        self.cloud189_generate_cas = self.cloud189_config.get("generate_cas", False)
+        raw_cas_dir = self.cloud189_config.get("cas_output_dir", "")
+        self.cloud189_cas_output_dir = str(raw_cas_dir).strip()
 
         # 初始化 139 云盘配置
         self.yun139_config = yun139_config or {}
@@ -893,22 +899,28 @@ class VideoFileHandler:
             needs_emos_item = "emos" in self.upload_targets
             if tmdb_id and media_type and title and needs_emos_item:
                 # 构建动态 URL，使用实际的 tmdb_id, season, episode
-                season_num = int(season) if season else 1
-                episode_num = int(episode) if episode else 1
+                try:
+                    season_num = int(season) if season else 1
+                except (ValueError, TypeError):
+                    season_num = 1
+                try:
+                    episode_num = int(episode) if episode else 1
+                except (ValueError, TypeError):
+                    episode_num = 1
                 if media_type == "tv":
                     item_id_url = (
                         f"{self.emos_base_url}/api/video/getVideoId"
                         f"?video_id_type=tmdb"
                         f"&season_number={season_num}"
                         f"&episode_number={episode_num}"
+                        f"&tmdb_type=tv"
                         f"&video_id_value={tmdb_id}"
                     )
                 else:
                     item_id_url = (
                         f"{self.emos_base_url}/api/video/getVideoId"
                         f"?video_id_type=tmdb"
-                        # f"&season_number={season_num}"
-                        # f"&episode_number={episode_num}"
+                        f"&tmdb_type=movie"
                         f"&video_id_value={tmdb_id}"
                     )
 
@@ -927,19 +939,12 @@ class VideoFileHandler:
                     "sec-ch-ua-platform": '"Windows"',
                     "sec-fetch-dest": "empty",
                     "sec-fetch-mode": "cors",
-                    "sec-fetch-site": "same-site",
+                    "sec-fetch-site": "cross-site",
                     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
                 }
 
-                headers2 = headers.copy()
-                headers2.update(
-                    {
-                        "sec-fetch-site": "cross-site",
-                    }
-                )
-
                 # 发送请求
-                response2 = requests.get(item_id_url, headers=headers2, timeout=30)
+                response2 = requests.get(item_id_url, headers=headers, timeout=30)
                 response2.raise_for_status()
                 result2 = response2.json()
 
@@ -1243,6 +1248,34 @@ class VideoFileHandler:
 
                         if upload_results["cloud189"]:
                             console_log(f"\n🎉 [线程#{worker_id}] 天翼云盘上传成功!")
+
+                            # 生成 .cas 文件（用于 189 云盘秒传校验）
+                            if self.cloud189_generate_cas and folder_structure and target_filename:
+                                try:
+                                    result = upload_results["cloud189"]
+                                    cas_data = {
+                                        "md5": result.get("file_md5", ""),
+                                        "slice_md5": result.get("slice_md5", ""),
+                                        "size": result.get("file_size", 0),
+                                        "name": target_filename,
+                                        "cloud": "189",
+                                    }
+                                    cas_content = base64.b64encode(
+                                        json.dumps(cas_data, ensure_ascii=False).encode("utf-8")
+                                    ).decode("utf-8")
+
+                                    if self.cloud189_cas_output_dir:
+                                        cas_dir = Path(self.cloud189_cas_output_dir)
+                                    else:
+                                        cas_dir = Path(sys.argv[0]).resolve().parent / "cas"
+                                    cas_dir = cas_dir / renamed_relative_path.parent
+                                    cas_dir.mkdir(parents=True, exist_ok=True)
+                                    cas_file = cas_dir / f"{target_filename}.cas"
+                                    cas_file.write_text(cas_content, encoding="utf-8")
+                                    console_log(f"📄 [线程#{worker_id}] 已生成 .cas 文件: {cas_file}")
+                                except Exception as cas_e:
+                                    console_log(f"⚠️ [线程#{worker_id}] 生成 .cas 文件失败: {cas_e}")
+
                             # 上传成功后清空回收站
                             if self.cloud189_empty_recycle_bin:
                                 try:
@@ -1429,14 +1462,21 @@ class VideoFileHandler:
                         if task_removed:
                             deleted = True
                             print(
-                                f"✅ [线程#{worker_id}] 种子中所有视频均上传完成，qB 已自动删除任务及文件"
+                                f"✅ [线程#{worker_id}] 下载任务已从下载器中删除"
                             )
                             self.logger.info(
-                                f"qB 已自动删除种子及文件: {file_path}"
+                                f"下载任务已从下载器中删除: {file_path}"
                             )
+
+                            # 兜底：某些下载器（如 aria2）只删任务记录不删文件
+                            if os.path.exists(file_path):
+                                console_log(
+                                    f"📁 [线程#{worker_id}] 文件仍存在，执行兜底删除"
+                                )
+                                self._delete_file_with_background_retry(file_path)
                         else:
                             self.logger.info(
-                                f"[线程#{worker_id}] 种子中还有视频未上传完成，文件暂不删除"
+                                f"[线程#{worker_id}] 下载器中仍有未完成的任务，文件暂不删除"
                             )
                     except Exception as e:
                         console_log(f"❌ [线程#{worker_id}] 删除任务失败: {e}")

@@ -362,6 +362,15 @@ class Aria2Monitor(DownloaderMonitor):
                                 logger.info(
                                     f"已从 aria2 删除下载任务: {gid} ({file_path})"
                                 )
+                                # aria2.removeDownloadResult 只删记录不删文件，需手动删除
+                                try:
+                                    if os.path.exists(aria2_path):
+                                        os.remove(aria2_path)
+                                        logger.info(f"已删除本地文件: {aria2_path}")
+                                except Exception as del_e:
+                                    logger.warning(
+                                        f"删除本地文件失败，交由兜底处理: {del_e}"
+                                    )
                                 return True
 
                         logger.warning(f"从 aria2 删除下载任务失败: {gid}")
