@@ -109,14 +109,27 @@ class Yun139:
         self._parse_authorization()
     
     def _parse_authorization(self):
-        """解析认证信息，提取账号"""
+        """解析认证信息，提取账号和过期时间"""
         try:
             decoded = base64.b64decode(self.authorization).decode('utf-8')
             parts = decoded.split(':')
             if len(parts) >= 2:
                 self.account = parts[1]
+            self._token_expires_at = 0
+            if len(parts) >= 3:
+                token_parts = parts[2].split('|')
+                if len(token_parts) >= 4:
+                    self._token_expires_at = int(token_parts[3]) / 1000
         except Exception as e:
             raise ValueError(f"认证信息解析失败: {e}")
+
+    def _ensure_valid_token(self) -> None:
+        """请求前检查token，提前10分钟自动刷新"""
+        if self._token_expires_at and time.time() > self._token_expires_at - 600:
+            try:
+                self.refresh_token()
+            except Exception as e:
+                _logger.warning(f"Token刷新失败，将继续使用现有token: {e}")
     
     def _encode_uri_component(self, s: str) -> str:
         """JavaScript encodeURIComponent 的 Python 实现"""
@@ -197,6 +210,7 @@ class Yun139:
         is_personal: bool = False
     ) -> Dict:
         """发送请求"""
+        self._ensure_valid_token()
         base_url = self.PERSONAL_URL if is_personal else self.BASE_URL
         url = base_url + path
         body = json.dumps(data)
@@ -248,9 +262,9 @@ class Yun139:
                 status = task_info.get("status", "")
                 if status in ("Succeed", "Failed"):
                     return result
-                logger.info(f"Yun139 任务 {task_id} 状态: {status}, 等待重试 ({i+1}/{max_retries})")
+                _logger.info(f"Yun139 任务 {task_id} 状态: {status}, 等待重试 ({i+1}/{max_retries})")
             except Exception as e:
-                logger.warning(f"Yun139 检查任务 {task_id} 失败: {e}")
+                _logger.warning(f"Yun139 检查任务 {task_id} 失败: {e}")
             time.sleep(interval)
         return {"success": False, "message": "超时"}
 
@@ -313,6 +327,9 @@ class Yun139:
                 if token is not None:
                     new_auth = f"{parts[0]}:{parts[1]}:{token.text}"
                     self.authorization = base64.b64encode(new_auth.encode()).decode()
+                    self._parse_authorization()
+                    if self._on_refresh:
+                        self._on_refresh()
                     return True
             
             desc = root.find('desc')

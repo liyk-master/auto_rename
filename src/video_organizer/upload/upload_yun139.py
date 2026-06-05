@@ -114,10 +114,17 @@ class Yun139Uploader:
             custom_part_size=custom_part_size,
         )
 
-        # 刷新令牌并更新本地 authorization
+        # 令牌刷新后持久化到配置文件
+        def _on_refresh():
+            self.authorization = self.client.authorization
+            self._save_authorization()
+
+        self.client._on_refresh = _on_refresh
+
+        # 首次刷新令牌
         try:
             self.client.refresh_token()
-            self.authorization = self.client.authorization
+            _on_refresh()
         except Exception as e:
             print(f"[WARNING] 刷新139云盘令牌失败: {e}")
 
@@ -136,11 +143,16 @@ class Yun139Uploader:
         # 断点续传状态目录
         self._ensure_state_dir()
 
-        # 刷新令牌
+    def _save_authorization(self) -> None:
+        """将刷新后的 authorization 持久化到配置文件"""
         try:
-            self.client.refresh_token()
+            from ..core.config_loader import load_config, update_config
+            config = load_config()
+            if "yun139" in config:
+                config["yun139"]["authorization"] = self.authorization
+                update_config(config)
         except Exception as e:
-            print(f"[WARNING] 刷新139云盘令牌失败: {e}")
+            _logger.warning(f"持久化139云盘认证信息失败: {e}")
 
     def _ensure_state_dir(self):
         """确保断点续传状态目录存在"""
