@@ -1223,20 +1223,20 @@ class VideoRenamer:
         # 从原始文件名中提取关键词，保留原始顺序
         original_filename = filename
 
-        # 定义要提取的关键词模式，使用非单词边界匹配，支持点号和下划线分隔
+        # 定义要提取的关键词模式，使用非字母数字边界匹配，支持点号、下划线和空格分隔
         # 优化顺序，先匹配长模式，避免短模式被重复匹配
         keyword_patterns = [
-            r"(?:[^\w]|^)(2160p|4K|UHD|FHD|1080p|720p|480p|360p|240p|Ma10p|Ma10p_1080p)(?:[^\w]|$)",
-            r"(?:[^\w]|^)(Dolby\s*Vision|HDR10|HDR|SDR)(?:[^\w]|$)",
+            r"(?:[^a-zA-Z0-9]|^)(2160p|4K|UHD|FHD|1080p|720p|480p|360p|240p|Ma10p|Ma10p_1080p)(?:[^a-zA-Z0-9]|$)",
+            r"(?:[^a-zA-Z0-9]|^)(Dolby\s*Vision|HDR10|HDR|SDR)(?:[^a-zA-Z0-9]|$)",
             # 流媒体平台（完整名称和缩写）
-            r"(?:[^\w]|^)(Netflix|NF|Disney\+|Disney|HBO|HBO\s*Max|Amazon|AMZN|Prime|Apple\+|Apple|iTunes)(?:[^\w]|$)",
-            r"(?:[^\w]|^)(BDRip|BluRay|DVDRip|WEB-DL|WEBRip|WEB|BD|DVD)(?:[^\w]|$)",
-            r"(?:[^\w]|^)(x265|x264|h265|h264|HEVC|AVC|MPEG4|x265_flac|x264_flac)(?:[^\w]|$)",
-            r"(?:[^\w]|^)(DTS-HD|TrueHD|Atmos|DDP|DTS|AAC|AC3|FLAC|flac)(?:[^\w]|$)",
-            r"(?:[^\w]|^)(REPACK|PROPER|INTERNAL|LIMITED|UNCUT|EXTENDED)(?:[^\w]|$)",
-            r"(?:[^\w]|^)(DIRECTORS\.CUT|THEATRICAL\.CUT|UNCENSORED|UNRATED)(?:[^\w]|$)",
-            r"(?:[^\w]|^)(REMUX|RECODE|HYBRID|CR|HQ)(?:[^\w]|$)",
-            r"(?:[^\w]|^)(CHS|ENG|双语|字幕|中字|英字)(?:[^\w]|$)",
+            r"(?:[^a-zA-Z0-9]|^)(Netflix|NF|Disney\+|Disney|HBO|HBO\s*Max|Amazon|AMZN|Prime|Apple\+|Apple|iTunes)(?:[^a-zA-Z0-9]|$)",
+            r"(?:[^a-zA-Z0-9]|^)(BDRip|BluRay|DVDRip|WEB-DL|WEB_DL|WEBRip|WEB|BD|DVD)(?:[^a-zA-Z0-9]|$)",
+            r"(?:[^a-zA-Z0-9]|^)(x265|x264|h265|h264|HEVC|AVC|MPEG4|x265_flac|x264_flac)(?:[^a-zA-Z0-9]|$)",
+            r"(?:[^a-zA-Z0-9]|^)(DTS-HD|DTS_HD|TrueHD|Atmos|DDP|DTS|AAC|AC3|FLAC|flac)(?:[^a-zA-Z0-9]|$)",
+            r"(?:[^a-zA-Z0-9]|^)(REPACK|PROPER|INTERNAL|LIMITED|UNCUT|EXTENDED)(?:[^a-zA-Z0-9]|$)",
+            r"(?:[^a-zA-Z0-9]|^)(DIRECTORS\.CUT|THEATRICAL\.CUT|UNCENSORED|UNRATED)(?:[^a-zA-Z0-9]|$)",
+            r"(?:[^a-zA-Z0-9]|^)(REMUX|RECODE|HYBRID|CR|HQ)(?:[^a-zA-Z0-9]|$)",
+            r"(?:[^a-zA-Z0-9]|^)(CHS|ENG|双语|字幕|中字|英字)(?:[^a-zA-Z0-9]|$)",
         ]
 
         # 提取所有匹配的关键词
@@ -1399,6 +1399,10 @@ class VideoRenamer:
             r"^(?P<show_name>[^\-]+?)\.EP(?P<episode>\d{1,4})(?:[.\s]+[^\-]+)*\-(?P<release_group>[^\.]+)$",
             # 0.8 Special pattern for Show.Name.EPxx.quality-Group.mkv format (alternative)
             r"^(?P<show_name>.+?)\.EP(?P<episode>\d{1,4}).*\-(?P<release_group>[A-Za-z]+)$",
+            # 0. 中英双语剧集格式：剧名+季号.英文译名.SxxExx.年份.质量...
+            # 如：刘老根1.Liu.Lao.Gen.S01E11.2002.2160p.WEB-DL.H265.AAC-HHWEB
+            # 如：乡村爱情9.Love.of.Village.S03E08.2021.1080p.WEB-DL...
+            r"(?:^|[\\/])(?P<show_name_cn>[\u4e00-\u9fff]+?)(?P<cns_season>\d+)[._](?P<en_title>[A-Za-z0-9._]+?)[._]S(?P<season>\d+)E(?P<episode>\d+)",
             # 0. Special pattern for dot-and-hyphen separated movie titles with quality tags
             r"^(?P<show_name>[\w\s\.\-]+?)\s*[\(\[]?\d{4}[\)\]]?\s*(?:\.[\w\-]+)+(?:\-[\w\.\[\]]+)?$",
             # Movie-specific patterns - 电影专用匹配模式
@@ -1525,7 +1529,12 @@ class VideoRenamer:
                     if digit:
                         match_data["season"] = str(digit)
 
-                # 处理日文季号转换（如"參之章"中的"參"）
+                # 处理中英双语剧集：提取中文剧名、去除 cns_season 中的季号
+                if "show_name_cn" in match_data and match_data["show_name_cn"]:
+                    match_data["show_name"] = match_data.pop("show_name_cn")
+                    match_data.pop("cns_season", None)
+                    match_data.pop("en_title", None)
+                    # 处理日文季号转换（如"參之章"中的"參"）
                 if "season_jp" in match_data and match_data["season_jp"]:
                     jp_val = match_data["season_jp"]
                     digit = self._chinese_to_digit(jp_val)
@@ -1559,8 +1568,8 @@ class VideoRenamer:
             else:
                 metadata["release_group"] = potential_group
 
-        # 提取末尾的发布组格式（如 -MagicStar）
-        release_group_trailing_pattern = r"\-([A-Za-z]+)\.(?:mkv|mp4|avi|flv|mov|wmv)$"
+        # 提取末尾的发布组格式（如 -MagicStar 或 _HHWEB_mp4.strm）
+        release_group_trailing_pattern = r"(?:[\-_])([A-Za-z]+)(?:\.(?:mkv|mp4|avi|flv|mov|wmv|strm)$|_(?:mkv|mp4|avi|flv|mov|wmv)\.strm$)"
         release_group_trailing_match = re.search(
             release_group_trailing_pattern, base_name
         )

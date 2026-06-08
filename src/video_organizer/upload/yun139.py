@@ -790,8 +790,20 @@ class Yun139:
         """删除文件/文件夹（移入回收站）"""
         if self.cloud_type == CloudType.PERSONAL_NEW:
             data = {"fileIds": [file.id]}
-            self._request("/hcy/recyclebin/batchTrash", data, is_personal=True)
-            return True
+            resp = self._request("/hcy/recyclebin/batchTrash", data, is_personal=True)
+            task_id = resp.get("data", {}).get("taskId", "")
+            if task_id:
+                result = self.check_task(task_id, is_personal=True)
+                status = result.get("data", {}).get("taskInfo", {}).get("status", "")
+                if status == "Succeed":
+                    err_codes = [r.get("errCode", "") for r in result.get("data", {}).get("batchFileResults", [])]
+                    all_ok = all(c == "0000" for c in err_codes)
+                    if all_ok:
+                        return True
+                    _logger.warning(f"Yun139 删除任务 {task_id} 部分文件失败: errCodes={err_codes}")
+                else:
+                    _logger.warning(f"Yun139 删除任务 {task_id} 未成功: status={status}")
+            return False
         
         elif self.cloud_type == CloudType.GROUP:
             import os

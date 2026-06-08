@@ -538,7 +538,7 @@ class Cloud189Uploader:
                     except Exception as e:
                         print(f"[Cloud189] 生成 STRM 文件失败: {e}")
 
-            # 上传完成后删除云端文件（不依赖 STRM 生成）
+            # 上传完成后删除云端文件（提交 + 轮询确认）
             if self.delete_after and result.user_file_id:
                 try:
                     delete_result = self.client.delete_file(
@@ -548,10 +548,18 @@ class Cloud189Uploader:
                         srcParentId=self.parent_folder_id,
                         familyId=self.family_id
                     )
-                    if delete_result.get("res_code") == 0:
-                        print(f"[Cloud189] 云端文件已删除: {result.file_name}")
+                    task_id = delete_result.get("taskId")
+                    if task_id:
+                        check_result = self.client.check_batch_task(
+                            task_id,
+                            family_id=str(self.family_id or 0),
+                        )
+                        if check_result.get("successedCount", 0) > 0:
+                            print(f"[Cloud189] 云端文件已删除: {result.file_name}")
+                        else:
+                            print(f"[Cloud189] 删除云端文件可能失败: {check_result}")
                     else:
-                        print(f"[Cloud189] 删除云端文件失败: {delete_result.get('res_message', 'Unknown')}")
+                        print(f"[Cloud189] 删除云端文件未返回 taskId: {delete_result}")
                 except Exception as e:
                     print(f"[Cloud189] 删除云端文件异常: {e}")
 

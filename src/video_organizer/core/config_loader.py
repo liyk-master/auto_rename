@@ -48,6 +48,8 @@ DEFAULT_CONFIG = {
         "empty_recycle_bin": False,  # 上传完成后清空回收站
         "generate_cas": False,  # 上传成功后生成 .cas 文件（用于秒传校验）
         "cas_output_dir": "",  # .cas 文件输出目录，留空则输出到程序同级目录下的 cas/ 文件夹
+        "cas_upload_url": "",  # 外部 .cas 上传 API 地址
+        "cas_upload_api_key": "",  # 外部 .cas 上传 API 的 Bearer 认证密钥
     },
     "yun139": {
         "authorization": "",  # Base64编码的认证信息
@@ -384,9 +386,7 @@ def update_config(
             config_path = os.path.join(base_dir, "config.ini")
         else:
             config_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                "data",
-                "config.ini",
+                os.path.dirname(os.path.dirname(__file__)), "config.ini"
             )
     
     config = configparser.ConfigParser()
@@ -440,5 +440,6 @@ def update_config(
                 config[section_name][key] = str(value)
     
     # 保存配置文件
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
     with open(config_path, "w", encoding="utf-8") as f:
         config.write(f)

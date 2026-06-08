@@ -115,6 +115,16 @@ def _cloud189_get_download_url(
     logger.info(f"getFileDownloadUrl 响应: {resp.text[:1000]}")
     result = resp.json()
 
+    # sessionKey 失效时清除缓存并重试一次
+    if result.get("errorCode") == "InvalidSessionKey":
+        logger.warning("Cloud189 sessionKey 已失效，清除缓存后重试...")
+        client._clear_token_cache()
+        headers = client._sign_pc_request(endpoint, "GET", params, is_family)
+        client.session.headers.update({"Accept": "application/json;charset=UTF-8"})
+        resp = client.session.get(endpoint, params=params, headers=headers, timeout=30)
+        logger.info(f"getFileDownloadUrl 重试响应: {resp.text[:1000]}")
+        result = resp.json()
+
     download_url = result.get("fileDownloadUrl", "")
     if not download_url:
         logger.error(f"响应中无 fileDownloadUrl: {resp.text[:500]}")

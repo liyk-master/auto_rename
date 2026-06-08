@@ -743,10 +743,10 @@ class Cloud189Client:
         date_str = formatdate(usegmt=True)
         
         if is_family:
-            session_key = self._token_info.family_session_key
+            session_key = self.get_family_session_key()
             session_secret = self._token_info.family_session_secret
         else:
-            session_key = self._token_info.session_key
+            session_key = self.get_session_key()
             session_secret = self._token_info.session_secret
         
         uri = urlparse(url).path

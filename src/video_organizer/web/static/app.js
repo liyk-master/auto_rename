@@ -13,7 +13,8 @@ const state = {
     taskPage: 1,
     taskSearch: '',
     taskTotal: 0,
-    taskPageSize: 20
+    taskPageSize: 20,
+    selectedFiles: []
 };
 
 const el = {};
@@ -77,18 +78,18 @@ function cacheElements() {
     el.manualFilePath = document.getElementById('manualFilePath');
     el.browseFileBtn = document.getElementById('browseFileBtn');
     el.forceProcessCheck = document.getElementById('forceProcessCheck');
-    el.processFileBtn = document.getElementById('processFileBtn');
+    el.addToFileListBtn = document.getElementById('addToFileListBtn');
     el.previewFileBtn = document.getElementById('previewFileBtn');
     el.previewResult = document.getElementById('previewResult');
     el.previewContent = document.getElementById('previewContent');
     el.validateScrapeBtn = document.getElementById('validateScrapeBtn');
     el.validateResult = document.getElementById('validateResult');
     el.validateContent = document.getElementById('validateContent');
-    el.scanDirPath = document.getElementById('scanDirPath');
     el.recursiveScanCheck = document.getElementById('recursiveScanCheck');
     el.scanDirBtn = document.getElementById('scanDirBtn');
-    el.scanResults = document.getElementById('scanResults');
-    el.scannedFilesList = document.getElementById('scannedFilesList');
+    el.fileListPanel = document.getElementById('fileListPanel');
+    el.selectedFilesList = document.getElementById('selectedFilesList');
+    el.fileListCount = document.getElementById('fileListCount');
     el.selectAllFiles = document.getElementById('selectAllFiles');
     el.processSelectedBtn = document.getElementById('processSelectedBtn');
     el.downloaderList = document.getElementById('downloader-list');
@@ -145,9 +146,9 @@ function bindEvents() {
     el.logFileSelect.addEventListener('change', loadLogContent);
     el.liveLogCheck.addEventListener('change', toggleLiveLog);
     el.browseFileBtn.addEventListener('click', browseFile);
-    el.processFileBtn.addEventListener('click', processFile);
+    el.addToFileListBtn.addEventListener('click', addToFileList);
     el.previewFileBtn.addEventListener('click', previewFile);
-    el.scanDirBtn.addEventListener('click', scanDirectory);
+    el.scanDirBtn.addEventListener('click', scanDirToFileList);
     el.validateScrapeBtn.addEventListener('click', validateScrape);
     el.selectAllFiles.addEventListener('change', toggleSelectAllFiles);
     el.processSelectedBtn.addEventListener('click', processSelectedFiles);
@@ -1081,16 +1082,46 @@ function selectFile(path) {
     hideModal();
 }
 
-async function processFile() {
-    const filePath = el.manualFilePath.value.trim();
-    if (!filePath) { showToast('请输入文件路径', 'warning'); return; }
-    setButtonLoading(el.processFileBtn, true);
-    try {
-        const result = await processFileViaApi(filePath, el.forceProcessCheck.checked);
-        showToast(result.message, result.success ? 'success' : 'warning');
-        if (result.success) { el.manualFilePath.value = ''; loadTasks(); }
-    } catch (e) { showToast(`处理失败: ${e.message}`, 'error'); }
-    finally { setButtonLoading(el.processFileBtn, false); }
+function addToFileList() {
+    const path = el.manualFilePath.value.trim();
+    if (!path) { showToast('请输入文件路径', 'warning'); return; }
+    if (state.selectedFiles.some(f => f.path === path)) {
+        showToast('文件已存在列表中', 'warning');
+        return;
+    }
+    state.selectedFiles.push({ path, checked: true });
+    renderFileList();
+    showToast('已添加到列表', 'success');
+}
+
+function removeFromFileList(index) {
+    state.selectedFiles.splice(index, 1);
+    renderFileList();
+}
+
+function renderFileList() {
+    if (state.selectedFiles.length === 0) {
+        el.fileListPanel.style.display = 'none';
+        return;
+    }
+    el.fileListPanel.style.display = 'block';
+    el.selectedFilesList.innerHTML = state.selectedFiles.map((f, i) =>
+        `<tr>
+            <td><input type="checkbox" class="file-checkbox" data-index="${i}" ${f.checked ? 'checked' : ''}></td>
+            <td style="font-family:var(--font-mono);font-size:13px">${escapeHtml(f.path)}</td>
+            <td><button class="btn btn-danger btn-sm" onclick="removeFromFileList(${i})">移除</button></td>
+        </tr>`
+    ).join('');
+    el.fileListCount.textContent = `共 ${state.selectedFiles.length} 个文件`;
+
+    el.selectedFilesList.querySelectorAll('.file-checkbox').forEach(cb => {
+        cb.addEventListener('change', () => {
+            const idx = parseInt(cb.dataset.index);
+            if (!isNaN(idx) && state.selectedFiles[idx]) {
+                state.selectedFiles[idx].checked = cb.checked;
+            }
+        });
+    });
 }
 
 async function previewFile() {
@@ -1171,40 +1202,58 @@ async function validateScrape() {
     finally { setButtonLoading(el.validateScrapeBtn, false); }
 }
 
-async function scanDirectory() {
-    const dirPath = el.scanDirPath.value.trim();
+async function scanDirToFileList() {
+    const dirPath = el.manualFilePath.value.trim();
     if (!dirPath) { showToast('请输入目录路径', 'warning'); return; }
     setButtonLoading(el.scanDirBtn, true);
     try {
         const result = await scanDirectoryViaApi(dirPath, el.recursiveScanCheck.checked);
         if (!result.files || result.files.length === 0) {
             showToast('未找到视频文件', 'warning');
-            el.scanResults.style.display = 'none';
             return;
         }
-        el.scanResults.style.display = 'block';
-        el.scannedFilesList.innerHTML = result.files.map((file, i) =>
-            `<tr><td><input type="checkbox" class="file-checkbox" data-path="${escapeHtml(file)}"></td>
-            <td>${escapeHtml(new Path(file).basename || file)}</td><td>-</td></tr>`
-        ).join('');
-        showToast(`找到 ${result.files.length} 个视频文件`, 'success');
+        const newFiles = result.files.map(f => ({ path: f, checked: true }));
+        const existingPaths = new Set(state.selectedFiles.map(f => f.path));
+        const added = [];
+        for (const f of newFiles) {
+            if (!existingPaths.has(f.path)) {
+                state.selectedFiles.push(f);
+                added.push(f);
+            }
+        }
+        renderFileList();
+        showToast(`找到 ${result.files.length} 个视频文件，新增 ${added.length} 个`, 'success');
     } catch (e) { showToast(`扫描失败: ${e.message}`, 'error'); }
     finally { setButtonLoading(el.scanDirBtn, false); }
 }
 
 function toggleSelectAllFiles() {
-    document.querySelectorAll('.file-checkbox').forEach(cb => cb.checked = el.selectAllFiles.checked);
+    const checked = el.selectAllFiles.checked;
+    state.selectedFiles.forEach(f => f.checked = checked);
+    document.querySelectorAll('#selectedFilesList .file-checkbox').forEach(cb => cb.checked = checked);
 }
 
 async function processSelectedFiles() {
-    const checked = document.querySelectorAll('.file-checkbox:checked');
-    if (checked.length === 0) { showToast('请选择要处理的文件', 'warning'); return; }
-    const files = Array.from(checked).map(cb => cb.dataset.path);
+    const checked = state.selectedFiles.filter(f => f.checked);
+    let files = checked.map(f => f.path);
+    if (files.length === 0) {
+        const singlePath = el.manualFilePath.value.trim();
+        if (singlePath) {
+            files = [singlePath];
+        } else {
+            showToast('请选择要处理的文件，或输入文件路径', 'warning');
+            return;
+        }
+    }
     setButtonLoading(el.processSelectedBtn, true);
     try {
         const result = await processBatchViaApi(files);
         showToast(result.message, 'success');
-        loadTasks();
+        if (result.success) {
+            state.selectedFiles = [];
+            renderFileList();
+            loadTasks();
+        }
     } catch (e) { showToast(`批量处理失败: ${e.message}`, 'error'); }
     finally { setButtonLoading(el.processSelectedBtn, false); }
 }

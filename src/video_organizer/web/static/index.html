@@ -439,13 +439,33 @@
                             <button class="btn btn-secondary" id="browseFileBtn">浏览...</button>
                         </div>
                     </div>
-                    <div class="form-group">
+                    <div style="display:flex;gap:12px;margin-bottom:12px">
+                        <button class="btn btn-secondary" id="addToFileListBtn">添加到列表</button>
+                        <button class="btn btn-secondary" id="scanDirBtn">扫描目录</button>
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-left:auto">
+                            <input type="checkbox" id="recursiveScanCheck" checked> 递归
+                        </label>
+                    </div>
+                    <div id="fileListPanel" style="display:none">
+                        <div class="table-container">
+                            <table>
+                                <thead><tr>
+                                    <th style="width:40px"><input type="checkbox" id="selectAllFiles"></th>
+                                    <th>文件路径</th>
+                                    <th style="width:80px">操作</th>
+                                </tr></thead>
+                                <tbody id="selectedFilesList"></tbody>
+                            </table>
+                        </div>
+                        <div style="margin-top:8px;font-size:13px;color:var(--text-muted)" id="fileListCount"></div>
+                    </div>
+                    <div class="form-group" style="margin-top:12px">
                         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
                             <input type="checkbox" id="forceProcessCheck"> 强制处理（即使已在队列中）
                         </label>
                     </div>
                     <div style="display:flex;gap:12px;flex-wrap:wrap">
-                        <button class="btn btn-primary" id="processFileBtn">处理文件</button>
+                        <button class="btn btn-primary" id="processSelectedBtn">处理选中的文件</button>
                         <button class="btn btn-secondary" id="previewFileBtn">预览重命名</button>
                         <button class="btn btn-secondary" id="validateScrapeBtn">验证刮削</button>
                     </div>
@@ -457,29 +477,6 @@
                 <div class="card" id="validateResult" style="display:none">
                     <div class="card-header"><h3 class="card-title">刮削验证结果</h3></div>
                     <div id="validateContent"></div>
-                </div>
-                <div class="card">
-                    <div class="card-header"><h3 class="card-title">批量处理</h3></div>
-                    <div class="form-group">
-                        <label class="form-label">扫描目录</label>
-                        <div style="display:flex;gap:12px">
-                            <input type="text" class="form-input" id="scanDirPath" placeholder="输入目录路径...">
-                            <button class="btn btn-secondary" id="scanDirBtn">扫描</button>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                            <input type="checkbox" id="recursiveScanCheck" checked> 递归扫描子目录
-                        </label>
-                    </div>
-                    <div class="table-container" id="scanResults" style="display:none">
-                        <table><thead><tr><th><input type="checkbox" id="selectAllFiles"></th><th>文件名</th><th>大小</th></tr></thead>
-                            <tbody id="scannedFilesList"></tbody>
-                        </table>
-                        <div style="margin-top:12px">
-                            <button class="btn btn-primary" id="processSelectedBtn">处理选中的文件</button>
-                        </div>
-                    </div>
                 </div>
             </div>
 

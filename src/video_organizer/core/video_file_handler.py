@@ -43,6 +43,45 @@ def console_log(message: str):
     _logger.info(clean_message)
 
 
+def _upload_cas_file(cas_file: Path, cas_data: dict, url: str, api_key: str, path: str = "") -> None:
+    """上传 .cas 文件到外部 API（自动重试 3 次）"""
+    api_url = url.rstrip("/") + "/api/upload"
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            with open(cas_file, "rb") as f:
+                file_bytes = f.read()
+            files = {"file": (cas_file.name, file_bytes, "application/octet-stream")}
+            data = {"caption": json.dumps(cas_data, ensure_ascii=False)}
+            if path:
+                data["path"] = path
+            resp = requests.post(
+                api_url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                files=files,
+                data=data,
+                timeout=30,
+            )
+            if not resp.ok:
+                body_preview = resp.text[:500]
+                console_log(
+                    f"⚠️ .cas 文件上传到外部 API 失败 (HTTP {resp.status_code}, "
+                    f"第 {attempt}/{max_retries} 次): {body_preview}"
+                )
+                if attempt < max_retries:
+                    time.sleep(5)
+                    continue
+                return
+            console_log(f"📤 .cas 文件已上传到外部 API: {cas_file.name}")
+            return
+        except Exception as e:
+            console_log(f"⚠️ .cas 文件上传到外部 API 异常 (第 {attempt}/{max_retries} 次): {e}")
+            if attempt < max_retries:
+                time.sleep(5)
+            else:
+                console_log(f"❌ .cas 文件上传到外部 API 已达最大重试次数: {cas_file.name}")
+
+
 class VideoFileHandler:
     """
     视频文件处理器，用于处理文件系统事件
@@ -150,6 +189,10 @@ class VideoFileHandler:
         self.cloud189_generate_cas = self.cloud189_config.get("generate_cas", False)
         raw_cas_dir = self.cloud189_config.get("cas_output_dir", "")
         self.cloud189_cas_output_dir = str(raw_cas_dir).strip()
+        raw_cas_url = self.cloud189_config.get("cas_upload_url", "")
+        self.cloud189_cas_upload_url = str(raw_cas_url).strip()
+        raw_cas_key = self.cloud189_config.get("cas_upload_api_key", "")
+        self.cloud189_cas_upload_api_key = str(raw_cas_key).strip()
 
         # 初始化 139 云盘配置
         self.yun139_config = yun139_config or {}
@@ -1255,7 +1298,7 @@ class VideoFileHandler:
                                     result = upload_results["cloud189"]
                                     cas_data = {
                                         "md5": result.get("file_md5", ""),
-                                        "slice_md5": result.get("slice_md5", ""),
+                                        "sliceMD5": result.get("slice_md5", ""),
                                         "size": result.get("file_size", 0),
                                         "name": target_filename,
                                         "cloud": "189",
@@ -1273,6 +1316,10 @@ class VideoFileHandler:
                                     cas_file = cas_dir / f"{target_filename}.cas"
                                     cas_file.write_text(cas_content, encoding="utf-8")
                                     console_log(f"📄 [线程#{worker_id}] 已生成 .cas 文件: {cas_file}")
+
+                                    # 上传 .cas 文件到外部 API
+                                    if self.cloud189_cas_upload_url and self.cloud189_cas_upload_api_key:
+                                        _upload_cas_file(cas_file, cas_data, self.cloud189_cas_upload_url, self.cloud189_cas_upload_api_key, str(renamed_relative_path.parent))
                                 except Exception as cas_e:
                                     console_log(f"⚠️ [线程#{worker_id}] 生成 .cas 文件失败: {cas_e}")
 

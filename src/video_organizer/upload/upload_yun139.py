@@ -147,10 +147,19 @@ class Yun139Uploader:
         """将刷新后的 authorization 持久化到配置文件"""
         try:
             from ..core.config_loader import load_config, update_config
-            config = load_config()
+            config_path = None
+            try:
+                from ..web.services.state import get_state_manager
+                sm = get_state_manager()
+                cp = sm.get_config_path()
+                if cp:
+                    config_path = str(cp)
+            except Exception:
+                pass
+            config = load_config(config_path)
             if "yun139" in config:
                 config["yun139"]["authorization"] = self.authorization
-                update_config(config)
+                update_config(config, config_path)
         except Exception as e:
             _logger.warning(f"持久化139云盘认证信息失败: {e}")
 

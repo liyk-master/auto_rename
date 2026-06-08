@@ -97,3 +97,4 @@ src/video_organizer/upload/data
 # Database
 *.db
 src/video_organizer/data/
+src/video_organizer/cas/*
