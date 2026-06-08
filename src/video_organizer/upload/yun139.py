@@ -22,6 +22,8 @@ import requests
 _logger = logging.getLogger(__name__)
 
 
+
+
 def _report_upload_progress(
     file_path: str,
     filename: str,
@@ -133,7 +135,7 @@ class Yun139:
     
     def _encode_uri_component(self, s: str) -> str:
         """JavaScript encodeURIComponent 的 Python 实现"""
-        return quote(s, safe='!~*()\'')
+        return quote(s, safe='')
     
     def _calculate_sign(self, body: str, ts: str, rand_str: str) -> str:
         """
@@ -169,6 +171,9 @@ class Yun139:
         sign = self._calculate_sign(body, ts, rand_str)
         
         svc_type = "2" if self.cloud_type == CloudType.FAMILY else "1"
+        chrome_ver = "148.0.0.0"
+        os_ver = "windows 11"
+        client_ver = "1.0.0"
         
         headers = {
             "Accept": "application/json, text/plain, */*",
@@ -179,8 +184,8 @@ class Yun139:
             "mcloud-version": "7.14.0",
             "Origin": "https://yun.139.com",
             "Referer": "https://yun.139.com/w/",
-            "x-DeviceInfo": "||9|7.14.0|chrome|120.0.0.0|||windows 10||zh-CN|||",
-            "x-huawei-channelSrc": "10000034",
+            "x-DeviceInfo": f"||9|{client_ver}|chrome|{chrome_ver}|||{os_ver}||zh-CN|||",
+            "x-huawei-channelSrc": "10200153",
             "x-inner-ntwk": "2",
             "x-m4c-caller": "PC",
             "x-m4c-src": "10002",
@@ -193,9 +198,9 @@ class Yun139:
                 "Caller": "web",
                 "Mcloud-Route": "001",
                 "X-Yun-Api-Version": "v1",
-                "X-Yun-App-Channel": "10000034",
-                "X-Yun-Channel-Source": "10000034",
-                "X-Yun-Client-Info": "||9|7.14.0|chrome|120.0.0.0|||windows 10||zh-CN|||dW5kZWZpbmVk||",
+                "X-Yun-App-Channel": "10200153",
+                "X-Yun-Channel-Source": "10200153",
+                "X-Yun-Client-Info": f"||9|{client_ver}|chrome|{chrome_ver}|||{os_ver}||zh-CN|||",
                 "X-Yun-Module-Type": "100",
                 "X-Yun-Svc-Type": "1",
             })
@@ -207,14 +212,19 @@ class Yun139:
         path: str,
         data: Dict,
         method: str = "POST",
-        is_personal: bool = False
+        is_personal: bool = False,
     ) -> Dict:
         """发送请求"""
         self._ensure_valid_token()
         base_url = self.PERSONAL_URL if is_personal else self.BASE_URL
         url = base_url + path
-        body = json.dumps(data)
+        body = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
         headers = self._get_headers(body, is_personal)
+
+        _logger.debug(">>> 请求: %s %s", method, url)
+        _logger.debug(">>> Body: %s", body)
+        _logger.debug(">>> mcloud-sign: %s", headers.get("mcloud-sign", ""))
+        _logger.debug(">>> Headers: %s", {k: v for k, v in headers.items() if k != "Authorization"})
 
         response = self.session.request(
             method=method,
@@ -222,6 +232,10 @@ class Yun139:
             headers=headers,
             data=body
         )
+
+        _logger.debug("<<< 状态码: %d", response.status_code)
+        _logger.debug("<<< 响应: %s", response.text[:2000])
+
         response.raise_for_status()
 
         result = response.json()
@@ -1002,15 +1016,10 @@ class Yun139:
         self,
         parent_id: str,
         file_path: str,
-        progress_callback=None
+        progress_callback=None,
     ) -> bool:
         """
         上传文件（简化版，仅支持新版个人云）
-        
-        Args:
-            parent_id: 目标文件夹ID
-            file_path: 本地文件路径
-            progress_callback: 进度回调函数
         """
         if self.cloud_type != CloudType.PERSONAL_NEW:
             raise NotImplementedError("目前仅支持新版个人云上传")
@@ -1046,15 +1055,15 @@ class Yun139:
             "contentHash": content_hash,
             "contentHashAlgorithm": "SHA256",
             "contentType": "application/octet-stream",
+            "fileRenameMode": "auto_rename",
+            "name": file_name,
+            "parentFileId": parent_id,
             "parallelUpload": False,
             "partInfos": part_infos[:1],  # 秒传时只需一个分片
             "size": file_size,
-            "parentFileId": parent_id,
-            "name": file_name,
             "type": "file",
-            "fileRenameMode": "auto_rename"
         }
-        
+
         result = self._request("/hcy/file/create", data, is_personal=True)
         upload_data = result['data']
 
@@ -1129,12 +1138,12 @@ class Yun139:
                 "commonAccountInfo": {
                     "account": self.account,
                     "accountType": 1
-                }
+                },
             }
             more_result = self._request(
                 "/hcy/file/getUploadUrl",
                 more_data,
-                is_personal=True
+                is_personal=True,
             )
             upload_part_infos.extend(more_result['data']['partInfos'])
         
@@ -1236,21 +1245,9 @@ class Yun139:
         filename: str,
         parent_id: str = "/",
         part_infos: Optional[List[Dict[str, Any]]] = None,
-        is_app_mode: bool = False,
     ) -> Dict[str, Any]:
         """
         秒传文件（不实际上传，通过 SHA256 匹配已有文件）
-
-        Args:
-            sha256: 文件 SHA256 哈希值
-            size: 文件大小（字节）
-            filename: 文件名
-            parent_id: 目标文件夹ID
-            part_infos: 分片信息列表，为 None 时自动计算一个默认分片
-            is_app_mode: 是否使用 App 模式（突破 5G 限制）
-
-        Returns:
-            dict: {success, fileId, fileName, exist, rapidUpload, uploadId, partInfos}
         """
         if not part_infos:
             part_infos = [{"partNumber": 1, "partSize": 1000, "parallelHashCtx": {"partOffset": 0}}]
@@ -1259,17 +1256,14 @@ class Yun139:
             "contentHash": sha256,
             "contentHashAlgorithm": "SHA256",
             "contentType": "application/octet-stream",
+            "fileRenameMode": "auto_rename",
+            "name": filename,
+            "parentFileId": parent_id,
             "parallelUpload": False,
             "partInfos": part_infos,
             "size": size,
-            "parentFileId": parent_id,
-            "name": filename,
             "type": "file",
-            "fileRenameMode": "auto_rename",
         }
-
-        if is_app_mode:
-            data["appMode"] = "1"
 
         result = self._request("/hcy/file/create", data, is_personal=True)
         upload_data = result.get("data", {})
@@ -1291,7 +1285,7 @@ if __name__ == "__main__":
     # 示例用法
     # authorization 需要从网页端获取，格式为 Base64 编码的认证信息
     
-    auth = "cGM6MTU2MDA3MTc5NTg6RUtLMkM1WTR8MXxSQ1N8MTc3NTM5MDQ1NjE2MnxVbzA0aFF0aGo0TVphamFGcGRaaUN1c1NYUmoydGlkLllyWmh3V2hYVUdIcVlvbjdkalVVWGxTSlgxdVRUbjViSUVjdEhPd1NtMHBVSlRaNTBadXNXdzVzU3BKdWpMaV9BWnhyQ0c3ZGVKeDZ0M0JtNXZaS19JemF0Z2JEMmwuQ3RpYXRHRWR0MmxTSGxPdGUxV0RQcXFGaVQ4b0JYdEdfdndDT1NFS2EudnMt"
+    auth = "cGM6MTcyNzg2NjY5NjM6dnFJSGVwR3B8MXxSQ1N8MTc4MzQ3NjE4MzEwM3xQSTZZMWJza203dkc2WlF1NVJlOVZ2NlpwRGZNaGVhaWdHY0NUdU9RQ1gyV2FMa0VYd3V6b0ZlbF9CbkZBQk55VGc2ODRrZW5fTzllZGw3b2tqRFVIZDZyUGlLdFNldklLQ21pdkRYZDN1dEk3Smx5OGJSeUcxLjNNbnNJNzBDZFBzMHBlb1hTM2hiUGZOdU9hUGFRQXlLVTRyWkNuYmc3azkzY2dpaGQxQnMt"
     
     # 新版个人云
     client = Yun139(auth, CloudType.PERSONAL_NEW)
@@ -1300,7 +1294,7 @@ if __name__ == "__main__":
     client.refresh_token()
     
     # 列出根目录文件
-    # files = client.list_files("/")
+    files = client.list_files("/")
     # for f in files:
     #     print(f"{'[文件夹]' if f.is_folder else '[文件]'} {f.name} - {f.size} bytes")
     
@@ -1319,5 +1313,5 @@ if __name__ == "__main__":
     # 上传文件
     # def progress(uploaded, total):
     #     print(f"进度: {uploaded}/{total} ({uploaded*100//total}%)")
-    # client.upload("/", "/path/to/local/file.txt", progress)
-    # client.upload("/", "F:\\XunLeiDownLoad\\media\\[ANi] 蘑菇魔女 - 10 [1080P][Baha][WEB-DL][AAC AVC][CHT].mp4", lambda u, t: print(f"{u*100//t}%"))
+    # # client.upload("/", "/path/to/local/file.txt", progress)
+    # client.upload("/", "E:\\Media\\Downloads\\tmp\\租借女友 (2020) S03E27 .mp4", lambda u, t: print(f"{u*100//t}%"))

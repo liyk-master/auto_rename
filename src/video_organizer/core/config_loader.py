@@ -440,6 +440,8 @@ def update_config(
                 config[section_name][key] = str(value)
     
     # 保存配置文件
-    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    parent_dir = os.path.dirname(config_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
     with open(config_path, "w", encoding="utf-8") as f:
         config.write(f)

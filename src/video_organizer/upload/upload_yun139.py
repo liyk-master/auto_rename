@@ -689,7 +689,7 @@ class Yun139Uploader:
 
             # 上传文件（带进度回调）
             result = self._upload_with_progress(
-                str(file_path_obj), target_parent_id, target_filename
+                str(file_path_obj), target_parent_id, target_filename,
             )
 
             if result:
@@ -937,7 +937,7 @@ class Yun139Uploader:
         return new_name
 
     def _upload_with_progress(
-        self, file_path: str, parent_id: str, file_name: str
+        self, file_path: str, parent_id: str, file_name: str,
     ) -> Optional[Dict[str, Any]]:
         """带进度通知的上传，返回包含上传信息的字典"""
 
@@ -1025,7 +1025,7 @@ class Yun139Uploader:
                 parent_id=parent_id,
                 file_path=file_path,
                 target_filename=file_name,  # 传递目标文件名
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
             )
 
             if upload_info:
@@ -1043,19 +1043,10 @@ class Yun139Uploader:
         parent_id: str,
         file_path: str,
         target_filename: Optional[str] = None,
-        progress_callback=None
+        progress_callback=None,
     ) -> Optional[Dict[str, Any]]:
         """
         上传文件并获取上传信息（用于生成 STRM）
-
-        Args:
-            parent_id: 目标父文件夹ID
-            file_path: 本地文件路径
-            target_filename: 上传后的目标文件名（如果为None则使用原文件名）
-            progress_callback: 进度回调函数
-
-        Returns:
-            包含 content_hash, size, name, part_infos, file_id 的字典
         """
         import json
         from tqdm import tqdm
@@ -1071,7 +1062,7 @@ class Yun139Uploader:
                 self._clear_upload_state(file_path)
             
             result = self._do_upload(
-                parent_id, file_path, target_filename, progress_callback
+                parent_id, file_path, target_filename, progress_callback,
             )
             
             if result is not None:
@@ -1087,19 +1078,10 @@ class Yun139Uploader:
         parent_id: str,
         file_path: str,
         target_filename: Optional[str] = None,
-        progress_callback=None
+        progress_callback=None,
     ) -> Optional[Dict[str, Any]]:
         """
         执行实际的上传操作（单次尝试）
-
-        Args:
-            parent_id: 目标父文件夹ID
-            file_path: 本地文件路径
-            target_filename: 上传后的目标文件名
-            progress_callback: 进度回调函数
-
-        Returns:
-            上传结果字典，失败返回 None
         """
         import json
         from tqdm import tqdm
@@ -1159,7 +1141,7 @@ class Yun139Uploader:
                 "parentFileId": parent_id if parent_id else "",
                 "name": file_name,
                 "type": "file",
-                "fileRenameMode": "auto_rename"
+                "fileRenameMode": "auto_rename",
             }
 
             result = self.client._request("/hcy/file/create", data, is_personal=True)
@@ -1232,14 +1214,21 @@ class Yun139Uploader:
                     "commonAccountInfo": {
                         "account": self.client.account,
                         "accountType": 1
-                    }
+                    },
                 }
                 print(f"  [DEBUG] 获取分片上传地址: 第 {batch[0]['partNumber']}-{batch[-1]['partNumber']} 个")
-                more_result = self.client._request(
-                    "/hcy/file/getUploadUrl",
-                    more_data,
-                    is_personal=True
-                )
+                try:
+                    more_result = self.client._request(
+                        "/hcy/file/getUploadUrl",
+                        more_data,
+                        is_personal=True,
+                    )
+                except Exception as e:
+                    if "04000010" in str(e) and saved_state:
+                        print(f"  [断点续传] 上传任务已过期，清除状态后重新创建")
+                        self._clear_upload_state(file_path)
+                        return None
+                    raise
                 upload_part_infos.extend(more_result['data']['partInfos'])
             
             upload_part_infos = sorted(upload_part_infos, key=lambda x: x['partNumber'])
@@ -1311,12 +1300,12 @@ class Yun139Uploader:
                                         "commonAccountInfo": {
                                             "account": self.client.account,
                                             "accountType": 1
-                                        }
+                                        },
                                     }
                                     refresh_result = self.client._request(
                                         "/hcy/file/getUploadUrl",
                                         refresh_data,
-                                        is_personal=True
+                                        is_personal=True,
                                     )
                                     new_part_infos = refresh_result.get('data', {}).get('partInfos', [])
                                     if new_part_infos:
