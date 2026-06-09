@@ -1,43 +1,18 @@
-# Dockerfile - 使用 PyInstaller + Alpine musl libc，最大化兼容性
-FROM python:3.9-alpine
+FROM python:3.12-alpine
 
-# 安装系统依赖
-RUN apk add --no-cache \
-    build-base \
-    wget \
-    patchelf \
-    git
+RUN apk add --no-cache build-base patchelf
 
-# 设置工作目录
 WORKDIR /app
 
-# 复制所有文件
-COPY . .
-
-# 转换换行符
-RUN sed -i 's/\r$//' build.sh && \
-    chmod +x build.sh
-
-# 安装依赖
+COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir pyinstaller && \
     pip install --no-cache-dir -r requirements.txt
 
-# 直接运行 PyInstaller（使用 -B 模式避免交互）
-RUN pyinstaller -B \
-    --noconfirm \
-    --onefile \
-    --console \
-    --name "VideoOrganizer" \
-    --clean \
-    --hidden-import=src.video_organizer \
-    --add-data "config.ini:." \
-    run_organizer.py
+COPY . .
 
-# 显示构建结果
-RUN ls -lh dist/ && \
-    echo "" && \
-    echo "构建完成，可执行文件: dist/VideoOrganizer"
+EXPOSE 8080
 
-# 容器构建完成后自动退出
-CMD ["echo", "构建容器已完成，检查 dist/ 目录"]
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1
+
+CMD ["python", "run_organizer.py", "--web-only", "--web-host", "0.0.0.0", "--web-port", "8080"]
