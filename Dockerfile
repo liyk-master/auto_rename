@@ -15,4 +15,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1
 
-CMD ["python", "run_organizer.py", "--web-only", "--web-host", "0.0.0.0", "--web-port", "8080"]
+ENTRYPOINT ["python", "run_organizer.py"]
+CMD ["--web-only", "--web-host", "0.0.0.0", "--web-port", "8080"]
