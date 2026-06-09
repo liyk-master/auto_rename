@@ -55,6 +55,7 @@ venv.bak/
 
 # Project specific
 config.ini
+launcher.ini
 src/video_organizer/config.ini
 *.log
 *.log.*
@@ -98,3 +99,4 @@ src/video_organizer/upload/data
 *.db
 src/video_organizer/data/
 src/video_organizer/cas/*
+cas/*

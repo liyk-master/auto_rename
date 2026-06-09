@@ -96,6 +96,25 @@ jobs:
           --clean \
           run_organizer.py
 
+    - name: Install tray build dependencies (Windows)
+      if: matrix.platform == 'windows'
+      run: |
+        pip install pystray Pillow
+
+    - name: Build Windows tray launcher
+      if: matrix.platform == 'windows'
+      shell: bash
+      run: |
+        pyinstaller --noconfirm --onefile --windowed \
+          --name "VideoOrganizer-windows-tray" \
+          --add-data "config_template.ini;." \
+          --add-data "src/video_organizer/web/static;video_organizer/web/static" \
+          --paths . \
+          --clean \
+          --hidden-import pystray \
+          --hidden-import PIL \
+          src/video_organizer/win_launcher.py
+
     - name: List build artifacts
       shell: bash
       run: |
@@ -111,7 +130,9 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: VideoOrganizer-${{ matrix.platform }}
-        path: dist/VideoOrganizer-${{ matrix.platform }}${{ matrix.ext }}
+        path: |
+          dist/VideoOrganizer-${{ matrix.platform }}${{ matrix.ext }}
+          dist/VideoOrganizer-windows-tray.exe
         retention-days: 30
 
     - name: Prepare release files
@@ -119,6 +140,9 @@ jobs:
       run: |
         mkdir -p release
         cp dist/VideoOrganizer-${{ matrix.platform }}${{ matrix.ext }} release/
+        if [ -f dist/VideoOrganizer-windows-tray.exe ]; then
+          cp dist/VideoOrganizer-windows-tray.exe release/
+        fi
         cp config_template.ini release/
 
     - name: Create Release
