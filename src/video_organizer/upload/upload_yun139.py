@@ -477,6 +477,40 @@ class Yun139Uploader:
             traceback.print_exc()
         return False
 
+    def _save_rapid_json(
+        self,
+        sha256: str,
+        size: int,
+        name: str,
+        folder_path: str = ""
+    ) -> None:
+        """保存上传成功信息为 JSON 文件到 data/139_rapid/"""
+        try:
+            output_dir = Path("data") / "139_rapid"
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            basename = Path(name).stem
+            output_path = output_dir / f"{basename}.json"
+            if output_path.exists():
+                suffix = sha256[:8]
+                output_path = output_dir / f"{basename}-{suffix}.json"
+
+            full_path = f"{folder_path}/{name}" if folder_path else name
+
+            data = {
+                "sha256": sha256,
+                "size": size,
+                "name": full_path,
+                "cloud": "139"
+            }
+            output_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding='utf-8'
+            )
+            print(f"   💾 秒传信息已保存: {output_path}")
+        except Exception as e:
+            _logger.warning(f"保存秒传 JSON 文件失败: {e}")
+
     def _send_upload_complete_to_channel(
         self,
         sha256: str,
@@ -761,6 +795,14 @@ class Yun139Uploader:
                         print(f"   📢 已发送上传完成消息到 TG 频道")
                     else:
                         print(f"   ⚠️ 发送 TG 频道消息失败")
+
+                # 保存秒传信息到 JSON 文件
+                self._save_rapid_json(
+                    sha256=result.get('content_hash', ''),
+                    size=result.get('size', 0),
+                    name=target_filename,
+                    folder_path=folder_path
+                )
 
                 return result
             else:

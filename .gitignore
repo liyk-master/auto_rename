@@ -59,6 +59,7 @@ src/video_organizer/config.ini
 *.log
 *.log.*
 *.nfo
+data/
 src/data/
 
 # Build scripts (temporary)
@@ -98,3 +99,4 @@ src/video_organizer/upload/data
 *.db
 src/video_organizer/data/
 src/video_organizer/cas/*
+cas/*
