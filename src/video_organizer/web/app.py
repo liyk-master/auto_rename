@@ -51,18 +51,18 @@ def create_app(
     if not state.get_config():
         try:
             from ..core.config_loader import load_config
-            config_path = Path("config.ini")
+            if getattr(sys, "frozen", False):
+                config_path = Path(sys.executable).parent / "config.ini"
+            else:
+                config_path = Path(__file__).resolve().parent.parent / "config.ini"
             if config_path.exists():
                 config = load_config(str(config_path))
                 state.set_config(config, config_path)
-                logger.info(f"已自动加载配置文件: {config_path.resolve()}")
+                logger.info(f"已自动加载配置文件: {config_path}")
             else:
-                # 尝试从启动目录的 config 目录加载
-                alt_path = Path("config") / "config.ini"
-                if alt_path.exists():
-                    config = load_config(str(alt_path))
-                    state.set_config(config, alt_path)
-                    logger.info(f"已自动加载配置文件: {alt_path.resolve()}")
+                config = load_config()
+                state.set_config(config, config_path)
+                logger.info(f"已自动加载配置（默认路径）: {config_path}")
         except Exception as e:
             logger.warning(f"自动加载配置失败（部分功能可能受限）: {e}")
     

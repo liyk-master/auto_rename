@@ -1,12 +1,15 @@
 #!/bin/bash
-# PyInstaller 打包脚本 - Alpine/musl libc 版本
+# PyInstaller 打包脚本
 
 set -e  # 遇到错误时退出
 
 echo "================================"
-echo "  VideoOrganizer 打包脚本 (PyInstaller + Alpine)"
+echo "  VideoOrganizer 打包脚本 (PyInstaller)"
 echo "================================"
 echo ""
+
+APP_NAME="VideoOrganizer"
+ENTRY_SCRIPT="run_organizer.py"
 
 # 检测操作系统
 detect_os() {
@@ -30,31 +33,28 @@ detect_os() {
 # 清理构建文件
 clean_build() {
     echo "清理之前的构建文件..."
-    
+
     rm -rf build 2>/dev/null || true
     rm -rf __pycache__ 2>/dev/null || true
     rm -rf dist/* 2>/dev/null || true
-    
+
     find . -name "*.spec" -delete 2>/dev/null || true
     find . -name "*.pyc" -delete 2>/dev/null || true
-    
+
     echo "清理完成"
 }
 
-# 构建可执行文件 - 使用 PyInstaller
-build_executable() {
-    echo "开始构建可执行文件 (PyInstaller)..."
+# 构建主程序可执行文件
+build_main_executable() {
+    echo "开始构建主程序可执行文件..."
     echo ""
-    
-    # 检查入口文件
-    if [ ! -f "run_organizer.py" ]; then
-        echo "错误: 未找到 run_organizer.py"
+
+    if [ ! -f "$ENTRY_SCRIPT" ]; then
+        echo "错误: 未找到 $ENTRY_SCRIPT"
         exit 1
     fi
-    
-    # 使用 PyInstaller 的 collect_data_files 自动收集数据文件
-    # 创建临时 spec 文件以支持更复杂的数据收集
-    cat > VideoOrganizer.spec << 'EOF'
+
+    cat > "${APP_NAME}.spec" << 'EOF'
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
@@ -64,7 +64,6 @@ datas += [('src/video_organizer/web/static', 'video_organizer/web/static')]
 datas += collect_data_files('babelfish')
 datas += collect_data_files('guessit')
 
-# 收集所有子模块
 hiddenimports = [
     'src',
     'src.video_organizer',
@@ -81,7 +80,7 @@ hiddenimports += collect_submodules('rebulk')
 
 a = Analysis(
     ['run_organizer.py'],
-    pathex=['.'],
+    pathex=['.', 'src'],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
@@ -106,34 +105,29 @@ exe = EXE(
     console=True,
 )
 EOF
-    
-    echo "创建 spec 文件完成，开始构建..."
-    
-    # 使用 spec 文件构建
+
+    echo "创建主程序 spec 文件完成，开始构建..."
+
     pyinstaller \
         --noconfirm \
         --clean \
-        VideoOrganizer.spec
-    
-    if [ $? -eq 0 ]; then
-        echo ""
-        echo "✅ 构建成功！"
-        
-        # 显示文件信息
-        echo ""
-        echo "生成的文件:"
-        ls -lh dist/
-        
-        echo ""
-        echo "动态依赖检查:"
-        if [ "$OS" = "linux" ]; then
-            # Alpine 构建的可执行文件使用 musl libc
-            ldd dist/VideoOrganizer 2>/dev/null | head -10 || echo "无法检查依赖"
-        fi
-    else
-        echo ""
-        echo "❌ 构建失败！"
-        exit 1
+        "${APP_NAME}.spec"
+}
+
+build_executable() {
+    build_main_executable
+
+    echo ""
+    echo "✅ 构建成功！"
+
+    echo ""
+    echo "生成的文件:"
+    ls -lh dist/
+
+    echo ""
+    echo "动态依赖检查:"
+    if [ "$OS" = "linux" ]; then
+        ldd "dist/${APP_NAME}" 2>/dev/null | head -10 || echo "无法检查依赖"
     fi
 }
 
@@ -144,17 +138,28 @@ show_result() {
     echo "  构建完成"
     echo "================================"
     echo ""
-    
-    echo "说明:"
-    echo "- Alpine/musl libc 构建版本"
-    echo "- 兼容大多数 Linux 发行版，包括旧系统"
-    echo "- 输出目录: dist/"
-    echo ""
-    
-    echo "使用方法:"
-    echo "1. 将 dist/VideoOrganizer 复制到目标服务器"
-    echo "2. 添加执行权限: chmod +x VideoOrganizer"
-    echo "3. 运行: ./VideoOrganizer"
+
+    if [ "$OS" = "windows" ]; then
+        echo "说明:"
+        echo "- 主程序可执行版本"
+        echo "- 启动入口: run_organizer.py"
+        echo "- 默认启动 Web 管理后台 (端口 8080) + 文件监控"
+        echo "- 输出目录: dist/"
+        echo ""
+        echo "使用方法:"
+        echo "1. 双击 dist/${APP_NAME}.exe"
+        echo "2. 打开浏览器访问 http://localhost:8080"
+    else
+        echo "说明:"
+        echo "- 主程序可执行版本"
+        echo "- 兼容大多数 Linux / macOS 环境"
+        echo "- 输出目录: dist/"
+        echo ""
+        echo "使用方法:"
+        echo "1. 将 dist/${APP_NAME} 复制到目标环境"
+        echo "2. 添加执行权限: chmod +x ${APP_NAME}"
+        echo "3. 运行: ./${APP_NAME}"
+    fi
     echo ""
 }
 
