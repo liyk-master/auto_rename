@@ -25,7 +25,12 @@ class MediaTrackerClient:
         token = config.get("token", "")
         self.ws_url = f"ws://{host}:{port}/ws?token={token}"
         self.reconnect_delay = int(config.get("reconnect_delay", 5))
-        self.app_mode = config.get("app_mode", True)
+
+        # 从 yun139_uploader 获取 app_mode（与云盘配置保持一致）
+        if yun139_uploader and hasattr(yun139_uploader, 'client'):
+            self.app_mode = getattr(yun139_uploader.client, 'app_mode', False)
+        else:
+            self.app_mode = config.get("app_mode", False)
 
         self.renamer = renamer
         self.yun139_uploader = yun139_uploader
@@ -47,7 +52,8 @@ class MediaTrackerClient:
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="media-tracker-ws")
         self._thread.start()
-        logger.info("Media Tracker \u5ba2\u6237\u7aef\u5df2\u542f\u52a8: %s", self.ws_url)
+        mode_label = "App \u6a21\u5f0f" if self.app_mode else "PC \u6a21\u5f0f"
+        logger.info("Media Tracker \u5ba2\u6237\u7aef\u5df2\u542f\u52a8\uff08%s\uff09: %s", mode_label, self.ws_url)
 
     def stop(self):
         self._stop_event.set()
@@ -155,75 +161,116 @@ class MediaTrackerClient:
             renamed_filename = new_path.name
             logger.info("\u8def\u5f84\u6574\u7406: %s -> %s", file_name, new_path)
 
-            # \u5728139\u4e91\u76d8\u521b\u5efa\u5bf9\u5e94\u7684\u6587\u4ef6\u5939\u7ed3\u6784
             uploader = self.yun139_uploader
-            parent_id = uploader.parent_id
-            for folder_name in folder_parts:
-                safe_name = re.sub(r'[\\/:*?"<>|]', "", folder_name)
-                fid = uploader._get_or_create_folder(safe_name, parent_id)
-                if fid:
-                    parent_id = fid
-                else:
-                    logger.error(
-                        "\u521b\u5efa\u6587\u4ef6\u5939\u5931\u8d25: %s (\u7236: %s)", safe_name, parent_id,
-                    )
-                    return
 
-            # \u4f7f\u7528\u91cd\u547d\u540d\u540e\u7684\u6587\u4ef6\u540d\u8fdb\u884c\u79d2\u4f20
-            upload_name = renamed_filename
-            if self.app_mode and upload_name.lower().endswith(VIDEO_EXT):
-                upload_name += ".jpg"
+            # === App \u6a21\u5f0f\uff1a\u79d2\u4f20 + \u91cd\u547d\u540d + \u751f\u6210 STRM\uff08\u4f7f\u7528 fileId\uff09 ===
+            if self.app_mode:
+                logger.info("App \u6a21\u5f0f\uff1a\u521b\u5efa\u4e91\u76d8\u76ee\u5f55 \u2192 \u79d2\u4f20 \u2192 \u91cd\u547d\u540d \u2192 \u751f\u6210 STRM")
 
-            client = uploader.client
-            result = client.rapid_upload(
-                sha256=sha256,
-                size=file_size,
-                filename=upload_name,
-                parent_id=parent_id,
-                app_mode=self.app_mode,
-            )
-
-            if result.get("success"):
-                logger.info("\u79d2\u4f20\u6210\u529f: %s -> %s/%s", file_name, "/".join(folder_parts), upload_name)
-
-                # \u5982\u679c\u4f7f\u7528\u4e86 app_mode \u4f2a\u88c5\uff0c\u9700\u8981\u5c06\u6587\u4ef6\u91cd\u547d\u540d\u56de\u539f\u59cb\u540d\u79f0
-                if self.app_mode and upload_name != renamed_filename:
-                    file_id = result.get("fileId")
-                    if file_id:
-                        try:
-                            # \u6784\u9020 FileInfo \u5bf9\u8c61\u7528\u4e8e\u91cd\u547d\u540d
-                            from ..upload.yun139 import FileInfo
-                            from datetime import datetime
-
-                            file_info = FileInfo(
-                                id=file_id,
-                                name=upload_name,  # \u5f53\u524d\u4e91\u76d8\u4e2d\u7684\u540d\u79f0\uff08\u5e26 .jpg\uff09
-                                size=file_size,
-                                is_folder=False,
-                                created_time=datetime.now(),
-                                modified_time=datetime.now(),
-                            )
-
-                            # \u91cd\u547d\u540d\u4e3a\u539f\u59cb\u6587\u4ef6\u540d\uff08\u4e0d\u5e26 .jpg\uff09
-                            if client.rename(file_info, renamed_filename):
-                                logger.info("\u91cd\u547d\u540d\u6210\u529f: %s -> %s", upload_name, renamed_filename)
-                            else:
-                                logger.warning("\u91cd\u547d\u540d\u5931\u8d25: %s -> %s", upload_name, renamed_filename)
-                        except Exception as e:
-                            logger.error("\u91cd\u547d\u540d\u65f6\u51fa\u9519: %s", e, exc_info=True)
+                # \u5728139\u4e91\u76d8\u521b\u5efa\u5bf9\u5e94\u7684\u6587\u4ef6\u5939\u7ed3\u6784
+                parent_id = uploader.parent_id
+                for folder_name in folder_parts:
+                    safe_name = re.sub(r'[\\/:*?"<>|]', "", folder_name)
+                    fid = uploader._get_or_create_folder(safe_name, parent_id)
+                    if fid:
+                        parent_id = fid
                     else:
-                        logger.warning("\u79d2\u4f20\u7ed3\u679c\u4e2d\u672a\u8fd4\u56de fileId\uff0c\u65e0\u6cd5\u91cd\u547d\u540d")
-                else:
-                    file_id = result.get("fileId")
-
-                # \u751f\u6210 STRM \u6587\u4ef6
-                if file_id and uploader.strm_server and uploader.strm_output_dir:
-                    try:
-                        logger.info("\u751f\u6210 STRM \u6587\u4ef6: %s", renamed_filename)
-                        strm_url = uploader.generate_strm_url(
-                            file_id=file_id,
-                            file_name=renamed_filename,
+                        logger.error(
+                            "\u521b\u5efa\u6587\u4ef6\u5939\u5931\u8d25: %s (\u7236: %s)", safe_name, parent_id,
                         )
+                        return
+
+                # \u4f7f\u7528\u91cd\u547d\u540d\u540e\u7684\u6587\u4ef6\u540d\u8fdb\u884c\u79d2\u4f20
+                upload_name = renamed_filename
+                if upload_name.lower().endswith(VIDEO_EXT):
+                    upload_name += ".jpg"
+
+                client = uploader.client
+                result = client.rapid_upload(
+                    sha256=sha256,
+                    size=file_size,
+                    filename=upload_name,
+                    parent_id=parent_id,
+                    app_mode=self.app_mode,
+                )
+
+                if result.get("success"):
+                    logger.info("\u79d2\u4f20\u6210\u529f: %s -> %s/%s", file_name, "/".join(folder_parts), upload_name)
+
+                    # \u5982\u679c\u4f7f\u7528\u4e86 app_mode \u4f2a\u88c5\uff0c\u9700\u8981\u5c06\u6587\u4ef6\u91cd\u547d\u540d\u56de\u539f\u59cb\u540d\u79f0
+                    if upload_name != renamed_filename:
+                        file_id = result.get("fileId")
+                        if file_id:
+                            try:
+                                # \u6784\u9020 FileInfo \u5bf9\u8c61\u7528\u4e8e\u91cd\u547d\u540d
+                                from ..upload.yun139 import FileInfo
+                                from datetime import datetime
+
+                                file_info = FileInfo(
+                                    id=file_id,
+                                    name=upload_name,  # \u5f53\u524d\u4e91\u76d8\u4e2d\u7684\u540d\u79f0\uff08\u5e26 .jpg\uff09
+                                    size=file_size,
+                                    is_folder=False,
+                                    created_time=datetime.now(),
+                                    modified_time=datetime.now(),
+                                )
+
+                                # \u91cd\u547d\u540d\u4e3a\u539f\u59cb\u6587\u4ef6\u540d\uff08\u4e0d\u5e26 .jpg\uff09
+                                if client.rename(file_info, renamed_filename):
+                                    logger.info("\u91cd\u547d\u540d\u6210\u529f: %s -> %s", upload_name, renamed_filename)
+                                else:
+                                    logger.warning("\u91cd\u547d\u540d\u5931\u8d25: %s -> %s", upload_name, renamed_filename)
+                            except Exception as e:
+                                logger.error("\u91cd\u547d\u540d\u65f6\u51fa\u9519: %s", e, exc_info=True)
+                        else:
+                            logger.warning("\u79d2\u4f20\u7ed3\u679c\u4e2d\u672a\u8fd4\u56de fileId\uff0c\u65e0\u6cd5\u91cd\u547d\u540d")
+                    else:
+                        file_id = result.get("fileId")
+
+                    # \u751f\u6210 STRM \u6587\u4ef6\uff08App \u6a21\u5f0f\u4f7f\u7528 fileId\uff09
+                    if file_id and uploader.strm_server and uploader.strm_output_dir:
+                        try:
+                            logger.info("\u751f\u6210 STRM \u6587\u4ef6\uff08App \u6a21\u5f0f\uff0cfileId\uff09: %s", renamed_filename)
+                            strm_url = uploader.generate_strm_url(
+                                file_id=file_id,
+                                file_name=renamed_filename,
+                            )
+                            if strm_url:
+                                strm_path = uploader.generate_strm_file(
+                                    strm_url=strm_url,
+                                    file_name=renamed_filename,
+                                    folder_structure=folder_parts
+                                )
+                                if strm_path:
+                                    logger.info("STRM \u6587\u4ef6\u5df2\u751f\u6210: %s", strm_path)
+                                else:
+                                    logger.warning("\u751f\u6210 STRM \u6587\u4ef6\u5931\u8d25")
+                            else:
+                                logger.warning("\u751f\u6210 STRM URL \u5931\u8d25")
+                        except Exception as e:
+                            logger.error("\u751f\u6210 STRM \u6587\u4ef6\u65f6\u51fa\u9519: %s", e, exc_info=True)
+                else:
+                    logger.warning("\u79d2\u4f20\u5931\u8d25: %s, result=%s", file_name, result)
+
+            # === PC \u6a21\u5f0f\uff1a\u76f4\u63a5\u751f\u6210 STRM\uff08\u4f7f\u7528 SHA256\uff0c\u65e0\u9700\u79d2\u4f20\u548c\u521b\u5efa\u4e91\u76d8\u76ee\u5f55\uff09 ===
+            else:
+                logger.info("PC \u6a21\u5f0f\uff1a\u76f4\u63a5\u751f\u6210 STRM\uff08\u4e0d\u521b\u5efa\u4e91\u76d8\u76ee\u5f55\uff09")
+
+                if uploader.strm_server and uploader.strm_output_dir:
+                    try:
+                        logger.info("\u751f\u6210 STRM \u6587\u4ef6\uff08PC \u6a21\u5f0f\uff0cSHA256\uff09: %s", renamed_filename)
+
+                        # \u6784\u9020\u9ed8\u8ba4\u5206\u7247\u4fe1\u606f
+                        part_infos = [{"partNumber": 1, "partSize": 1000, "parallelHashCtx": {"partOffset": 0}}]
+
+                        strm_url = uploader.generate_strm_url(
+                            file_id="",  # PC \u6a21\u5f0f\u4e0d\u4f7f\u7528 fileId
+                            file_name=renamed_filename,
+                            content_hash=sha256,
+                            file_size=file_size,
+                            part_infos=part_infos,
+                        )
+
                         if strm_url:
                             strm_path = uploader.generate_strm_file(
                                 strm_url=strm_url,
@@ -238,7 +285,8 @@ class MediaTrackerClient:
                             logger.warning("\u751f\u6210 STRM URL \u5931\u8d25")
                     except Exception as e:
                         logger.error("\u751f\u6210 STRM \u6587\u4ef6\u65f6\u51fa\u9519: %s", e, exc_info=True)
-            else:
-                logger.warning("\u79d2\u4f20\u5931\u8d25: %s, result=%s", file_name, result)
+                else:
+                    logger.info("\u672a\u914d\u7f6e STRM \u670d\u52a1\u5668\uff0c\u8df3\u8fc7 STRM \u751f\u6210")
+
         except Exception as e:
             logger.error("\u5904\u7406 new_media \u5931\u8d25 (%s): %s", file_name, e, exc_info=True)

@@ -558,8 +558,8 @@ class Yun139Uploader:
         """
         生成 139 云盘 STRM 播放链接
 
-        新格式（推荐）: http://192.0.2.0:5010/139createGetDownloadUrl/{fileId}/{encoded_filename}
-        旧格式（兼容）: http://192.0.2.0:5010/139getDownloadUrl/{sha256}/{size}/{encoded_filename}?part_info={base64}
+        新格式（app_mode=True）: http://192.0.2.0:5010/139createGetDownloadUrl/{fileId}/{encoded_filename}
+        旧格式（app_mode=False）: http://192.0.2.0:5010/139getDownloadUrl/{sha256}/{size}/{encoded_filename}?part_info={base64}
 
         Args:
             file_id: 云盘文件ID（新格式必填）
@@ -577,15 +577,15 @@ class Yun139Uploader:
         # URL 编码文件名
         encoded_filename = quote(file_name, safe='')
 
-        # 优先使用新格式（基于 fileId）
-        if file_id:
+        # App 模式使用新格式（基于 fileId，无需秒传）
+        if self.client.app_mode and file_id:
             strm_url = (
                 f"{self.strm_server}/139createGetDownloadUrl/"
                 f"{file_id}/{encoded_filename}"
             )
             return strm_url
 
-        # 回退到旧格式（基于 SHA256 + 秒传）
+        # PC 模式使用旧格式（基于 SHA256 秒传）
         if content_hash and file_size is not None:
             # 构建 part_info JSON 并 Base64 编码
             if not part_infos:
@@ -602,9 +602,9 @@ class Yun139Uploader:
                 f"?part_info={part_info_encoded}"
             )
 
-            # App 模式下添加标记，使播放器请求走 App 协议栈
-            if self.client.app_mode:
-                strm_url += "&app_mode=true"
+            # PC 模式也传递 app_mode=false 参数
+            if not self.client.app_mode:
+                strm_url += "&app_mode=false"
 
             return strm_url
 
