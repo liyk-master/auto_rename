@@ -255,7 +255,7 @@ async def yun139_download_url(
     fileName: str,
     request: Request,
     part_info: Optional[str] = Query(None),
-    app_mode: Optional[str] = Query("false"),
+    app_mode: Optional[str] = Query(None),
 ):
     """
     Yun139 秒传代理
@@ -282,7 +282,11 @@ async def yun139_download_url(
     parent_id = yun139_cfg.get("parent_id", "/")
 
     decoded_name = unquote(fileName)
-    is_app_mode = app_mode and app_mode.lower() in ("true", "1", "yes")
+    # 查询参数未提供时回退到客户端配置的模式
+    if app_mode is None:
+        is_app_mode = client.app_mode
+    else:
+        is_app_mode = app_mode.lower() in ("true", "1", "yes")
 
     # 解析分片信息
     part_infos = None
@@ -300,7 +304,7 @@ async def yun139_download_url(
         filename=decoded_name,
         parent_id=parent_id,
         part_infos=part_infos,
-        is_app_mode=is_app_mode,
+        app_mode=is_app_mode,
     )
 
     if not upload_data["success"]:
@@ -345,6 +349,51 @@ async def yun139_download_url(
                     logger.warning(f"Yun139 删除任务 {task_id} 未成功: status={task_status}")
         except Exception as e:
             logger.warning(f"删除 Yun139 临时文件失败: {e}")
+
+    _cache_set(key, download_url)
+    return _make_302(download_url)
+
+
+@router.get("/139createGetDownloadUrl/{fileId}/{fileName}")
+async def yun139_create_get_download_url(
+    fileId: str,
+    fileName: str,
+    request: Request,
+):
+    """
+    Yun139 根据 fileId 获取下载直链（302 重定向）
+
+    用于 Media Tracker 秒传后直接获取直链，无需再次秒传。
+
+    URL 格式:
+    /139createGetDownloadUrl/{fileId}/{fileName}
+    """
+    client_ip = _get_client_ip(request)
+    key = _cache_key("139_direct", client_ip, fileId)
+
+    cached = _cache_get(key)
+    if cached:
+        return _make_302(cached)
+
+    state = get_state_manager()
+    handler = state.get_video_handler()
+    if not handler or not handler.yun139_uploader:
+        return JSONResponse(status_code=503, content={"error": "Yun139 客户端不可用"})
+
+    client = handler.yun139_uploader.client
+    decoded_name = unquote(fileName)
+
+    # 直接通过 fileId 获取下载链接
+    try:
+        download_url = client._personal_get_link(fileId)
+    except Exception as e:
+        logger.error(f"获取直链异常: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": f"获取直链失败: {e}"})
+
+    if not download_url:
+        return JSONResponse(status_code=500, content={"error": "获取直链失败"})
+
+    logger.info(f"Yun139 获取直链成功，文件ID: {fileId}, 文件名: {decoded_name}, 直链: {download_url[:100]}...")
 
     _cache_set(key, download_url)
     return _make_302(download_url)

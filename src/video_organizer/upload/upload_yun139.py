@@ -73,6 +73,7 @@ class Yun139Uploader:
         strm_server: str = "",
         strm_output_dir: str = "",
         delete_after: bool = False,
+        app_mode: bool = False,
     ):
         """
         初始化 139 云盘上传器
@@ -87,6 +88,7 @@ class Yun139Uploader:
             strm_server: STRM 服务器地址，如 http://192.0.2.0:5010
             strm_output_dir: STRM 文件输出目录
             delete_after: 上传完成后删除云端文件
+            app_mode: 使用 Android App 协议栈（伪装 App 秒传，绕过 PC 通道限制）
         """
         self.authorization = authorization
         # 处理 parent_id：保留原始值，/ 表示根目录
@@ -112,6 +114,7 @@ class Yun139Uploader:
             cloud_type=self.cloud_type,
             cloud_id=cloud_id,
             custom_part_size=custom_part_size,
+            app_mode=app_mode,
         )
 
         # 令牌刷新后持久化到配置文件
@@ -546,21 +549,24 @@ class Yun139Uploader:
 
     def generate_strm_url(
         self,
-        content_hash: str,
-        file_size: int,
+        file_id: str,
         file_name: str,
-        part_infos: List[Dict[str, Any]]
+        content_hash: Optional[str] = None,
+        file_size: Optional[int] = None,
+        part_infos: Optional[List[Dict[str, Any]]] = None
     ) -> str:
         """
         生成 139 云盘 STRM 播放链接
 
-        格式: http://192.0.2.0:5010/139getDownloadUrl/{sha256}/{size}/{encoded_filename}?part_info={base64_encoded_parts}
+        新格式（推荐）: http://192.0.2.0:5010/139createGetDownloadUrl/{fileId}/{encoded_filename}
+        旧格式（兼容）: http://192.0.2.0:5010/139getDownloadUrl/{sha256}/{size}/{encoded_filename}?part_info={base64}
 
         Args:
-            content_hash: 文件 SHA256 哈希值
-            file_size: 文件大小（字节）
+            file_id: 云盘文件ID（新格式必填）
             file_name: 文件名
-            part_infos: 分片信息列表
+            content_hash: 文件 SHA256 哈希值（旧格式必填）
+            file_size: 文件大小（字节，旧格式必填）
+            part_infos: 分片信息列表（旧格式可选）
 
         Returns:
             STRM 播放链接
@@ -571,19 +577,39 @@ class Yun139Uploader:
         # URL 编码文件名
         encoded_filename = quote(file_name, safe='')
 
-        # 构建 part_info JSON 并 Base64 编码
-        import json
-        part_info_json = json.dumps(part_infos)
-        part_info_encoded = base64.b64encode(part_info_json.encode()).decode()
+        # 优先使用新格式（基于 fileId）
+        if file_id:
+            strm_url = (
+                f"{self.strm_server}/139createGetDownloadUrl/"
+                f"{file_id}/{encoded_filename}"
+            )
+            return strm_url
 
-        # 构建完整 URL
-        strm_url = (
-            f"{self.strm_server}/139getDownloadUrl/"
-            f"{content_hash}/{file_size}/{encoded_filename}"
-            f"?part_info={part_info_encoded}"
-        )
+        # 回退到旧格式（基于 SHA256 + 秒传）
+        if content_hash and file_size is not None:
+            # 构建 part_info JSON 并 Base64 编码
+            if not part_infos:
+                part_infos = [{"partNumber": 1, "partSize": 1000, "parallelHashCtx": {"partOffset": 0}}]
 
-        return strm_url
+            import json
+            part_info_json = json.dumps(part_infos)
+            part_info_encoded = base64.b64encode(part_info_json.encode()).decode()
+
+            # 构建完整 URL
+            strm_url = (
+                f"{self.strm_server}/139getDownloadUrl/"
+                f"{content_hash}/{file_size}/{encoded_filename}"
+                f"?part_info={part_info_encoded}"
+            )
+
+            # App 模式下添加标记，使播放器请求走 App 协议栈
+            if self.client.app_mode:
+                strm_url += "&app_mode=true"
+
+            return strm_url
+
+        # 参数不足，返回空字符串
+        return ""
 
     def generate_strm_file(
         self,
@@ -735,9 +761,10 @@ class Yun139Uploader:
                 if self.strm_server and self.strm_output_dir:
                     print(f"\n📝 生成 STRM 文件...")
                     strm_url = self.generate_strm_url(
+                        file_id=result.get('file_id', ''),
+                        file_name=target_filename,
                         content_hash=result.get('content_hash', ''),
                         file_size=result.get('size', 0),
-                        file_name=target_filename,
                         part_infos=result.get('part_infos', [])
                     )
                     result['strm_url'] = strm_url
@@ -1173,11 +1200,12 @@ class Yun139Uploader:
             print(f"  [断点续传] 恢复上传: fileId={file_id}, 已完成 {len(uploaded_part_numbers)}/{part_count} 分片")
         else:
             # 创建新的上传任务
+            is_app_mode = self.client.app_mode
             data = {
                 "contentHash": content_hash,
                 "contentHashAlgorithm": "SHA256",
                 "contentType": "application/octet-stream",
-                "parallelUpload": False,
+                "parallelUpload": is_app_mode,
                 "partInfos": part_infos[:1],  # 秒传时只需一个分片
                 "size": file_size,
                 "parentFileId": parent_id if parent_id else "",
@@ -1185,8 +1213,11 @@ class Yun139Uploader:
                 "type": "file",
                 "fileRenameMode": "auto_rename",
             }
+            if is_app_mode:
+                data["storyVideoFile"] = False
+                data["userRegion"] = {"cityCode": "854", "provinceCode": "851"}
 
-            result = self.client._request("/hcy/file/create", data, is_personal=True)
+            result = self.client._request("/hcy/file/create", data, is_personal=True, is_app_mode=is_app_mode)
             upload_data = result.get('data', {})
 
             # 打印上传任务信息
