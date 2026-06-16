@@ -943,6 +943,12 @@ class QBittorrentMonitor(DownloaderMonitor):
                     f_full_path = str(
                         Path(os.path.join(target_torrent.get("save_path", ""), f_name))
                     )
+
+                    # 检查文件是否实际存在（区分"未下载"和"未处理"）
+                    if not os.path.exists(f_full_path):
+                        # 文件未下载，跳过检查
+                        continue
+
                     # 检查该文件是否已上传完成
                     norm_f_full = os.path.normpath(f_full_path).lower()
                     if norm_f_full not in self._upload_completed_files:
@@ -1036,6 +1042,12 @@ class QBittorrentMonitor(DownloaderMonitor):
                     f_full_path = str(
                         Path(os.path.join(target_torrent.get("save_path", ""), f_name))
                     )
+
+                    # 检查文件是否实际存在（区分"未下载"和"未处理"）
+                    if not os.path.exists(f_full_path):
+                        # 文件未下载，跳过检查
+                        continue
+
                     if f_full_path not in self._processed_files:
                         norm_f_full = os.path.normpath(f_full_path).lower()
                         is_processed = False

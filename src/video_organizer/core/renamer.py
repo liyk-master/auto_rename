@@ -922,6 +922,16 @@ class VideoRenamer:
             metadata = self._merge_metadata(metadata, regex_meta, locked_fields)
             logger.debug(f"after merge, metadata release_group='{metadata.get('release_group')}', show_name='{metadata.get('show_name')}'")
 
+            # 清洗 show_name：去除被正则错误捕获的季集信息（如 "Wednesday S01E01"）
+            show_name = metadata.get("show_name", "")
+            if show_name:
+                cleaned_show_name = re.sub(
+                    r'\s*S\d+E\d+\s*$', '', show_name, flags=re.IGNORECASE
+                ).strip()
+                if cleaned_show_name != show_name:
+                    logger.debug(f"清洗 show_name: '{show_name}' -> '{cleaned_show_name}'")
+                    metadata["show_name"] = cleaned_show_name
+
             # 1.5 使用 GuessIt 增强识别（如果已启用）
             if self._guessit_enabled and self._guessit_parser:
                 try:
@@ -4482,6 +4492,7 @@ class VideoRenamer:
                 full_output_path = output_dir / full_path
                 full_path = self._handle_file_conflict(full_output_path)
 
+            logger.info(f"generate_new_path output: {full_path}")
             return full_path
         except KeyError as e:
             logger.error(
