@@ -86,12 +86,26 @@ class Yun139:
     MB = 1 << 20
     GB = 1 << 30
     
+    # Android App 伪装配置
+    ANDROID_CONFIG = {
+        "CHANNEL": "10000023",
+        "MODEL": "22041216C",
+        "VERSION": "13.9.0",
+        "OS": "android 14",
+        "RES": "1080X2360",
+    }
+    
+    _VIRTUAL_DEVICE_ID_FILE = os.path.join(
+        os.path.dirname(__file__), "..", "..", "..", "..", "data", "139_device_id"
+    )
+    
     def __init__(
         self,
         authorization: str,
         cloud_type: CloudType = CloudType.PERSONAL_NEW,
         cloud_id: str = "",
-        custom_part_size: int = 0
+        custom_part_size: int = 0,
+        app_mode: bool = False
     ):
         """
         初始化139云盘
@@ -101,13 +115,16 @@ class Yun139:
             cloud_type: 云盘类型
             cloud_id: 家庭云/群组云ID
             custom_part_size: 自定义分片大小，0为自动
+            app_mode: 使用 Android App 协议栈（绕过 PC 通道限制）
         """
         self.authorization = authorization
         self.cloud_type = cloud_type
         self.cloud_id = cloud_id
         self.custom_part_size = custom_part_size
+        self.app_mode = app_mode
         self.account = ""
         self.session = requests.Session()
+        self._virtual_device_id = self._get_virtual_device_id()
         self._parse_authorization()
     
     def _parse_authorization(self):
@@ -125,6 +142,27 @@ class Yun139:
         except Exception as e:
             raise ValueError(f"认证信息解析失败: {e}")
 
+    @staticmethod
+    def _get_virtual_device_id() -> str:
+        """获取/生成虚拟设备 ID（持久化到文件，模拟 JS 的 localStorage）"""
+        device_id_file = Yun139._VIRTUAL_DEVICE_ID_FILE
+        try:
+            if os.path.exists(device_id_file):
+                with open(device_id_file, "r") as f:
+                    device_id = f.read().strip()
+                    if len(device_id) == 32:
+                        return device_id
+        except Exception:
+            pass
+        device_id = ''.join(random.choices('0123456789abcdef', k=32)).upper()
+        try:
+            os.makedirs(os.path.dirname(device_id_file), exist_ok=True)
+            with open(device_id_file, "w") as f:
+                f.write(device_id)
+        except Exception:
+            pass
+        return device_id
+    
     def _ensure_valid_token(self) -> None:
         """请求前检查token，提前10分钟自动刷新"""
         if self._token_expires_at and time.time() > self._token_expires_at - 600:
@@ -134,7 +172,7 @@ class Yun139:
                 _logger.warning(f"Token刷新失败，将继续使用现有token: {e}")
     
     def _encode_uri_component(self, s: str) -> str:
-        """JavaScript encodeURIComponent 的 Python 实现"""
+        """匹配 JS encodeURIComponentFull：除字母数字 _ . - ~ 外全部编码"""
         return quote(s, safe='')
     
     def _calculate_sign(self, body: str, ts: str, rand_str: str) -> str:
@@ -164,11 +202,32 @@ class Yun139:
         final_md5 = hashlib.md5(combined.encode()).hexdigest()
         return final_md5.upper()
     
-    def _get_headers(self, body: str, is_personal: bool = False) -> Dict[str, str]:
-        """获取请求头"""
+    def _get_headers(self, body: str, is_personal: bool = False, is_app_mode: bool = False) -> Dict[str, str]:
+        """获取请求头（JS 双通道引擎 — 同一签名算法，不同协议栈）"""
         rand_str = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         sign = self._calculate_sign(body, ts, rand_str)
+        
+        if is_app_mode:
+            ac = self.ANDROID_CONFIG
+            return {
+                "Accept-Language": "zh-CN",
+                "Authorization": f"Basic {self.authorization}",
+                "Content-Type": "application/json; charset=UTF-8",
+                "mcloud-sign": f"{ts},{rand_str},{sign}",
+                "x-yun-api-version": "v1",
+                "x-yun-app-channel": ac["CHANNEL"],
+                "x-huawei-channelSrc": ac["CHANNEL"],
+                "x-yun-url-type": "1",
+                "x-yun-op-type": "1",
+                "x-yun-sub-op-type": "100",
+                "x-yun-client-info": (
+                    f"1|127.0.0.1|1|{ac['VERSION']}|Xiaomi|{ac['MODEL']}|"
+                    f"{self._virtual_device_id}|02-00-00-00-00-00|{ac['OS']}|"
+                    f"{ac['RES']}|zh||||032|0|"
+                ),
+                "User-Agent": "okhttp/4.12.0",
+            }
         
         svc_type = "2" if self.cloud_type == CloudType.FAMILY else "1"
         chrome_ver = "148.0.0.0"
@@ -213,25 +272,35 @@ class Yun139:
         data: Dict,
         method: str = "POST",
         is_personal: bool = False,
+        is_app_mode: bool = False,
     ) -> Dict:
         """发送请求"""
         self._ensure_valid_token()
         base_url = self.PERSONAL_URL if is_personal else self.BASE_URL
         url = base_url + path
         body = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
-        headers = self._get_headers(body, is_personal)
+        headers = self._get_headers(body, is_personal, is_app_mode)
 
         _logger.debug(">>> 请求: %s %s", method, url)
         _logger.debug(">>> Body: %s", body)
         _logger.debug(">>> mcloud-sign: %s", headers.get("mcloud-sign", ""))
         _logger.debug(">>> Headers: %s", {k: v for k, v in headers.items() if k != "Authorization"})
 
-        response = self.session.request(
-            method=method,
-            url=url,
-            headers=headers,
-            data=body
-        )
+        # App 模式模拟 JS fetch credentials:'omit'，不发送 session cookies
+        if is_app_mode:
+            response = requests.request(
+                method=method,
+                url=url,
+                headers=headers,
+                data=body
+            )
+        else:
+            response = self.session.request(
+                method=method,
+                url=url,
+                headers=headers,
+                data=body
+            )
 
         _logger.debug("<<< 状态码: %d", response.status_code)
         _logger.debug("<<< 响应: %s", response.text[:2000])
@@ -1017,6 +1086,7 @@ class Yun139:
         parent_id: str,
         file_path: str,
         progress_callback=None,
+        app_mode: bool = False,
     ) -> bool:
         """
         上传文件（简化版，仅支持新版个人云）
@@ -1051,20 +1121,27 @@ class Yun139:
         
         # 创建上传任务
         # 秒传时只需传一个分片信息，上传时会获取所有分片的上传地址
+        # 匹配 JS 脚本的 key 顺序（签名依赖 body 字符串顺序）
+        video_ext = ('.mp4', '.mkv', '.avi', '.rmvb', '.mov', '.wmv', '.flv', '.ts', '.m2ts', '.webm')
+        upload_name = file_name + '.jpg' if app_mode and file_name.lower().endswith(video_ext) else file_name
+
         data = {
             "contentHash": content_hash,
             "contentHashAlgorithm": "SHA256",
             "contentType": "application/octet-stream",
             "fileRenameMode": "auto_rename",
-            "name": file_name,
+            "name": upload_name,
             "parentFileId": parent_id,
-            "parallelUpload": False,
-            "partInfos": part_infos[:1],  # 秒传时只需一个分片
+            "partInfos": part_infos[:1],
             "size": file_size,
             "type": "file",
+            "parallelUpload": app_mode,
         }
+        if app_mode:
+            data["storyVideoFile"] = False
+            data["userRegion"] = {"cityCode": "854", "provinceCode": "851"}
 
-        result = self._request("/hcy/file/create", data, is_personal=True)
+        result = self._request("/hcy/file/create", data, is_personal=True, is_app_mode=app_mode)
         upload_data = result['data']
 
         json_str = json.dumps(part_infos[:1], separators=(',', ':'))  # 去掉空格，更紧凑
@@ -1245,6 +1322,7 @@ class Yun139:
         filename: str,
         parent_id: str = "/",
         part_infos: Optional[List[Dict[str, Any]]] = None,
+        app_mode: bool = False,
     ) -> Dict[str, Any]:
         """
         秒传文件（不实际上传，通过 SHA256 匹配已有文件）
@@ -1252,20 +1330,28 @@ class Yun139:
         if not part_infos:
             part_infos = [{"partNumber": 1, "partSize": 1000, "parallelHashCtx": {"partOffset": 0}}]
 
+        # 匹配 JS 脚本的 key 顺序（签名依赖 body 字符串顺序）
+        # App 模式下视频文件追加 .jpg 伪装（JS 脚本行为）
+        video_ext = ('.mp4', '.mkv', '.avi', '.rmvb', '.mov', '.wmv', '.flv', '.ts', '.m2ts', '.webm')
+        upload_name = filename + '.jpg' if app_mode and filename.lower().endswith(video_ext) else filename
+
         data = {
             "contentHash": sha256,
             "contentHashAlgorithm": "SHA256",
             "contentType": "application/octet-stream",
             "fileRenameMode": "auto_rename",
-            "name": filename,
+            "name": upload_name,
             "parentFileId": parent_id,
-            "parallelUpload": False,
             "partInfos": part_infos,
             "size": size,
             "type": "file",
+            "parallelUpload": app_mode,
         }
+        if app_mode:
+            data["storyVideoFile"] = False
+            data["userRegion"] = {"cityCode": "854", "provinceCode": "851"}
 
-        result = self._request("/hcy/file/create", data, is_personal=True)
+        result = self._request("/hcy/file/create", data, is_personal=True, is_app_mode=app_mode)
         upload_data = result.get("data", {})
 
         return {

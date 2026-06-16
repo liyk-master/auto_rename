@@ -61,6 +61,7 @@ DEFAULT_CONFIG = {
         "strm_server": "",  # STRM 服务器地址，如 http://192.0.2.0:5010
         "strm_output_dir": "",  # STRM 文件输出目录
         "delete_after": False,  # 上传完成后删除云端文件
+        "app_mode": False,  # 使用 Android App 协议栈伪装上传（绕过 PC 通道限制）
     },
     "naming": {
         "tv_show_format": "{show_name}/Season {season:02d}/{show_name} {season_episode} {quality_tags}",
@@ -120,6 +121,14 @@ DEFAULT_CONFIG = {
         "default_user_id": 1,
         "default_tv_library": "电视剧",
         "default_movie_library": "电影",
+    },
+    "media_tracker": {
+        "enabled": False,
+        "host": "localhost",
+        "port": 8082,
+        "token": "",
+        "reconnect_delay": 5,
+        "app_mode": True,
     },
     "auth": {
         "enabled": False,

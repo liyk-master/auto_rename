@@ -210,6 +210,7 @@ class VideoFileHandler:
         raw_yun139_strm_output = self.yun139_config.get("strm_output_dir", "")
         self.yun139_strm_output_dir = str(raw_yun139_strm_output).split("#")[0].split(";")[0].strip()
         self.yun139_delete_after = self.yun139_config.get("delete_after", False)
+        self.yun139_app_mode = self.yun139_config.get("app_mode", False)
 
         # 初始化 Telegram 配置
         self.telegram_config = telegram_config or {}
@@ -282,6 +283,7 @@ class VideoFileHandler:
                     strm_server=self.yun139_strm_server,
                     strm_output_dir=self.yun139_strm_output_dir,
                     delete_after=self.yun139_delete_after,
+                    app_mode=self.yun139_app_mode,
                 )
                 # 如果 yun139 配置了 max_workers，则覆盖全局设置
                 if self.yun139_max_workers > 0:

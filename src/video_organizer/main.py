@@ -585,6 +585,31 @@ def main() -> None:
             state.set_config(config, Path(config_path) if config_path else None)
             state.set_system_running(False)
 
+            # 在 web-only 模式下也初始化云盘客户端（供 strm 端点使用）
+            yun139_cfg = config.get("yun139", {})
+            raw_auth = yun139_cfg.get("authorization", "")
+            yun139_auth = str(raw_auth).split("#")[0].split(";")[0].strip()
+            if yun139_auth:
+                try:
+                    from .upload.upload_yun139 import Yun139Uploader
+                    uploader = Yun139Uploader(
+                        authorization=yun139_auth,
+                        cloud_type=yun139_cfg.get("cloud_type", "personal_new"),
+                        cloud_id=yun139_cfg.get("cloud_id", ""),
+                        parent_id=yun139_cfg.get("parent_id", "/"),
+                        custom_part_size=int(yun139_cfg.get("custom_part_size", 0)),
+                        app_mode=yun139_cfg.get("app_mode", False),
+                    )
+                    # 创建一个轻量 handler 容器，仅暴露 yun139_uploader
+                    class _MinimalHandler:
+                        pass
+                    handler = _MinimalHandler()
+                    handler.yun139_uploader = uploader
+                    state.set_video_handler(handler)
+                    cli_output.print_success("139云盘客户端已初始化")
+                except Exception as e:
+                    cli_output.print_warning(f"139云盘客户端初始化失败: {e}")
+
             # 启动 Web 服务（主线程运行）
             try:
                 from .web.app import create_app
@@ -628,6 +653,21 @@ def main() -> None:
                 downloader_monitors=downloader_monitors,
                 reload=args.web_reload,
             )
+
+        # 启动 Media Tracker 监听客户端
+        if config.get("media_tracker", {}).get("enabled", False):
+            try:
+                video_handler = getattr(monitor, "event_handler", None)
+                if video_handler and video_handler.renamer and video_handler.yun139_uploader:
+                    from .core.media_tracker_client import MediaTrackerClient
+                    mt_client = MediaTrackerClient(
+                        config=config.get("media_tracker", {}),
+                        renamer=video_handler.renamer,
+                        yun139_uploader=video_handler.yun139_uploader,
+                    )
+                    mt_client.start()
+            except Exception as e:
+                logger.warning(f"初始化 Media Tracker 客户端失败: {e}")
 
         try:
             # 启动监控

@@ -100,3 +100,4 @@ src/video_organizer/upload/data
 src/video_organizer/data/
 src/video_organizer/cas/*
 cas/*
+strm/*
