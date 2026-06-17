@@ -38,6 +38,10 @@ class MediaTrackerClient:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
+        # 异步队列处理：避免阻塞 WebSocket 事件循环
+        self._processing_queue: Optional[asyncio.Queue] = None
+        self._max_concurrent = int(config.get("max_concurrent", 3))  # 最大并发处理数
+
     def start(self):
         if not self.enabled:
             logger.info("Media Tracker \u5ba2\u6237\u7aef\u672a\u542f\u7528")
@@ -63,6 +67,29 @@ class MediaTrackerClient:
         asyncio.run(self._ws_loop())
 
     async def _ws_loop(self):
+        """WebSocket \u4e3b\u5faa\u73af + \u542f\u52a8\u5e76\u53d1\u5904\u7406\u961f\u5217"""
+        # \u521b\u5efa\u5904\u7406\u961f\u5217
+        self._processing_queue = asyncio.Queue()
+
+        # \u542f\u52a8\u5e76\u53d1\u5de5\u4f5c\u534f\u7a0b
+        workers = [
+            asyncio.create_task(self._worker(i))
+            for i in range(self._max_concurrent)
+        ]
+
+        # WebSocket \u8fde\u63a5\u5faa\u73af
+        ws_task = asyncio.create_task(self._ws_receive_loop())
+
+        try:
+            await ws_task
+        finally:
+            # \u6e05\u7406\uff1a\u901a\u77e5\u6240\u6709 worker \u505c\u6b62
+            for _ in range(self._max_concurrent):
+                await self._processing_queue.put(None)
+            await asyncio.gather(*workers, return_exceptions=True)
+
+    async def _ws_receive_loop(self):
+        """WebSocket \u63a5\u6536\u5faa\u73af"""
         while not self._stop_event.is_set():
             try:
                 async with websockets.connect(self.ws_url) as ws:
@@ -88,13 +115,37 @@ class MediaTrackerClient:
                 logger.error("WS \u8fde\u63a5\u5f02\u5e38: %s", e, exc_info=True)
                 await asyncio.sleep(self.reconnect_delay)
 
+    async def _worker(self, worker_id: int):
+        """\u5e76\u53d1\u5904\u7406 worker\uff0c\u907f\u514d\u963b\u585e WebSocket \u4e8b\u4ef6\u5faa\u73af"""
+        logger.info(f"Media Tracker worker-{worker_id} \u5df2\u542f\u52a8")
+        while True:
+            payload = await self._processing_queue.get()
+            if payload is None:  # \u505c\u6b62\u4fe1\u53f7
+                logger.info(f"Media Tracker worker-{worker_id} \u6536\u5230\u505c\u6b62\u4fe1\u53f7")
+                break
+            try:
+                # \u5728\u7ebf\u7a0b\u6c60\u4e2d\u6267\u884c\u540c\u6b65\u5904\u7406\u903b\u8f91\uff08\u907f\u514d\u963b\u585e asyncio\uff09
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, self._handle_new_media_sync, payload)
+            except Exception as e:
+                logger.error(f"Worker-{worker_id} \u5904\u7406\u6d88\u606f\u5931\u8d25: %s", e, exc_info=True)
+            finally:
+                self._processing_queue.task_done()
+        logger.info(f"Media Tracker worker-{worker_id} \u5df2\u9000\u51fa")
+
     async def _handle_message(self, data: Dict):
         msg_type = data.get("type")
         payload = data.get("payload", data)
         if msg_type == "new_media":
-            self._handle_new_media(payload)
+            # \u7acb\u5373\u653e\u5165\u961f\u5217\uff0c\u4e0d\u963b\u585e WebSocket \u63a5\u6536\u5faa\u73af
+            queue_size = self._processing_queue.qsize()
+            if queue_size > 50:
+                logger.warning(f"\u961f\u5217\u79ef\u538b\u8fc7\u591a ({queue_size} \u6761)\uff0c\u8df3\u8fc7\u6d88\u606f: {payload.get('file_name', '')[:50]}")
+            else:
+                await self._processing_queue.put(payload)
+                logger.debug(f"\u6d88\u606f\u5df2\u5165\u961f\uff0c\u5f53\u524d\u961f\u5217\u957f\u5ea6: {queue_size + 1}")
 
-    def _handle_new_media(self, payload: Dict):
+    def _handle_new_media_sync(self, payload: Dict):
         file_name = payload.get("file_name", "")
         sha256 = payload.get("sha256", "")
         file_size = payload.get("file_size", 0)
