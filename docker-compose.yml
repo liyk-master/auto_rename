@@ -4,28 +4,79 @@ services:
   video-organizer:
     build:
       context: .
-      dockerfile: Dockerfile.run
+      dockerfile: Dockerfile
+    image: video-organizer:latest
     container_name: video-organizer
     restart: unless-stopped
+    ports:
+      - "8080:8080"
     volumes:
-      # 挂载视频目录 - 修改为你实际的路径
-      - /path/to/your/videos:/app/videos
-      # 挂载配置文件（可选）
-      - ./config.ini:/app/config.ini:ro
+      # 配置文件（首次运行会自动生成模板）
+      - ./data/config.ini:/app/config.ini
+      # 数据目录（秒传信息、数据库等）
+      - ./data:/app/data
+      # 日志目录
+      - ./logs:/app/logs
+      # STRM 文件输出目录
+      - ./strm:/app/strm
+      # 监控目录 - 修改为你的下载目录
+      - /path/to/downloads:/downloads
+      # 输出目录 - 修改为你的媒体库目录
+      - /path/to/media:/media
     environment:
       - TZ=Asia/Shanghai
-    command: python run_organizer.py
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
-  # 开发模式 - 带有代码热重载
+  # 仅 Web 模式（不启动文件监控）
+  video-organizer-web-only:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: video-organizer:latest
+    container_name: video-organizer-web
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data/config.ini:/app/config.ini
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./strm:/app/strm
+    environment:
+      - TZ=Asia/Shanghai
+      - PYTHONUNBUFFERED=1
+    command: ["python", "run_organizer.py", "--web-only", "--web-host", "0.0.0.0", "--web-port", "8080"]
+    profiles:
+      - web-only
+
+  # 开发模式（代码热重载）
   video-organizer-dev:
     build:
       context: .
-      dockerfile: Dockerfile.run
+      dockerfile: Dockerfile
+    image: video-organizer:latest
     container_name: video-organizer-dev
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
     volumes:
-      - ./src:/app/src
-      - ./config.ini:/app/config.ini:ro
+      - ./src:/app/src:ro
+      - ./data/config.ini:/app/config.ini
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./strm:/app/strm
+      - /path/to/downloads:/downloads
+      - /path/to/media:/media
     environment:
       - TZ=Asia/Shanghai
-      - PYTHONPATH=/app
-    command: python -c "from src.video_organizer.main import main; main()"
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=DEBUG
+    command: ["python", "run_organizer.py", "--web", "--web-host", "0.0.0.0", "--web-port", "8080"]
+    profiles:
+      - dev

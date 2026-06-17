@@ -28,6 +28,27 @@
 
 ## 快速开始
 
+### 使用 Docker（推荐）
+
+```bash
+# 克隆仓库
+git clone https://github.com/liyk-master/auto_rename.git
+cd auto_rename
+
+# 创建数据目录
+mkdir -p data logs strm
+
+# 编辑 docker-compose.yml 修改挂载路径后启动
+docker compose up -d
+
+# 查看日志获取管理员密码
+docker compose logs | grep "管理员密码"
+
+# 访问 Web 界面：http://localhost:8080
+```
+
+完整 Docker 部署文档：[DOCKER.md](DOCKER.md) | [快速开始](DOCKER_QUICKSTART.md)
+
 ### 下载可执行文件
 
 从 [GitHub Releases](https://github.com/liyk-master/auto_rename/releases) 下载对应平台的单文件可执行程序，解压即可运行。
@@ -248,6 +269,8 @@ python package.py
 ```bash
 docker compose up -d
 ```
+
+详细文档：[DOCKER.md](DOCKER.md)
 
 ---
 
