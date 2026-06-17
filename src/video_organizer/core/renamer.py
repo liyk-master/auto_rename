@@ -1004,10 +1004,11 @@ class VideoRenamer:
             )
 
             # 如果 GuessIt 已启用且识别到有效剧名，跳过父目录补全
+            # 但如果剧名是季集信息（如 S01E02...），仍然需要父目录补全
             if self._guessit_enabled and self._guessit_parser and metadata.get("show_name"):
                 # 检查 GuessIt 识别的剧名是否合理
                 guessit_show_name = metadata.get("show_name", "")
-                if guessit_show_name and not guessit_show_name.isdigit():
+                if guessit_show_name and not guessit_show_name.isdigit() and not is_season_episode_only:
                     should_lookup_parent = False
                     logger.debug(f"GuessIt 已正确识别剧名 '{guessit_show_name}'，跳过父目录补全")
 
@@ -1273,10 +1274,12 @@ class VideoRenamer:
     def _extract_with_regex(self, filename: str) -> Dict:
         """Extract metadata using regular expressions."""
         logger.debug(f"_extract_with_regex: called with filename={filename}")
-        # 预处理：将中文方括号替换为标准方括号，+号替换为空格，冒号替换为中文冒号
+        # 预处理：将中文标点符号替换为标准标点符号
         base_name = (
             filename.replace("【", "[")
             .replace("】", "]")
+            .replace("（", "(")
+            .replace("）", ")")
             .replace("+", " ")
             .replace("：", ":")
         )
@@ -1856,7 +1859,7 @@ class VideoRenamer:
                     show_name = re.sub(r"\.", " ", show_name).title().strip()
 
         # 专门处理EPxx格式：如果有episode信息，直接从原始文件名提取show_name
-        if metadata.get("episode"):
+        if metadata.get("episode") and re.search(r'(?i)[.\s]EP\d+[.\s]', metadata.get("original_filename", "")):
             episode_str = metadata["episode"]
             filename_parts = metadata["original_filename"].split(".")
             new_show_name = []
