@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import threading
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import websockets
@@ -164,21 +165,28 @@ class MediaTrackerClient:
             if tmdb_id and media_type:
                 logger.info("\u4f7f\u7528\u5916\u90e8 tmdb_id=%s \u8df3\u8fc7 TMDB \u641c\u7d22\u6b65\u9aa4", tmdb_id)
 
-                # 1. \u4ece title \u4e2d\u63d0\u53d6\u5b63\u96c6\u4fe1\u606f\uff08\u7b80\u5355\u6b63\u5219\uff09
+                # 1. \u4ece title/file_name \u4e2d\u63d0\u53d6\u5b63\u96c6\u4fe1\u606f\uff08\u7b80\u5355\u6b63\u5219\uff09
                 season = None
                 episode = None
                 season_episode_match = re.search(r'S(\d+)E(\d+)', title, re.IGNORECASE)
+                if not season_episode_match:
+                    season_episode_match = re.search(r'S(\d+)E(\d+)', file_name, re.IGNORECASE)
                 if season_episode_match:
                     season = int(season_episode_match.group(1))
                     episode = int(season_episode_match.group(2))
-                    logger.info("\u4ece title \u63d0\u53d6\u5b63\u96c6: S%02dE%02d", season, episode)
+                    logger.info("\u63d0\u53d6\u5b63\u96c6: S%02dE%02d", season, episode)
 
-                # 2. \u6784\u9020\u57fa\u7840 metadata\uff0c\u5305\u542b\u5916\u90e8\u63d0\u4f9b\u7684 tmdb_id
+                # 2. \u4ece\u6587\u4ef6\u540d\u63d0\u53d6\u54c1\u8d28\u6807\u7b7e\uff08quality_tags\uff09
+                name_stem = Path(file_name).stem
+                quality_tags = self.renamer._extract_keywords(name_stem)
+
+                # 3. \u6784\u9020\u57fa\u7840 metadata\uff0c\u5305\u542b\u5916\u90e8\u63d0\u4f9b\u7684 tmdb_id \u548c\u54c1\u8d28\u6807\u7b7e
                 metadata = {
                     "tmdb_id": tmdb_id,
                     "media_type": media_type,
                     "season": season,
                     "episode": episode,
+                    "quality_tags": quality_tags,
                     "original_filename": file_name,
                 }
 

@@ -4,6 +4,7 @@
 提供手动触发文件处理的 API。
 """
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import List, Optional
@@ -16,6 +17,8 @@ from ..services.state import get_state_manager
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_validate_semaphore = asyncio.Semaphore(5)
 
 
 class ProcessFileRequest(BaseModel):
@@ -258,199 +261,212 @@ async def process_batch_files(file_paths: List[str]):
         raise HTTPException(status_code=500, detail=f"批量处理失败: {e}")
 
 
+def _do_preview(raw_path: str, config: dict) -> PreviewResponse:
+    file_path = Path(raw_path)
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"文件不存在: {raw_path}")
+
+    original_name = file_path.stem if file_path.suffix else file_path.name
+    tmdb_config = config.get("tmdb", {})
+
+    from ...core.renamer import VideoRenamer
+    from ...core.tmdb_client import TMDBClient
+
+    tmdb_client = None
+    if tmdb_config.get("api_key"):
+        tmdb_client = TMDBClient(
+            api_key=tmdb_config.get("api_key", ""),
+            retry_count=tmdb_config.get("retry_count", 3),
+            timeout=tmdb_config.get("timeout", 30),
+            base_url=tmdb_config.get("base_url"),
+        )
+
+    renamer = VideoRenamer(
+        tmdb_api_key=tmdb_config.get("api_key", ""),
+        naming_rules=config.get("naming_rules", config.get("naming", {})),
+        config=config,
+    )
+    if tmdb_client:
+        renamer.tmdb_client = tmdb_client
+
+    metadata = renamer.extract_metadata(raw_path)
+
+    title = metadata.get("show_name") or metadata.get("title") or None
+    raw_year = metadata.get("year")
+    year = int(raw_year) if raw_year and str(raw_year).strip().isdigit() else None
+    season = int(metadata["season"]) if metadata.get("season") else None
+    episode = int(metadata["episode"]) if metadata.get("episode") else None
+    episode_title = metadata.get("episode_title") or None
+    media_type = metadata.get("media_type")
+
+    tmdb_matched = bool(metadata.get("tmdb_id"))
+    suggested_name = None
+
+    try:
+        new_path = renamer.generate_new_path(metadata, original_path=file_path)
+        if new_path:
+            suggested_name = str(new_path.name)
+    except Exception:
+        pass
+
+    return PreviewResponse(
+        success=True,
+        file_path=raw_path,
+        original_name=original_name,
+        suggested_name=suggested_name,
+        media_type=media_type,
+        metadata={
+            "title": title,
+            "season": season,
+            "episode": episode,
+            "year": year,
+            "episode_title": episode_title,
+            "tmdb_matched": tmdb_matched,
+        },
+    )
+
+
 @router.post("/preview", response_model=PreviewResponse)
 async def preview_rename(request: PreviewRequest):
     """
     预览重命名结果
 
     与 /validate 共用相同逻辑，返回预期的重命名结果（不实际执行）。
-    
+    通过 run_in_executor 在线程池执行同步阻塞的 TMDB 请求，避免阻塞事件循环。
+
     Args:
         request: 包含 file_path 的请求
     """
-    try:
-        raw_path = request.file_path.strip().strip('"').strip("'")
-        file_path = Path(raw_path)
+    raw_path = request.file_path.strip().strip('"').strip("'")
+    state = get_state_manager()
+    config = state.get_config()
 
-        if not file_path.exists():
-            raise HTTPException(status_code=404, detail=f"文件不存在: {raw_path}")
-
-        original_name = file_path.stem if file_path.suffix else file_path.name
-
-        state = get_state_manager()
-        config = state.get_config()
-        tmdb_config = config.get("tmdb", {})
-
-        from ...core.renamer import VideoRenamer
-        from ...core.tmdb_client import TMDBClient
-
-        tmdb_client = None
-        if tmdb_config.get("api_key"):
-            tmdb_client = TMDBClient(
-                api_key=tmdb_config.get("api_key", ""),
-                retry_count=tmdb_config.get("retry_count", 3),
-                timeout=tmdb_config.get("timeout", 30),
-                base_url=tmdb_config.get("base_url"),
+    async with _validate_semaphore:
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, _do_preview, raw_path, config)
+            return result
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"预览重命名失败: {e}")
+            detail = str(e) if not isinstance(e, HTTPException) else e.detail
+            return PreviewResponse(
+                success=False,
+                file_path=request.file_path,
+                original_name=Path(request.file_path).stem,
+                error=detail,
             )
 
-        renamer = VideoRenamer(
-            tmdb_api_key=tmdb_config.get("api_key", ""),
-            naming_rules=config.get("naming_rules", config.get("naming", {})),
-            config=config,
-        )
-        if tmdb_client:
-            renamer.tmdb_client = tmdb_client
 
-        metadata = renamer.extract_metadata(raw_path)
+def _do_validate(raw_path: str, config: dict) -> ValidateResponse:
+    file_path = Path(raw_path)
 
-        title = metadata.get("show_name") or metadata.get("title") or None
-        raw_year = metadata.get("year")
-        year = int(raw_year) if raw_year and str(raw_year).strip().isdigit() else None
-        season = int(metadata["season"]) if metadata.get("season") else None
-        episode = int(metadata["episode"]) if metadata.get("episode") else None
-        episode_title = metadata.get("episode_title") or None
-        media_type = metadata.get("media_type")
+    original_name = file_path.stem if file_path.suffix else file_path.name
+    parse_input = raw_path
+    tmdb_config = config.get("tmdb", {})
 
-        tmdb_matched = bool(metadata.get("tmdb_id"))
-        suggested_name = None
+    from ...core.renamer import VideoRenamer
+    from ...core.tmdb_client import TMDBClient
 
-        try:
-            new_path = renamer.generate_new_path(metadata, original_path=file_path)
-            if new_path:
-                suggested_name = str(new_path.name)
-        except Exception:
-            pass
-
-        return PreviewResponse(
-            success=True,
-            file_path=raw_path,
-            original_name=original_name,
-            suggested_name=suggested_name,
-            media_type=media_type,
-            metadata={
-                "title": title,
-                "season": season,
-                "episode": episode,
-                "year": year,
-                "episode_title": episode_title,
-                "tmdb_matched": tmdb_matched,
-            },
+    tmdb_client = None
+    if tmdb_config.get("api_key"):
+        tmdb_client = TMDBClient(
+            api_key=tmdb_config.get("api_key", ""),
+            retry_count=tmdb_config.get("retry_count", 3),
+            timeout=tmdb_config.get("timeout", 30),
+            base_url=tmdb_config.get("base_url"),
         )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"预览重命名失败: {e}")
-        detail = str(e) if not isinstance(e, HTTPException) else e.detail
-        return PreviewResponse(
-            success=False,
-            file_path=request.file_path,
-            original_name=Path(request.file_path).stem,
-            error=detail,
+    renamer = VideoRenamer(
+        tmdb_api_key=tmdb_config.get("api_key", ""),
+        naming_rules=config.get("naming_rules", config.get("naming", {})),
+        config=config,
+    )
+    if tmdb_client:
+        renamer.tmdb_client = tmdb_client
+
+    metadata = renamer.extract_metadata(parse_input)
+
+    title = metadata.get("show_name") or metadata.get("title") or None
+    raw_year = metadata.get("year")
+    year = int(raw_year) if raw_year and str(raw_year).strip().isdigit() else None
+    raw_season = metadata.get("season")
+    season = int(raw_season) if raw_season else None
+    raw_episode = metadata.get("episode")
+    episode = int(raw_episode) if raw_episode else None
+    episode_title = metadata.get("episode_title") or None
+    media_type = metadata.get("media_type")
+    quality_tags = metadata.get("quality_tags") or None
+    release_group = metadata.get("release_group") or None
+
+    tmdb_matched = False
+    tmdb_info = None
+    confidence = None
+    suggested_name = None
+    suggested_path = None
+
+    if metadata.get("tmdb_id"):
+        tmdb_matched = True
+        tmdb_info = {
+            "id": metadata.get("tmdb_id"),
+            "title": title or metadata.get("show_name"),
+            "overview": metadata.get("overview"),
+        }
+
+    try:
+        new_path = renamer.generate_new_path(
+            metadata,
+            original_path=file_path,
         )
+        if new_path:
+            suggested_path = str(new_path)
+            suggested_name = str(new_path.name)
+    except Exception:
+        pass
+
+    return ValidateResponse(
+        success=True,
+        file_path=raw_path,
+        original_name=original_name,
+        title=title,
+        year=year,
+        season=season,
+        episode=episode,
+        episode_title=episode_title,
+        media_type=media_type,
+        tmdb_matched=tmdb_matched,
+        tmdb_info=tmdb_info,
+        suggested_name=suggested_name,
+        suggested_path=suggested_path,
+        confidence=confidence,
+        quality_tags=quality_tags,
+        release_group=release_group,
+    )
 
 
 @router.post("/validate", response_model=ValidateResponse)
 async def validate_scrape(request: ValidateRequest):
     """
     验证命名是否能被刮削识别（文件可不存
-    在，仅测试命名解析和 TMDB 匹配）
+    在，仅测试命名解析和 TMDB 匹配）。
+    通过 run_in_executor 在线程池执行同步阻塞的 TMDB 请求，避免阻塞事件循环。
     """
-    try:
-        raw_path = request.file_path.strip().strip('"').strip("'")
-        file_path = Path(raw_path)
-        file_exists = file_path.exists()
+    raw_path = request.file_path.strip().strip('"').strip("'")
+    state = get_state_manager()
+    config = state.get_config()
 
-        original_name = file_path.stem if file_path.suffix else file_path.name
-        parse_input = raw_path
-
-        state = get_state_manager()
-        config = state.get_config()
-        tmdb_config = config.get("tmdb", {})
-
-        from ...core.renamer import VideoRenamer
-        from ...core.tmdb_client import TMDBClient
-
-        tmdb_client = None
-        if tmdb_config.get("api_key"):
-            tmdb_client = TMDBClient(
-                api_key=tmdb_config.get("api_key", ""),
-                retry_count=tmdb_config.get("retry_count", 3),
-                timeout=tmdb_config.get("timeout", 30),
-                base_url=tmdb_config.get("base_url"),
-            )
-
-        renamer = VideoRenamer(
-            tmdb_api_key=tmdb_config.get("api_key", ""),
-            naming_rules=config.get("naming_rules", config.get("naming", {})),
-            config=config,
-        )
-        if tmdb_client:
-            renamer.tmdb_client = tmdb_client
-
-        metadata = renamer.extract_metadata(parse_input)
-
-        title = metadata.get("show_name") or metadata.get("title") or None
-        raw_year = metadata.get("year")
-        year = int(raw_year) if raw_year and str(raw_year).strip().isdigit() else None
-        raw_season = metadata.get("season")
-        season = int(raw_season) if raw_season else None
-        raw_episode = metadata.get("episode")
-        episode = int(raw_episode) if raw_episode else None
-        episode_title = metadata.get("episode_title") or None
-        media_type = metadata.get("media_type")
-        quality_tags = metadata.get("quality_tags") or None
-        release_group = metadata.get("release_group") or None
-
-        tmdb_matched = False
-        tmdb_info = None
-        confidence = None
-        suggested_name = None
-        suggested_path = None
-
-        if metadata.get("tmdb_id"):
-            tmdb_matched = True
-            tmdb_info = {
-                "id": metadata.get("tmdb_id"),
-                "title": title or metadata.get("show_name"),
-                "overview": metadata.get("overview"),
-            }
-
+    async with _validate_semaphore:
         try:
-            new_path = renamer.generate_new_path(
-                metadata,
-                original_path=file_path,
-            )
-            if new_path:
-                suggested_path = str(new_path)
-                suggested_name = str(new_path.name)
-        except Exception:
-            pass
-
-        return ValidateResponse(
-            success=True,
-            file_path=request.file_path,
-            original_name=original_name,
-            title=title,
-            year=year,
-            season=season,
-            episode=episode,
-            episode_title=episode_title,
-            media_type=media_type,
-            tmdb_matched=tmdb_matched,
-            tmdb_info=tmdb_info,
-            suggested_name=suggested_name,
-            suggested_path=suggested_path,
-            confidence=confidence,
-            quality_tags=quality_tags,
-            release_group=release_group,
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"验证刮削失败: {e}")
-        raise HTTPException(status_code=500, detail=f"验证刮削失败: {e}")
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, _do_validate, raw_path, config)
+            return result
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"验证刮削失败: {e}")
+            raise HTTPException(status_code=500, detail=f"验证刮削失败: {e}")
 
 
 @router.get("/browse")

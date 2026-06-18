@@ -101,3 +101,4 @@ src/video_organizer/data/
 src/video_organizer/cas/*
 cas/*
 strm/*
+.deveco/*
