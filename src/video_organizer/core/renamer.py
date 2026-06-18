@@ -1314,7 +1314,7 @@ class VideoRenamer:
         metadata["quality_tags"] = self._extract_keywords(name_only)
 
         # 提取tmdbid信息
-        tmdbid_pattern = r"\{tmdbid[=-](\d+)\}"
+        tmdbid_pattern = r"[\[\{]tmdbid[=-](\d+)[\]\}]"
         tmdbid_match = re.search(tmdbid_pattern, name_only, re.IGNORECASE)
         if tmdbid_match:
             metadata["tmdb_id"] = tmdbid_match.group(1)
@@ -2294,7 +2294,9 @@ class VideoRenamer:
                 # show_name 不包含空格和中文，或者是纯英文/纯下划线格式
                 # 先检查 show_name 是否已经是有效的值
                 # 如果是有效的剧名（非空、不是纯数字、长度合理），直接保存
-                if show_name and len(show_name) > 1 and not show_name.isdigit():
+                if show_name and len(show_name) > 1 and (not show_name.isdigit() or (
+                    show_name.isdigit() and metadata.get("year") and show_name != metadata.get("year")
+                )):
                     # 清理下划线和多余空格
                     show_name = show_name.replace("_", " ").strip()
                     show_name = re.sub(r"\s+", " ", show_name)
