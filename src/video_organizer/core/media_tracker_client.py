@@ -161,64 +161,77 @@ class MediaTrackerClient:
         logger.info("\u5904\u7406 new_media: %s (%s bytes)", file_name, file_size)
 
         try:
-            # \u4f18\u5316\u8def\u5f84\uff1a\u5982\u679c\u6709 tmdb_id\uff0c\u8df3\u8fc7 TMDB \u641c\u7d22\u6b65\u9aa4
-            if tmdb_id and media_type:
-                logger.info("\u4f7f\u7528\u5916\u90e8 tmdb_id=%s \u8df3\u8fc7 TMDB \u641c\u7d22\u6b65\u9aa4", tmdb_id)
+            # ── 如果外部提供了 suggested_path，跳过 TMDB 处理 ──
+            suggested_path = payload.get("suggested_path", "")
+            if suggested_path:
+                suggested_path = suggested_path.replace("/", "\\")
+                parts = [p for p in suggested_path.split("\\") if p]
+                if len(parts) < 1:
+                    logger.warning("suggested_path 格式无效: %s", suggested_path)
+                    return
+                renamed_filename = parts[-1]
+                folder_parts = [p for p in parts[:-1] if p and p.lower() != "media"]
+                logger.info("使用 suggested_path 跳过 TMDB: %s", suggested_path)
+            else:
+                # 原有的 TMDB 处理逻辑
+                # 优化路径：如果有 tmdb_id，跳过 TMDB 搜索步骤
+                if tmdb_id and media_type:
+                    logger.info("使用外部 tmdb_id=%s 跳过 TMDB 搜索步骤", tmdb_id)
 
-                # 1. \u4ece title/file_name \u4e2d\u63d0\u53d6\u5b63\u96c6\u4fe1\u606f\uff08\u7b80\u5355\u6b63\u5219\uff09
-                season = None
-                episode = None
-                season_episode_match = re.search(r'S(\d+)E(\d+)', title, re.IGNORECASE)
-                if not season_episode_match:
-                    season_episode_match = re.search(r'S(\d+)E(\d+)', file_name, re.IGNORECASE)
-                if season_episode_match:
-                    season = int(season_episode_match.group(1))
-                    episode = int(season_episode_match.group(2))
-                    logger.info("\u63d0\u53d6\u5b63\u96c6: S%02dE%02d", season, episode)
+                    # 1. 从 title/file_name 中提取季集信息（简单正则）
+                    season = None
+                    episode = None
+                    season_episode_match = re.search(r'S(\d+)E(\d+)', title, re.IGNORECASE)
+                    if not season_episode_match:
+                        season_episode_match = re.search(r'S(\d+)E(\d+)', file_name, re.IGNORECASE)
+                    if season_episode_match:
+                        season = int(season_episode_match.group(1))
+                        episode = int(season_episode_match.group(2))
+                        logger.info("提取季集: S%02dE%02d", season, episode)
 
-                # 2. \u4ece\u6587\u4ef6\u540d\u63d0\u53d6\u54c1\u8d28\u6807\u7b7e\uff08quality_tags\uff09
-                name_stem = Path(file_name).stem
-                quality_tags = self.renamer._extract_keywords(name_stem)
+                    # 2. 从文件名提取品质标签（quality_tags）
+                    name_stem = Path(file_name).stem
+                    quality_tags = self.renamer._extract_keywords(name_stem)
 
-                # 3. \u6784\u9020\u57fa\u7840 metadata\uff0c\u5305\u542b\u5916\u90e8\u63d0\u4f9b\u7684 tmdb_id \u548c\u54c1\u8d28\u6807\u7b7e
-                metadata = {
-                    "tmdb_id": tmdb_id,
-                    "media_type": media_type,
-                    "season": season,
-                    "episode": episode,
-                    "quality_tags": quality_tags,
-                    "original_filename": file_name,
-                }
+                    # 3. 构造基础 metadata，包含外部提供的 tmdb_id 和品质标签
+                    metadata = {
+                        "tmdb_id": tmdb_id,
+                        "media_type": media_type,
+                        "season": season,
+                        "episode": episode,
+                        "quality_tags": quality_tags,
+                        "original_filename": file_name,
+                    }
 
-                # 3. \u76f4\u63a5\u7528 tmdb_id \u8c03\u7528 TMDB API \u83b7\u53d6\u8be6\u7ec6\u4fe1\u606f
-                #    _enrich_with_tmdb \u5185\u90e8\u5df2\u652f\u6301\uff1a\u5f53 metadata["tmdb_id"] \u5b58\u5728\u65f6\uff0c
-                #    \u8df3\u8fc7\u641c\u7d22\uff0c\u76f4\u63a5\u8c03\u7528 get_tv_details() \u6216 get_movie_details()
-                metadata = self.renamer._enrich_with_tmdb(metadata)
+                    # 3. 直接用 tmdb_id 调用 TMDB API 获取详细信息
+                    #    _enrich_with_tmdb 内部已支持：当 metadata["tmdb_id"] 存在时，
+                    #    跳过搜索，直接调用 get_tv_details() 或 get_movie_details()
+                    metadata = self.renamer._enrich_with_tmdb(metadata)
 
-                if not metadata or not metadata.get("tmdb_id"):
-                    # TMDB \u67e5\u8be2\u5931\u8d25\uff08tmdb_id \u65e0\u6548\u6216\u7f51\u7edc\u9519\u8bef\uff09\uff0c\u56de\u9000\u5230\u5b8c\u6574\u6d41\u7a0b
-                    logger.warning("\u4f7f\u7528 tmdb_id \u67e5\u8be2\u5931\u8d25\uff0c\u56de\u9000\u5230\u6587\u4ef6\u540d\u89e3\u6790")
+                    if not metadata or not metadata.get("tmdb_id"):
+                        # TMDB 查询失败（tmdb_id 无效或网络错误），回退到完整流程
+                        logger.warning("使用 tmdb_id 查询失败，回退到文件名解析")
+                        metadata = self.renamer.extract_metadata(
+                            file_name, media_type_hint=media_type
+                        )
+                else:
+                    # 原有流程：完整的文件名解析 + TMDB 搜索
+                    logger.info("未提供 tmdb_id，使用标准流程")
                     metadata = self.renamer.extract_metadata(
                         file_name, media_type_hint=media_type
                     )
-            else:
-                # \u539f\u6709\u6d41\u7a0b\uff1a\u5b8c\u6574\u7684\u6587\u4ef6\u540d\u89e3\u6790 + TMDB \u641c\u7d22
-                logger.info("\u672a\u63d0\u4f9b tmdb_id\uff0c\u4f7f\u7528\u6807\u51c6\u6d41\u7a0b")
-                metadata = self.renamer.extract_metadata(
-                    file_name, media_type_hint=media_type
-                )
 
-            if not metadata:
-                logger.warning("\u65e0\u6cd5\u63d0\u53d6\u5143\u6570\u636e: %s", file_name)
-                return
+                if not metadata:
+                    logger.warning("无法提取元数据: %s", file_name)
+                    return
 
-            # \u751f\u6210\u6807\u51c6\u5316\u7684\u8def\u5f84\u7ed3\u6784
-            new_path = self.renamer.generate_new_path(metadata, original_path=file_name)
-            folder_parts = list(new_path.parent.parts)
+                # 生成标准化的路径结构（仅用于文件夹结构）
+                new_path = self.renamer.generate_new_path(metadata, original_path=file_name)
+                folder_parts = list(new_path.parent.parts)
 
-            # \u83b7\u53d6\u91cd\u547d\u540d\u540e\u7684\u6587\u4ef6\u540d
-            renamed_filename = new_path.name
-            logger.info("\u8def\u5f84\u6574\u7406: %s -> %s", file_name, new_path)
+                # 优先使用 WS 数据中已重命名的 title（保留完整信息），否则用重构的文件名
+                renamed_filename = Path(title).name if title and title != file_name else new_path.name
+                logger.info("路径整理: %s -> %s", file_name, new_path)
 
             uploader = self.yun139_uploader
 
