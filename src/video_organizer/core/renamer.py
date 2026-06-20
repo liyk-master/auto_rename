@@ -2797,6 +2797,96 @@ class VideoRenamer:
             self._tmdb_cache[name_cache_key] = cache_data
             logger.debug(f"TMDB 缓存: 保存名称键缓存 {name_cache_key}")
 
+    def _search_tmdb_by_type(self, search_term: str, media_type_hint: Optional[str],
+                             confidence: float, year: Optional[str] = None,
+                             language: str = "zh-CN") -> List[Dict]:
+        """
+        根据置信度决定 TMDB 搜索策略，避免电影和电视剧结果混合
+
+        Args:
+            search_term: 搜索关键词
+            media_type_hint: 媒体类型提示 (tv, movie)
+            confidence: media_type 的置信度 (0.0-1.0)
+            year: 年份（可选）
+            language: 搜索语言
+
+        Returns:
+            搜索结果列表
+        """
+        results = []
+
+        # 策略 1: 高置信度 (>= 0.7) - 只搜索指定类型
+        if confidence >= 0.7 and media_type_hint:
+            logger.info(
+                f"高置信度搜索 (confidence={confidence:.2f}): 仅搜索 {media_type_hint} 类型"
+            )
+            results = self._search_with_language(
+                search_term, media_type_hint, year, language
+            )
+
+        # 策略 2: 中等置信度 (0.4-0.7) - multi 搜索，优先指定类型
+        elif 0.4 <= confidence < 0.7 and media_type_hint:
+            logger.info(
+                f"中等置信度搜索 (confidence={confidence:.2f}): "
+                f"multi 搜索，优先 {media_type_hint} 类型"
+            )
+            multi_results = self.tmdb_client.search_multi(
+                search_term, year, language=language
+            )
+
+            if multi_results:
+                # 分离不同类型的结果
+                type_matched = [
+                    r for r in multi_results if r.get("media_type") == media_type_hint
+                ]
+                other_types = [
+                    r for r in multi_results if r.get("media_type") != media_type_hint
+                ]
+
+                # 指定类型结果排在前面
+                results = type_matched + other_types
+                logger.info(
+                    f"multi 搜索结果: {media_type_hint}类型 {len(type_matched)} 个, "
+                    f"其他类型 {len(other_types)} 个"
+                )
+            else:
+                # multi 失败，回退到指定类型搜索
+                logger.warning("multi 搜索失败，回退到指定类型搜索")
+                results = self._search_with_language(
+                    search_term, media_type_hint, year, language
+                )
+
+        # 策略 3: 低置信度 (< 0.4) - multi 搜索，不过滤
+        else:
+            logger.info(
+                f"低置信度搜索 (confidence={confidence:.2f}): multi 搜索，不过滤类型"
+            )
+            multi_results = self.tmdb_client.search_multi(
+                search_term, year, language=language
+            )
+
+            if multi_results:
+                results = multi_results
+                logger.info(f"multi 搜索返回 {len(results)} 个结果（未过滤类型）")
+            else:
+                # multi 失败，分别搜索但明确标记为混合结果
+                logger.warning("multi 搜索失败，分别搜索 TV 和 Movie（结果将混合）")
+                tv_results = self._search_with_language(
+                    search_term, "tv", year, language
+                )
+                movie_results = self._search_with_language(
+                    search_term, "movie", year, language
+                )
+                # 混合结果，但记录警告
+                results = tv_results + movie_results
+                if tv_results and movie_results:
+                    logger.warning(
+                        f"类型不确定且结果混合: TV {len(tv_results)} 个, "
+                        f"Movie {len(movie_results)} 个，后续需严格过滤"
+                    )
+
+        return results
+
     def _enrich_with_tmdb(self, metadata: Dict) -> Dict:
         """使用TMDB API丰富元数据信息，获取更完整的视频详情"""
         # 确保metadata是字典类型
@@ -3196,60 +3286,48 @@ class VideoRenamer:
             )
             primary_results = []
 
-            # 如果有明确的媒体类型，优先使用专用搜索
-            if media_type_hint:
-                primary_results = self._search_with_language(
-                    prepared_search_term,
-                    media_type_hint,
-                    search_year,
-                    primary_language,
-                )
-                if primary_results:
-                    logger.info(f"专用类型搜索返回 {len(primary_results)} 个结果")
-            elif media_type_hint is None:
-                # 媒体类型不确定，使用 /search/multi 接口一次性搜索所有类型
-                logger.info("媒体类型不确定，使用 /search/multi 接口搜索所有类型...")
-                multi_results = self.tmdb_client.search_multi(
-                    prepared_search_term,
-                    search_year,
-                    language=primary_language
-                )
-                if multi_results:
-                    primary_results = multi_results
-                    logger.info(f"Multi搜索返回 {len(primary_results)} 个结果")
-                    # 打印所有结果的详细信息
-                    for i, result in enumerate(primary_results):
-                        result_type = result.get("media_type", "unknown")
-                        result_title = result.get("name") or result.get("title", "N/A")
-                        result_year = ""
-                        if result_type == "tv":
-                            result_year = result.get("first_air_date", "")[:4] if result.get("first_air_date") else ""
-                        elif result_type == "movie":
-                            result_year = result.get("release_date", "")[:4] if result.get("release_date") else ""
-                        result_popularity = result.get("popularity", 0)
-                        logger.info(f"  结果 {i+1}: {result_title} ({result_type}, {result_year}, popularity={result_popularity})")
-                else:
-                    # 如果 multi 搜索失败，降级为分别搜索
-                    logger.info("Multi搜索失败，降级为分别搜索电影和电视剧...")
-                    tv_results = self._search_with_language(
-                        prepared_search_term, "tv", search_year, primary_language
-                    )
-                    movie_results = self._search_with_language(
-                        prepared_search_term, "movie", search_year, primary_language
-                    )
-                    primary_results = tv_results + movie_results
+            # 使用新的置信度驱动搜索策略
+            confidence = metadata.get("_media_type_confidence", 0.0)
+            logger.info(
+                f"第一次搜索：media_type={media_type_hint}, confidence={confidence:.2f}, "
+                f"搜索词='{prepared_search_term}', 语言={primary_language}"
+            )
+
+            # 调用置信度驱动的搜索方法
+            primary_results = self._search_tmdb_by_type(
+                prepared_search_term,
+                media_type_hint,
+                confidence,
+                search_year,
+                primary_language
+            )
+
+            # 打印搜索结果摘要
+            if primary_results:
+                logger.info(f"搜索返回 {len(primary_results)} 个结果")
+                for i, result in enumerate(primary_results[:5]):  # 只打印前 5 个
+                    result_type = result.get("media_type", "unknown")
+                    result_title = result.get("name") or result.get("title", "N/A")
+                    result_year = ""
+                    if result_type == "tv":
+                        result_year = result.get("first_air_date", "")[:4] if result.get("first_air_date") else ""
+                    elif result_type == "movie":
+                        result_year = result.get("release_date", "")[:4] if result.get("release_date") else ""
+                    result_popularity = result.get("popularity", 0)
                     logger.info(
-                        f"TV搜索返回 {len(tv_results)} 个结果, Movie搜索返回 {len(movie_results)} 个结果, 合并后 {len(primary_results)} 个结果"
+                        f"  结果 {i+1}: {result_title} ({result_type}, {result_year}, "
+                        f"popularity={result_popularity})"
                     )
 
-            # 如果专用搜索没有结果，尝试通用搜索
+            # 如果第一次搜索没有结果，尝试通用搜索
             if not primary_results:
+                logger.info("第一次搜索无结果，尝试通用搜索...")
                 general_results = self.tmdb_client.search_video_show(
                     prepared_search_term, search_year, language=primary_language
                 )
                 if general_results:
                     primary_results = general_results
-            logger.info(f"通用搜索返回 {len(primary_results)} 个结果")
+                    logger.info(f"通用搜索返回 {len(primary_results)} 个结果")
 
             # 检查是否有完全匹配
             if primary_results:
@@ -3633,9 +3711,11 @@ class VideoRenamer:
             best_match = None
 
             # 使用标题相似度和流行度排序选择最佳结果
-            # 优先考虑媒体类型匹配的结果
-            if media_type_hint:
-                # 筛选出匹配媒体类型的结果
+            # 根据置信度决定类型过滤的严格程度
+            confidence = metadata.get("_media_type_confidence", 0.0)
+
+            if media_type_hint and confidence >= 0.5:
+                # 中高置信度：严格过滤类型
                 type_matched_results = [
                     result
                     for result in results
@@ -3643,12 +3723,25 @@ class VideoRenamer:
                 ]
                 if type_matched_results:
                     target_results = type_matched_results
+                    logger.info(
+                        f"严格类型过滤 (confidence={confidence:.2f}): "
+                        f"{len(type_matched_results)}/{len(results)} 个结果匹配 {media_type_hint}"
+                    )
                 else:
-                    # 如果没有匹配媒体类型的结果，使用所有结果
+                    # 没有匹配的结果，记录警告
+                    logger.warning(
+                        f"TMDB 搜索无 {media_type_hint} 类型结果 "
+                        f"(confidence={confidence:.2f})，使用所有结果"
+                    )
                     target_results = results
             else:
-                # 没有媒体类型提示，使用所有结果
+                # 低置信度或无类型提示：不过滤
                 target_results = results
+                if media_type_hint:
+                    logger.info(
+                        f"低置信度 (confidence={confidence:.2f})，不过滤类型，"
+                        f"使用所有 {len(results)} 个结果"
+                    )
 
             # 计算标题相似度并按相似度和流行度排序
             search_term_lower = search_term.lower()
