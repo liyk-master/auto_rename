@@ -1212,8 +1212,22 @@ class GuessItParser:
                         logger.debug(f"GuessIt 识别到季号 {guessit_value}，正则季号为 {regex_value}，使用 GuessIt 结果")
 
         # 媒体类型：如果正则没有识别，使用 guessit 结果
-        if not merged.get('media_type') and guessit_metadata.get('media_type'):
-            merged['media_type'] = guessit_metadata['media_type']
+        # 如果正则通过弱信号（无 SxxExx/第X季/EPxx 等强格式标记）判定为 tv，
+        # 而 GuessIt 判定为其他类型，优先使用 GuessIt（避免 DTS-X 等技术标签误触发）
+        regex_media_type = merged.get('media_type')
+        guessit_media_type = guessit_metadata.get('media_type')
+        if guessit_media_type and regex_media_type is None:
+            merged['media_type'] = guessit_media_type
+        elif guessit_media_type and regex_media_type == 'tv' and guessit_media_type != 'tv':
+            has_strong_tv_marker = bool(re.search(
+                r'(?i)S\d+E\d+|第\d+[集季]|EP\d+', filename
+            ))
+            if not has_strong_tv_marker:
+                merged['media_type'] = guessit_media_type
+                logger.debug(
+                    f"正则 media_type='{regex_media_type}' 与 GuessIt '{guessit_media_type}' 冲突，"
+                    "且无强 TV 标记，优先使用 GuessIt"
+                )
 
         # 年份特殊处理：如果 show_name 被修正（正则结果与合并结果不同）
         # 说明正则可能把标题中的数字误识别为年份，此时应使用 GuessIt 的年份

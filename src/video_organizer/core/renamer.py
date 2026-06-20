@@ -906,6 +906,18 @@ class VideoRenamer:
             else:
                 metadata = {}
 
+            # 预提取并剥离 tmdbid 标记，防止其数字被误识别为集号/季号/发布组
+            tmdbid_marker_match = re.search(r"[\[\{]tmdbid[=-](\d+)[\]\}]", processed_filename)
+            if tmdbid_marker_match:
+                extracted_tmdb_id = tmdbid_marker_match.group(1)
+                if "tmdb_id" not in locked_fields and not metadata.get("tmdb_id"):
+                    metadata["tmdb_id"] = extracted_tmdb_id
+                # 从解析用文件名中剥离 tmdbid 标记，避免数字干扰后续解析
+                processed_filename = re.sub(r"[\[\{]tmdbid[=-]\d+[\]\}]", "", processed_filename).strip()
+                # 清理剥离后的残留分隔符（如 ".." 等）
+                processed_filename = re.sub(r"\.{2,}", ".", processed_filename).strip(". ")
+                logger.debug(f"剥离 tmdbid 标记后文件名: '{processed_filename}'")
+
             # 预先从文件名提取发布组（独立于 _extract_with_regex，避免因函数异常而丢失）
             release_group_from_filename = ""
             rg_match = re.match(r"^\[([^\]]+)\]", processed_filename)
