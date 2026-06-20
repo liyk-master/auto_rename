@@ -68,6 +68,7 @@ class PreviewResponse(BaseModel):
 class ValidateRequest(BaseModel):
     """刮削验证请求"""
     file_path: str
+    media_type: Optional[str] = None
 
 
 class ValidateResponse(BaseModel):
@@ -360,7 +361,7 @@ async def preview_rename(request: PreviewRequest):
             )
 
 
-def _do_validate(raw_path: str, config: dict) -> ValidateResponse:
+def _do_validate(raw_path: str, config: dict, media_type: Optional[str] = None) -> ValidateResponse:
     file_path = Path(raw_path)
 
     original_name = file_path.stem if file_path.suffix else file_path.name
@@ -387,7 +388,7 @@ def _do_validate(raw_path: str, config: dict) -> ValidateResponse:
     if tmdb_client:
         renamer.tmdb_client = tmdb_client
 
-    metadata = renamer.extract_metadata(parse_input)
+    metadata = renamer.extract_metadata(parse_input, media_type_hint=media_type)
 
     title = metadata.get("show_name") or metadata.get("title") or None
     raw_year = metadata.get("year")
@@ -454,13 +455,14 @@ async def validate_scrape(request: ValidateRequest):
     通过 run_in_executor 在线程池执行同步阻塞的 TMDB 请求，避免阻塞事件循环。
     """
     raw_path = request.file_path.strip().strip('"').strip("'")
+    media_type = request.media_type
     state = get_state_manager()
     config = state.get_config()
 
     async with _validate_semaphore:
         try:
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, _do_validate, raw_path, config)
+            result = await loop.run_in_executor(None, _do_validate, raw_path, config, media_type)
             return result
         except HTTPException:
             raise

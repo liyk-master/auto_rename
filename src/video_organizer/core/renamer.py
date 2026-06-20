@@ -1074,13 +1074,17 @@ class VideoRenamer:
                 metadata["media_type"] = media_type_hint
 
             # 3.5 智能判断媒体类型：如果提取到了 season 或 episode，优先识别为电视剧
-            # 除非用户明确指定了 media_type_hint 为 movie
+            # 除非用户明确指定了 media_type_hint 或已有明确的 movie 判定
             if not media_type_hint and "media_type" not in locked_fields:
                 has_season = metadata.get("season") is not None and metadata.get("season") != ""
                 has_episode = metadata.get("episode") is not None and metadata.get("episode") != ""
                 if has_season or has_episode:
-                    metadata["media_type"] = "tv"
-                    logger.info(f"检测到季集信息 (season={metadata.get('season')}, episode={metadata.get('episode')})，自动识别为电视剧类型")
+                    # 已有明确 movie 判定时，season 可能来自电影系列编号（如 No.14），不覆盖
+                    if metadata.get("media_type") == "movie":
+                        logger.debug(f"media_type 已为 movie，跳过 season→tv 覆盖")
+                    else:
+                        metadata["media_type"] = "tv"
+                        logger.info(f"检测到季集信息 (season={metadata.get('season')}, episode={metadata.get('episode')})，自动识别为电视剧类型")
 
             # 4. 如果仍没有 show_name，使用智能清洗
             if not metadata.get("show_name"):
@@ -2910,6 +2914,7 @@ class VideoRenamer:
                             metadata["original_show_name"] = original_name
                             # 丰富元数据，优先使用中文标题
                             metadata["title"] = details.get("title", original_name)
+                            metadata["show_name"] = details.get("title", original_name)
                             metadata["overview"] = details.get("overview", "")
                             metadata["rating"] = details.get("vote_average", 0)
                             metadata["genres"] = [genre["name"] for genre in details.get("genres", [])]

@@ -203,6 +203,24 @@ class GuessItParser:
                 potential_show_name = re.sub(r'\s+E\s*$', '', potential_show_name).strip()
                 episode_num = int(compact_match.group(2))
 
+                # 检测尾部数字是否为音频声道的小数部分（如 5.1→1, 7.1→1, 2.0→0）
+                # 条件：尾部数字前为 digit + '.'，且尾部数字为单数字
+                # 跳过紧凑格式，让后续流程处理（如 GuessIt 能正确识别为电影）
+                show_part = compact_match.group(1)
+                ep_start = len(show_part)
+                is_audio_fraction = (ep_start >= 2
+                                     and stem_only[ep_start - 1] == '.'
+                                     and stem_only[ep_start - 2].isdigit()
+                                     and len(compact_match.group(2)) == 1)
+
+                # 检测尾部单数字是否为技术标签的后缀（如 AC3→3, x264→4）
+                # 条件：digit 前面是 ASCII 字母或数字 => 嵌入在标签词尾中
+                is_tag_suffix = (len(compact_match.group(2)) == 1
+                                 and ep_start >= 1
+                                 and stem_only[ep_start - 1].isascii()
+                                 and (stem_only[ep_start - 1].isalpha()
+                                      or stem_only[ep_start - 1].isdigit()))
+
                 # 排除明显无效的剧名片段
                 invalid_show_tokens = [
                     'BIG5', 'CHS', 'CHT', 'GB', 'HEVC', 'AAC', 'WEB', 'WEB-DL',
@@ -214,8 +232,8 @@ class GuessItParser:
                     or potential_show_name.upper() in invalid_show_tokens
                 )
 
-                # 简单保护：像“202401”这类纯数字时间戳不要误判为剧名+集号
-                if not is_invalid and len(potential_show_name) >= 2:
+                # 简单保护：像"202401"这类纯数字时间戳不要误判为剧名+集号
+                if not is_invalid and len(potential_show_name) >= 2 and not is_audio_fraction and not is_tag_suffix:
                     metadata = {
                         'show_name': potential_show_name,
                         'episode': episode_num,
