@@ -15,6 +15,7 @@ from src.video_organizer.core.tmdb_client import TMDBClient
 from src.video_organizer.core.guessit_parser import GuessItParser, GUESSIT_AVAILABLE
 from src.video_organizer.utils.llm_translator import LLMTranslator
 from .manual_rule_engine import ManualRuleEngine
+from .media_type_resolver import MediaTypeResolver
 
 # 繁简转换支持
 try:
@@ -846,10 +847,48 @@ class VideoRenamer:
             else:
                 logger.info("VideoRenamer: 手动规则引擎已禁用")
 
-    def _merge_metadata(self, target: Dict, source: Optional[Dict], locked_fields: Set[str]) -> Dict:
-        """合并元数据，跳过已锁定的字段"""
+        # media_type 置信度解析器初始化
+        self._media_type_resolver = MediaTypeResolver(
+            release_group_mapping=self._release_group_mapping
+        )
+        logger.info("VideoRenamer: MediaTypeResolver 已初始化")
+
+    def _merge_metadata(self, target: Dict, source: Optional[Dict], locked_fields: Set[str],
+                        validate_type: bool = True) -> Dict:
+        """
+        合并元数据，增加类型一致性校验
+
+        Args:
+            target: 目标元数据
+            source: 源元数据
+            locked_fields: 锁定字段集合
+            validate_type: 是否验证 media_type 一致性（默认 True）
+
+        Returns:
+            合并后的元数据
+        """
         if source is None:
             source = {}
+
+        # 类型一致性校验：防止跨类型污染
+        if validate_type:
+            target_type = target.get("media_type")
+            source_type = source.get("media_type")
+
+            if target_type and source_type and target_type != source_type:
+                logger.warning(
+                    f"元数据类型不一致：target={target_type}, source={source_type}，"
+                    f"保留 target 类型，仅合并安全字段"
+                )
+                # 只合并与类型无关的安全字段（质量标签、发布组等）
+                safe_fields = ["quality_tags", "release_group", "screen_size",
+                              "video_codec", "audio_codec", "source", "container"]
+                for key in safe_fields:
+                    if key in source and key not in locked_fields:
+                        target[key] = source[key]
+                return target
+
+        # 正常合并：跳过已锁定的字段
         for key, value in source.items():
             if key not in locked_fields:
                 target[key] = value
@@ -1085,18 +1124,41 @@ class VideoRenamer:
             if media_type_hint and "media_type" not in locked_fields:
                 metadata["media_type"] = media_type_hint
 
-            # 3.5 智能判断媒体类型：如果提取到了 season 或 episode，优先识别为电视剧
-            # 除非用户明确指定了 media_type_hint 或已有明确的 movie 判定
-            if not media_type_hint and "media_type" not in locked_fields:
-                has_season = metadata.get("season") is not None and metadata.get("season") != ""
-                has_episode = metadata.get("episode") is not None and metadata.get("episode") != ""
-                if has_season or has_episode:
-                    # 已有明确 movie 判定时，season 可能来自电影系列编号（如 No.14），不覆盖
-                    if metadata.get("media_type") == "movie":
-                        logger.debug(f"media_type 已为 movie，跳过 season→tv 覆盖")
-                    else:
+            # 3.5 使用 MediaTypeResolver 统一判断 media_type（置信度机制）
+            if "media_type" not in locked_fields:
+                # 收集各来源的 media_type 判断结果
+                sources = {
+                    'manual_rule': metadata.get("media_type") if locked_fields else None,
+                    'regex': regex_meta.get("media_type") if regex_meta else None,
+                    'guessit': guessit_merged.get("media_type") if self._guessit_enabled and 'guessit_merged' in locals() else None,
+                    'locked': "media_type" in locked_fields
+                }
+
+                # 使用 MediaTypeResolver 解析最终的 media_type 和置信度
+                resolved_type, confidence = self._media_type_resolver.resolve(metadata, sources)
+
+                if resolved_type:
+                    metadata["media_type"] = resolved_type
+                    metadata["_media_type_confidence"] = confidence  # 保存置信度供后续使用
+                    logger.info(
+                        f"MediaTypeResolver 判定: media_type={resolved_type}, "
+                        f"confidence={confidence:.2f}"
+                    )
+                else:
+                    # 未知类型，使用默认逻辑：有 season 或 episode 就认为是 tv
+                    has_season = metadata.get("season") is not None and metadata.get("season") != ""
+                    has_episode = metadata.get("episode") is not None and metadata.get("episode") != ""
+                    if has_season or has_episode:
                         metadata["media_type"] = "tv"
-                        logger.info(f"检测到季集信息 (season={metadata.get('season')}, episode={metadata.get('episode')})，自动识别为电视剧类型")
+                        metadata["_media_type_confidence"] = 0.5
+                        logger.info(
+                            f"检测到季集信息 (season={metadata.get('season')}, "
+                            f"episode={metadata.get('episode')})，默认识别为电视剧类型"
+                        )
+            else:
+                # media_type 已被锁定
+                metadata["_media_type_confidence"] = 1.0
+                logger.debug("media_type 已被手动规则锁定")
 
             # 4. 如果仍没有 show_name，使用智能清洗
             if not metadata.get("show_name"):
@@ -2762,19 +2824,29 @@ class VideoRenamer:
             
             # 检查缓存命中
             if cache_key and cache_key in self._tmdb_cache:
-                logger.info(f"TMDB 缓存命中: {cache_key}，跳过 TMDB 查询")
                 cached_metadata = self._tmdb_cache[cache_key].copy()
-                # 保留当前文件的特定信息（集数、质量标签等），只使用缓存的基础信息
-                for key in ["show_name", "title", "year", "tmdb_id", "genres", "origin_country",
-                           "original_name", "poster_path", "backdrop_path", "networks",
-                           "number_of_seasons", "number_of_episodes", "first_air_date",
-                           "last_air_date", "status", "original_language", "overview", "rating"]:
-                    if key in cached_metadata:
-                        metadata[key] = cached_metadata[key]
-                # 恢复当前文件的质量标签
-                metadata["quality_tags"] = metadata.get("quality_tags", "")
-                metadata["release_group"] = metadata.get("release_group", "")
-                return metadata
+
+                # 验证缓存的 media_type 是否匹配当前请求
+                cached_type = cached_metadata.get("media_type")
+                if media_type and cached_type and cached_type != media_type:
+                    logger.warning(
+                        f"缓存类型不匹配：缓存={cached_type}, 请求={media_type}，"
+                        f"跳过缓存，重新查询"
+                    )
+                    # 不使用缓存，继续后续的 TMDB 查询流程
+                else:
+                    logger.info(f"TMDB 缓存命中: {cache_key}，跳过 TMDB 查询")
+                    # 保留当前文件的特定信息（集数、质量标签等），只使用缓存的基础信息
+                    for key in ["show_name", "title", "year", "tmdb_id", "genres", "origin_country",
+                               "original_name", "poster_path", "backdrop_path", "networks",
+                               "number_of_seasons", "number_of_episodes", "first_air_date",
+                               "last_air_date", "status", "original_language", "overview", "rating"]:
+                        if key in cached_metadata:
+                            metadata[key] = cached_metadata[key]
+                    # 恢复当前文件的质量标签
+                    metadata["quality_tags"] = metadata.get("quality_tags", "")
+                    metadata["release_group"] = metadata.get("release_group", "")
+                    return metadata
             
             # 检查是否已有 name -> tmdb_id 的映射（用于同一剧集不同集数）
             if show_name and show_name.lower().strip() in self._tmdb_name_to_id:
