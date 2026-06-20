@@ -181,6 +181,10 @@ class TestMediaTypeResolver:
         ) is True
 
         assert self.resolver.should_override_by_strong_marker(
+            "名侦探柯南 第1267话.mkv", "tv", 0.5
+        ) is True
+
+        assert self.resolver.should_override_by_strong_marker(
             "Show EP01.mkv", "tv", 0.5
         ) is True
 

@@ -1220,7 +1220,7 @@ class GuessItParser:
             merged['media_type'] = guessit_media_type
         elif guessit_media_type and regex_media_type == 'tv' and guessit_media_type != 'tv':
             has_strong_tv_marker = bool(re.search(
-                r'(?i)S\d+E\d+|第\d+[集季]|EP\d+', filename
+                r'(?i)S\d+E\d+|第\d+[集季话]|EP\d+|Episode\s*\d+', filename
             ))
             if not has_strong_tv_marker:
                 merged['media_type'] = guessit_media_type

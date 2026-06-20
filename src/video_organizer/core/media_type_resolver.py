@@ -146,9 +146,9 @@ class MediaTypeResolver:
         if current_type != "tv" or confidence >= self.CONFIDENCE_GUESSIT:
             return False
 
-        # 检查是否有强 TV 标记
+        # 检查是否有强 TV 标记（包含"第X话"）
         has_strong_tv_marker = bool(re.search(
-            r'(?i)S\d+E\d+|第\d+[集季]|EP\d+|Episode\s*\d+', filename
+            r'(?i)S\d+E\d+|第\d+[集季话]|EP\d+|Episode\s*\d+', filename
         ))
 
         return has_strong_tv_marker
