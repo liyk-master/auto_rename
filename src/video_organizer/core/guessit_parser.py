@@ -193,7 +193,8 @@ class GuessItParser:
                     return metadata
 
             # 通用“剧名+集号”紧凑格式检测：如 入青云01.mp4、TonikakuKawaii08.mkv
-            # 避免依赖 LLM 才能纠正
+            # 仅作为 GuessIt 未识别时的兜底，不再前置返回
+            compact_result = None
             stem_only = path_obj.stem
             has_season_episode_pattern = bool(re.search(r'S\d+E\d+$', stem_only, re.IGNORECASE))
             compact_match = None if has_season_episode_pattern else re.match(r'^(.+?)(\d{1,3})$', stem_only)
@@ -234,7 +235,7 @@ class GuessItParser:
 
                 # 简单保护：像"202401"这类纯数字时间戳不要误判为剧名+集号
                 if not is_invalid and len(potential_show_name) >= 2 and not is_audio_fraction and not is_tag_suffix:
-                    metadata = {
+                    compact_result = {
                         'show_name': potential_show_name,
                         'episode': episode_num,
                         'media_type': 'tv',
@@ -244,14 +245,13 @@ class GuessItParser:
 
                     ext = path_obj.suffix.lower().lstrip('.')
                     if ext:
-                        metadata['container'] = ext
-                        metadata['extension'] = ext
+                        compact_result['container'] = ext
+                        compact_result['extension'] = ext
 
                     logger.debug(
-                        f"紧凑格式检测，直接构造元数据: show_name={metadata['show_name']}, "
-                        f"season={metadata.get('season')}, episode={episode_num}"
+                        f"紧凑格式检测，保存为兜底结果: show_name={compact_result['show_name']}, "
+                        f"season={compact_result.get('season')}, episode={episode_num}"
                     )
-                    return metadata
 
             # PT 命名法检测：在预处理之前检查，因为 PT 模式需要原始的 "Title.20" 格式
             # 匹配 "[中文标题].英文标题.年份.其他标签.分辨率" 格式
@@ -330,6 +330,20 @@ class GuessItParser:
 
             # 后处理：修正中文剧集的识别结果
             metadata = self._postprocess_chinese_result(metadata, filename)
+
+            # 紧凑格式兜底：仅当 GuessIt 未识别到有效信息时使用
+            if compact_result is not None:
+                guessit_has_meaningful = (
+                    metadata.get("media_type") == "movie"
+                    or metadata.get("show_name")
+                    or metadata.get("episode")
+                )
+                if not guessit_has_meaningful:
+                    logger.debug(
+                        f"GuessIt 未识别到有效信息，使用紧凑格式结果作为兜底: "
+                        f"show_name={compact_result['show_name']}, episode={compact_result['episode']}"
+                    )
+                    return compact_result
 
             logger.debug(f"GuessIt 解析结果: {metadata}")
             return metadata
