@@ -42,7 +42,8 @@ class TestMediaTypeResolver:
             'guessit': 'tv',
             'locked': False
         }
-        metadata = {}
+        # 提供 season/episode 让 GuessIt 的 tv 判断合理
+        metadata = {'season': 1, 'episode': 1}
 
         media_type, confidence = self.resolver.resolve(metadata, sources)
 
@@ -63,6 +64,22 @@ class TestMediaTypeResolver:
 
         assert media_type == 'movie'
         assert confidence == 0.7
+
+    def test_guessit_tv_without_episode_corrected_to_movie(self):
+        """测试 GuessIt 判定为 tv 但无 season/episode 时自动修正为 movie"""
+        sources = {
+            'manual_rule': None,
+            'regex': None,
+            'guessit': 'tv',  # GuessIt 误判为 tv
+            'locked': False
+        }
+        metadata = {}  # 没有 season 和 episode
+
+        media_type, confidence = self.resolver.resolve(metadata, sources)
+
+        # 应该被修正为 movie
+        assert media_type == 'movie'
+        assert confidence == 0.7  # 保持 GuessIt 的置信度
 
     def test_regex_only(self):
         """测试仅正则判定时置信度为 0.6"""

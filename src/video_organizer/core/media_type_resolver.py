@@ -59,13 +59,28 @@ class MediaTypeResolver:
             logger.debug(f"media_type 来自手动规则（锁定）: {manual_type}, confidence=1.0")
             return manual_type, self.CONFIDENCE_MANUAL_RULE
 
+        # 1.5 GuessIt 可靠性检查：如果 GuessIt 判定为 tv 但没有 season/episode，可能是误判
+        guessit_reliable = True
+        if guessit_type == 'tv':
+            has_season = metadata.get('season') is not None
+            has_episode = metadata.get('episode') is not None
+            if not has_season and not has_episode:
+                # GuessIt 判定为 tv 但缺少关键信息，很可能是误判（如 "Final" 被误认为剧集）
+                # 在这种情况下，倾向于判断为 movie（电影更可能没有 season/episode）
+                logger.warning(
+                    "GuessIt 判定为 tv 但无 season/episode 信息，"
+                    "可能误判，推测为 movie"
+                )
+                guessit_type = 'movie'  # 修正为 movie
+                # 保持 guessit_reliable = True，因为我们做了合理的修正
+
         # 2. 正则 + GuessIt 都判定且一致（置信度 0.9）
-        if regex_type and guessit_type and regex_type == guessit_type:
+        if regex_type and guessit_type and regex_type == guessit_type and guessit_reliable:
             logger.debug(f"media_type 正则与 GuessIt 一致: {regex_type}, confidence=0.9")
             return regex_type, self.CONFIDENCE_BOTH_AGREE
 
-        # 3. GuessIt 单独判定（置信度 0.7）
-        if guessit_type:
+        # 3. GuessIt 单独判定（置信度 0.7，需要可靠）
+        if guessit_type and guessit_reliable:
             logger.debug(f"media_type 来自 GuessIt: {guessit_type}, confidence=0.7")
             return guessit_type, self.CONFIDENCE_GUESSIT
 
