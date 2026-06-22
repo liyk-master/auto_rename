@@ -74,6 +74,7 @@ class Yun139Uploader:
         strm_output_dir: str = "",
         delete_after: bool = False,
         app_mode: bool = False,
+        media_tracker_config: Optional[Dict[str, Any]] = None,
     ):
         """
         初始化 139 云盘上传器
@@ -89,6 +90,7 @@ class Yun139Uploader:
             strm_output_dir: STRM 文件输出目录
             delete_after: 上传完成后删除云端文件
             app_mode: 使用 Android App 协议栈（伪装 App 秒传，绕过 PC 通道限制）
+            media_tracker_config: Media Tracker 配置（用于上传完成后推送）
         """
         self.authorization = authorization
         # 处理 parent_id：保留原始值，/ 表示根目录
@@ -97,6 +99,16 @@ class Yun139Uploader:
         self.strm_server = strm_server.rstrip('/') if strm_server else ""
         self.strm_output_dir = strm_output_dir
         self.delete_after = delete_after
+
+        # 初始化 Media Tracker 上传器
+        self.media_tracker_uploader = None
+        if media_tracker_config and media_tracker_config.get("upload_enabled", False):
+            try:
+                from .media_tracker_uploader import MediaTrackerUploader
+                self.media_tracker_uploader = MediaTrackerUploader(media_tracker_config)
+                _logger.info("Media Tracker 上传器已初始化")
+            except Exception as e:
+                _logger.warning(f"初始化 Media Tracker 上传器失败: {e}")
 
         # 映射云盘类型
         cloud_type_map = {
@@ -830,6 +842,19 @@ class Yun139Uploader:
                     name=target_filename,
                     folder_path=folder_path
                 )
+
+                # 上传到 Media Tracker（如果已启用）
+                if self.media_tracker_uploader:
+                    try:
+                        upload_success = self.media_tracker_uploader.upload(
+                            sha256=result.get('content_hash', ''),
+                            size=result.get('size', 0),
+                            name=target_filename,
+                        )
+                        if upload_success:
+                            print(f"   📤 已推送到 Media Tracker")
+                    except Exception as e:
+                        _logger.warning(f"推送到 Media Tracker 失败: {e}")
 
                 return result
             else:

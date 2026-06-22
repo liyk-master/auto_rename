@@ -589,11 +589,12 @@ class RobustEmosVideoUploader:
         upload_url = upload_data["data"]["upload_url"]
         file_size = file_path.stat().st_size
 
-        # 重置上传统计
+        # 重置上传统计，立即初始化 start_time 防止全部跳过时为 None
+        current_time = time.time()
         self.upload_stats = {
             "total_uploaded": 0,
-            "start_time": None,
-            "last_update_time": None,
+            "start_time": current_time,
+            "last_update_time": current_time,
             "last_uploaded": 0,
         }
 
