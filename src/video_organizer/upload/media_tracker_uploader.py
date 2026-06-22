@@ -21,13 +21,17 @@ class MediaTrackerUploader:
             config: media_tracker 配置字典
         """
         self.enabled = config.get("upload_enabled", False)
-        self.api_url = config.get("upload_api_url", "")
+        self.host = config.get("host", "localhost")
+        self.port = config.get("port", 8082)
         self.cloud = config.get("upload_cloud", "cloud-1")
         self.token = config.get("token", "")
         self.timeout = 30
 
-        if self.enabled and not self.api_url:
-            logger.warning("Media Tracker 上传已启用，但未配置 upload_api_url")
+        # 自动构建 API URL
+        self.api_url = f"http://{self.host}:{self.port}/api/upload"
+
+        if self.enabled and not self.token:
+            logger.warning("Media Tracker 上传已启用，但未配置 token")
             self.enabled = False
 
     def upload(
@@ -75,9 +79,9 @@ class MediaTrackerUploader:
                 "Content-Type": "application/json",
             }
 
-            # 如果配置了 token，添加到请求头
+            # 如果配置了 token，使用 X-API-Key 请求头
             if self.token:
-                headers["Authorization"] = f"Bearer {self.token}"
+                headers["X-API-Key"] = self.token
 
             logger.info(
                 "上传文件信息到 Media Tracker: %s (SHA256: %s, 大小: %d bytes, 云盘: %s)",

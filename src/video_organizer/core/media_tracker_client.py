@@ -138,13 +138,10 @@ class MediaTrackerClient:
         msg_type = data.get("type")
         payload = data.get("payload", data)
         if msg_type == "new_media":
-            # \u7acb\u5373\u653e\u5165\u961f\u5217\uff0c\u4e0d\u963b\u585e WebSocket \u63a5\u6536\u5faa\u73af
             queue_size = self._processing_queue.qsize()
             if queue_size > 50:
-                logger.warning(f"\u961f\u5217\u79ef\u538b\u8fc7\u591a ({queue_size} \u6761)\uff0c\u8df3\u8fc7\u6d88\u606f: {payload.get('file_name', '')[:50]}")
-            else:
-                await self._processing_queue.put(payload)
-                logger.debug(f"\u6d88\u606f\u5df2\u5165\u961f\uff0c\u5f53\u524d\u961f\u5217\u957f\u5ea6: {queue_size + 1}")
+                logger.warning(f"\u961f\u5217\u79ef\u538b\u8fc7\u591a ({queue_size} \u6761)\uff0c\u5c1a\u53ef\u6b63\u5e38\u5904\u7406: {payload.get('file_name', '')[:50]}")
+            await self._processing_queue.put(payload)
 
     def _handle_new_media_sync(self, payload: Dict):
         file_name = payload.get("file_name", "")

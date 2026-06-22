@@ -131,7 +131,6 @@ DEFAULT_CONFIG = {
         "app_mode": True,
         # 上传配置
         "upload_enabled": False,  # 是否启用上传到 media_tracker
-        "upload_api_url": "",  # 上传 API 地址，例如：http://localhost:8082/api/upload
         "upload_cloud": "cloud-1",  # 云盘标识
     },
     "auth": {
