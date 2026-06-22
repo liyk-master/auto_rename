@@ -284,6 +284,7 @@ class VideoFileHandler:
                     strm_output_dir=self.yun139_strm_output_dir,
                     delete_after=self.yun139_delete_after,
                     app_mode=self.yun139_app_mode,
+                    media_tracker_config=config.get("media_tracker", {}) if config else {},
                 )
                 # 如果 yun139 配置了 max_workers，则覆盖全局设置
                 if self.yun139_max_workers > 0:
