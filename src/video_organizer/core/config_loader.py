@@ -62,6 +62,7 @@ DEFAULT_CONFIG = {
         "strm_output_dir": "",  # STRM 文件输出目录
         "delete_after": False,  # 上传完成后删除云端文件
         "app_mode": False,  # 使用 Android App 协议栈伪装上传（绕过 PC 通道限制）
+        "generate_strm": True,  # 是否在本地生成 STRM 文件（配合 media_tracker 时可关闭）
     },
     "naming": {
         "tv_show_format": "{show_name}/Season {season:02d}/{show_name} {season_episode} {quality_tags}",
@@ -129,6 +130,8 @@ DEFAULT_CONFIG = {
         "token": "",
         "reconnect_delay": 5,
         "app_mode": True,
+        "max_concurrent": 3,  # 并发处理数，建议根据CPU核心数调整（推荐：CPU核心数 * 2）
+        "max_queue_size": 10000,  # 队列最大容量，防止内存溢出
         # 上传配置
         "upload_enabled": False,  # 是否启用上传到 media_tracker
         "upload_cloud": "cloud-1",  # 云盘标识

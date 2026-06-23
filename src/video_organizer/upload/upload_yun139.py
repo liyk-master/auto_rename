@@ -75,6 +75,7 @@ class Yun139Uploader:
         delete_after: bool = False,
         app_mode: bool = False,
         media_tracker_config: Optional[Dict[str, Any]] = None,
+        generate_strm: bool = True,
     ):
         """
         初始化 139 云盘上传器
@@ -91,6 +92,7 @@ class Yun139Uploader:
             delete_after: 上传完成后删除云端文件
             app_mode: 使用 Android App 协议栈（伪装 App 秒传，绕过 PC 通道限制）
             media_tracker_config: Media Tracker 配置（用于上传完成后推送）
+            generate_strm: 是否在本地生成 STRM 文件（默认 True）
         """
         self.authorization = authorization
         # 处理 parent_id：保留原始值，/ 表示根目录
@@ -99,6 +101,7 @@ class Yun139Uploader:
         self.strm_server = strm_server.rstrip('/') if strm_server else ""
         self.strm_output_dir = strm_output_dir
         self.delete_after = delete_after
+        self.generate_strm = generate_strm
 
         # 初始化 Media Tracker 上传器
         self.media_tracker_uploader = None
@@ -769,8 +772,8 @@ class Yun139Uploader:
                 print(f"文件ID: {result.get('file_id')}")
                 print(f"SHA256: {result.get('content_hash')}")
 
-                # 生成 STRM 文件（如果配置了）
-                if self.strm_server and self.strm_output_dir:
+                # 生成 STRM 文件（如果配置了且启用了本地生成）
+                if self.generate_strm and self.strm_server and self.strm_output_dir:
                     print(f"\n📝 生成 STRM 文件...")
                     strm_url = self.generate_strm_url(
                         file_id=result.get('file_id', ''),
