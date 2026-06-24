@@ -202,11 +202,35 @@ class Yun139:
         final_md5 = hashlib.md5(combined.encode()).hexdigest()
         return final_md5.upper()
     
-    def _get_headers(self, body: str, is_personal: bool = False, is_app_mode: bool = False) -> Dict[str, str]:
+    def _get_headers(self, body: str, is_personal: bool = False, is_app_mode: bool = False, is_pc_client: bool = False) -> Dict[str, str]:
         """获取请求头（JS 双通道引擎 — 同一签名算法，不同协议栈）"""
         rand_str = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         sign = self._calculate_sign(body, ts, rand_str)
+        
+        if is_pc_client:
+            computer_name = os.environ.get('COMPUTERNAME', 'UNKNOWN')
+            return {
+                "Accept": "*/*",
+                "Authorization": f"Basic {self.authorization}",
+                "Connection": "keep-alive",
+                "Content-Type": "application/json",
+                "x-yun-api-version": "v1",
+                "x-yun-app-channel": "10200153",
+                "x-yun-client-info": (
+                    f"||11|8.8.1.20260617|PC|{computer_name}|"
+                    f"{self._virtual_device_id}||Windows 10.0.26200|1920X1032|"
+                    f"Q2hpbmVzZSAoU2ltcGxpZmllZCk=|||"
+                ),
+                "x-yun-device-id": self._virtual_device_id,
+                "x-yun-market-source": "001",
+                "x-yun-module-type": "100",
+                "x-yun-op-type": "1",
+                "x-yun-svc-type": "1",
+                "Accept-Encoding": "gzip, deflate",
+                "Accept-Language": "zh-CN,en,*",
+                "User-Agent": "Mozilla/5.0",
+            }
         
         if is_app_mode:
             ac = self.ANDROID_CONFIG
@@ -273,13 +297,14 @@ class Yun139:
         method: str = "POST",
         is_personal: bool = False,
         is_app_mode: bool = False,
+        is_pc_client: bool = False,
     ) -> Dict:
         """发送请求"""
         self._ensure_valid_token()
         base_url = self.PERSONAL_URL if is_personal else self.BASE_URL
         url = base_url + path
         body = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
-        headers = self._get_headers(body, is_personal, is_app_mode)
+        headers = self._get_headers(body, is_personal, is_app_mode, is_pc_client)
 
         _logger.debug(">>> 请求: %s %s", method, url)
         _logger.debug(">>> Body: %s", body)
@@ -287,7 +312,8 @@ class Yun139:
         _logger.debug(">>> Headers: %s", {k: v for k, v in headers.items() if k != "Authorization"})
 
         # App 模式模拟 JS fetch credentials:'omit'，不发送 session cookies
-        if is_app_mode:
+        # PC 客户端同样不依赖 session cookies
+        if is_app_mode or is_pc_client:
             response = requests.request(
                 method=method,
                 url=url,
@@ -1323,6 +1349,7 @@ class Yun139:
         parent_id: str = "/",
         part_infos: Optional[List[Dict[str, Any]]] = None,
         app_mode: bool = False,
+        is_pc_client: bool = False,
     ) -> Dict[str, Any]:
         """
         秒传文件（不实际上传，通过 SHA256 匹配已有文件）
@@ -1330,28 +1357,37 @@ class Yun139:
         if not part_infos:
             part_infos = [{"partNumber": 1, "partSize": 1000, "parallelHashCtx": {"partOffset": 0}}]
 
-        # 匹配 JS 脚本的 key 顺序（签名依赖 body 字符串顺序）
-        # App 模式下视频文件追加 .jpg 伪装（JS 脚本行为）
-        video_ext = ('.mp4', '.mkv', '.avi', '.rmvb', '.mov', '.wmv', '.flv', '.ts', '.m2ts', '.webm')
-        upload_name = filename + '.jpg' if app_mode and filename.lower().endswith(video_ext) else filename
+        # 客户端模式（App / PC 客户端）额外参数
+        if app_mode or is_pc_client:
+            data = {
+                "contentHash": sha256,
+                "contentHashAlgorithm": "SHA256",
+                "contentType": "application/octet-stream",
+                "fileRenameMode": "auto_rename",
+                "name": filename,
+                "parentFileId": parent_id,
+                "partInfos": part_infos,
+                "size": size,
+                "type": "file",
+                "parallelUpload": True,
+                "storyVideoFile": False,
+                "userRegion": {"cityCode": "854", "provinceCode": "851"},
+            }
+        else:
+            data = {
+                "contentHash": sha256,
+                "contentHashAlgorithm": "SHA256",
+                "contentType": "application/octet-stream",
+                "fileRenameMode": "auto_rename",
+                "name": filename,
+                "parentFileId": parent_id,
+                "partInfos": part_infos,
+                "size": size,
+                "type": "file",
+                "parallelUpload": False,
+            }
 
-        data = {
-            "contentHash": sha256,
-            "contentHashAlgorithm": "SHA256",
-            "contentType": "application/octet-stream",
-            "fileRenameMode": "auto_rename",
-            "name": upload_name,
-            "parentFileId": parent_id,
-            "partInfos": part_infos,
-            "size": size,
-            "type": "file",
-            "parallelUpload": app_mode,
-        }
-        if app_mode:
-            data["storyVideoFile"] = False
-            data["userRegion"] = {"cityCode": "854", "provinceCode": "851"}
-
-        result = self._request("/hcy/file/create", data, is_personal=True, is_app_mode=app_mode)
+        result = self._request("/hcy/file/create", data, is_personal=True, is_app_mode=app_mode, is_pc_client=is_pc_client)
         upload_data = result.get("data", {})
 
         return {

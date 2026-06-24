@@ -256,6 +256,7 @@ async def yun139_download_url(
     request: Request,
     part_info: Optional[str] = Query(None),
     app_mode: Optional[str] = Query(None),
+    pc_client: Optional[str] = Query(None),
 ):
     """
     Yun139 秒传代理
@@ -263,6 +264,8 @@ async def yun139_download_url(
 
     兼容现有 STRM 文件格式:
     /139getDownloadUrl/{sha256}/{size}/{fileName}?part_info={base64}
+
+    pc_client 参数默认开启，使用 PC 客户端秒传请求格式（force_rename + 完整 x-yun-* headers）
     """
     client_ip = _get_client_ip(request)
     key = _cache_key("139", client_ip, sha256)
@@ -287,6 +290,12 @@ async def yun139_download_url(
         is_app_mode = client.app_mode
     else:
         is_app_mode = app_mode.lower() in ("true", "1", "yes")
+    
+    # PC 客户端秒传格式默认开启
+    if pc_client is None:
+        is_pc_client = True
+    else:
+        is_pc_client = pc_client.lower() in ("true", "1", "yes")
 
     # 解析分片信息
     part_infos = None
@@ -305,6 +314,7 @@ async def yun139_download_url(
         parent_id=parent_id,
         part_infos=part_infos,
         app_mode=is_app_mode,
+        is_pc_client=is_pc_client,
     )
 
     if not upload_data["success"]:
