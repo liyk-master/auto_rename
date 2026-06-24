@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union, Set
 
 from jinja2 import Template
-from src.video_organizer.core.tmdb_client import TMDBClient
-from src.video_organizer.core.guessit_parser import GuessItParser, GUESSIT_AVAILABLE
-from src.video_organizer.utils.llm_translator import LLMTranslator
+from .tmdb_client import TMDBClient
+from .guessit_parser import GuessItParser, GUESSIT_AVAILABLE
+from ..utils.llm_translator import LLMTranslator
 from .manual_rule_engine import ManualRuleEngine
 from .media_type_resolver import MediaTypeResolver
 
@@ -946,16 +946,53 @@ class VideoRenamer:
                 metadata = {}
 
             # 预提取并剥离 tmdbid 标记，防止其数字被误识别为集号/季号/发布组
-            tmdbid_marker_match = re.search(r"[\[\{]tmdbid[=-](\d+)[\]\}]", processed_filename)
-            if tmdbid_marker_match:
-                extracted_tmdb_id = tmdbid_marker_match.group(1)
+            # 支持两种格式：
+            # 1. 简单格式: {tmdbid=123} 或 [tmdbid=123]
+            # 2. 完整格式: {[tmdbid=123;type=tv]} 或 {[tmdbid=123;type=movie]}
+
+            # 先尝试完整格式（手动规则 DSL 格式）
+            full_marker_match = re.search(
+                r"\{\[(?:tmdbid|doubanid)=(\d+);type=(tv|movie)(?:;s=\d+)?(?:;e=\d+)?\]\}",
+                processed_filename,
+                re.IGNORECASE
+            )
+            if full_marker_match:
+                extracted_tmdb_id = full_marker_match.group(1)
+                extracted_media_type = full_marker_match.group(2).lower()
+
                 if "tmdb_id" not in locked_fields and not metadata.get("tmdb_id"):
                     metadata["tmdb_id"] = extracted_tmdb_id
-                # 从解析用文件名中剥离 tmdbid 标记，避免数字干扰后续解析
-                processed_filename = re.sub(r"[\[\{]tmdbid[=-]\d+[\]\}]", "", processed_filename).strip()
-                # 清理剥离后的残留分隔符（如 ".." 等）
-                processed_filename = re.sub(r"\.{2,}", ".", processed_filename).strip(". ")
-                logger.debug(f"剥离 tmdbid 标记后文件名: '{processed_filename}'")
+                    locked_fields.add("tmdb_id")
+                    logger.debug(f"从文件名提取 tmdb_id: {extracted_tmdb_id}")
+
+                if "media_type" not in locked_fields and not metadata.get("media_type"):
+                    metadata["media_type"] = extracted_media_type
+                    locked_fields.add("media_type")
+                    logger.debug(f"从文件名提取 media_type: {extracted_media_type}")
+
+                # 从解析用文件名中剥离完整标记
+                processed_filename = re.sub(
+                    r"\{\[(?:tmdbid|doubanid)=\d+;type=(?:tv|movie)(?:;s=\d+)?(?:;e=\d+)?\]\}",
+                    "",
+                    processed_filename,
+                    flags=re.IGNORECASE
+                ).strip()
+                logger.debug(f"剥离完整 DSL 标记后文件名: '{processed_filename}'")
+            else:
+                # 尝试简单格式
+                simple_marker_match = re.search(r"[\[\{]tmdbid[=-](\d+)[\]\}]", processed_filename)
+                if simple_marker_match:
+                    extracted_tmdb_id = simple_marker_match.group(1)
+                    if "tmdb_id" not in locked_fields and not metadata.get("tmdb_id"):
+                        metadata["tmdb_id"] = extracted_tmdb_id
+                        logger.debug(f"从文件名提取 tmdb_id (简单格式): {extracted_tmdb_id}")
+                    # 从解析用文件名中剥离简单标记
+                    processed_filename = re.sub(r"[\[\{]tmdbid[=-]\d+[\]\}]", "", processed_filename).strip()
+                    logger.debug(f"剥离简单 tmdbid 标记后文件名: '{processed_filename}'")
+
+            # 清理剥离后的残留分隔符（如 ".." 等）
+            processed_filename = re.sub(r"\.{2,}", ".", processed_filename).strip(". ")
+            processed_filename = re.sub(r"_{2,}", "_", processed_filename).strip("_ ")
 
             # 预先从文件名提取发布组（独立于 _extract_with_regex，避免因函数异常而丢失）
             release_group_from_filename = ""
@@ -1123,6 +1160,9 @@ class VideoRenamer:
             # 3. 补全媒体类型（如果未锁定）
             if media_type_hint and "media_type" not in locked_fields:
                 metadata["media_type"] = media_type_hint
+                # 将 media_type_hint 视为外部明确指定，应该锁定防止被覆盖
+                locked_fields.add("media_type")
+                logger.debug(f"使用 media_type_hint: {media_type_hint}，已锁定")
 
             # 3.5 使用 MediaTypeResolver 统一判断 media_type（置信度机制）
             if "media_type" not in locked_fields:
@@ -4289,7 +4329,13 @@ class VideoRenamer:
             ):
                 sub_category = "儿童"
             else:
-                if original_language in ["zh", "cn"] or any(
+                # 使用字幕组映射作为优先判断（如果已经有 forced_content_type 且为 anime）
+                if forced_content_type == "anime":
+                    sub_category = self._determine_anime_subcategory(
+                        metadata, origin_countries, original_language
+                    )
+                    logger.info(f"基于字幕组映射判定为动漫: {sub_category}")
+                elif original_language in ["zh", "cn"] or any(
                     country in chinese_countries for country in origin_countries
                 ):
                     sub_category = "国产剧"
