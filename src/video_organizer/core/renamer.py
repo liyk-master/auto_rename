@@ -139,7 +139,6 @@ class VideoRenamer:
         "Sweet": "anime",
         "A-F": "anime",
         "SDMN": "anime",
-        "Web-Raws": "anime",
         "UHA-Wings": "anime",
         "Wings": "anime",
         "NPU": "anime",
@@ -401,7 +400,6 @@ class VideoRenamer:
         "NH": "anime",
         "NK": "anime",
         "NL": "anime",
-        "NOW": "anime",
         "NR": "anime",
         "NSD": "anime",
         "NV": "anime",
@@ -3389,17 +3387,12 @@ class VideoRenamer:
                     logger.info(f"[DEBUG] release_group='{release_group}', original_release_group='{original_release_group}', metadata.release_group='{metadata.get('release_group', '')}'")
                     preferred_type = None
                     if release_group:
+                        # 仅使用精确匹配
                         if release_group in self._release_group_mapping:
                             preferred_type = self._release_group_mapping[release_group]
                             logger.info(f"[DEBUG] release_group '{release_group}' 精确匹配 -> preferred_type={preferred_type}")
                         else:
-                            for group_name, content_type in self._release_group_mapping.items():
-                                if group_name in release_group or release_group in group_name:
-                                    preferred_type = content_type
-                                    logger.info(f"[DEBUG] release_group '{release_group}' 模糊匹配 '{group_name}' -> preferred_type={preferred_type}")
-                                    break
-                            else:
-                                logger.info(f"[DEBUG] release_group '{release_group}' 未匹配任何映射")
+                            logger.info(f"[DEBUG] release_group '{release_group}' 未匹配任何映射")
                     else:
                         logger.info(f"[DEBUG] release_group 为空，无字幕组提示")
 
@@ -3498,13 +3491,9 @@ class VideoRenamer:
                             release_group = original_release_group or metadata.get("release_group", "")
                             preferred_type = None
                             if release_group:
+                                # 仅使用精确匹配
                                 if release_group in self._release_group_mapping:
                                     preferred_type = self._release_group_mapping[release_group]
-                                else:
-                                    for group_name, content_type in self._release_group_mapping.items():
-                                        if group_name in release_group or release_group in group_name:
-                                            preferred_type = content_type
-                                            break
 
                             def has_anime_genre(result):
                                 genre_ids = result.get("genre_ids", [])
@@ -4257,21 +4246,12 @@ class VideoRenamer:
         release_group = metadata.get("release_group", "")
         forced_content_type = None
         if release_group:
-            # 精确匹配
+            # 仅使用精确匹配，避免模糊匹配误判
             if release_group in self._release_group_mapping:
                 forced_content_type = self._release_group_mapping[release_group]
                 logger.debug(
                     f"字幕组 '{release_group}' 映射到类型: {forced_content_type}（后备）"
                 )
-            else:
-                # 模糊匹配（检查字幕组名称是否包含映射关键词）
-                for group_name, content_type in self._release_group_mapping.items():
-                    if group_name in release_group or release_group in group_name:
-                        forced_content_type = content_type
-                        logger.debug(
-                            f"字幕组 '{release_group}' 模糊匹配到 '{group_name}'，映射到类型: {content_type}（后备）"
-                        )
-                        break
 
         # 获取语言和地区信息
         original_language = metadata.get("original_language", "").lower()

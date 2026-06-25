@@ -92,6 +92,17 @@ jobs:
           --name "VideoOrganizer-${{ matrix.platform }}" \
           --add-data "config_template.ini:." \
           --add-data "src/video_organizer/web/static:video_organizer/web/static" \
+          --hidden-import babelfish \
+          --hidden-import guessit \
+          --hidden-import rebulk \
+          --hidden-import rebulk.rules \
+          --hidden-import rebulk.patterns \
+          --hidden-import rebulk.match \
+          --collect-submodules babelfish \
+          --collect-submodules guessit \
+          --collect-submodules rebulk \
+          --collect-data babelfish \
+          --collect-data guessit \
           --paths . \
           --clean \
           run_organizer.py
