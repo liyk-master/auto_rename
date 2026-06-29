@@ -2026,7 +2026,7 @@ class VideoFileHandler:
             )
             subprocess.Popen(
                 ["powershell", "-NoProfile", "-Command", ps_script],
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             )
             self.logger.info(f"已启动 PowerShell 后台重试删除文件: {file_path}")
             return True
