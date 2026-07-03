@@ -11,6 +11,7 @@ import string
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
@@ -171,6 +172,18 @@ class Yun139:
             except Exception as e:
                 _logger.warning(f"Token刷新失败，将继续使用现有token: {e}")
     
+    @staticmethod
+    def sanitize_filename(filename: str) -> str:
+        """
+        过滤文件名中的特殊字符，避免 139 上传 API 校验失败。
+        移除: \\ / : * ? " < > | 及控制字符，并 strip 首尾空格和点号。
+        """
+        if not filename:
+            return "untitled"
+        safe = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', '', filename)
+        safe = safe.strip().strip('.')
+        return safe if safe else "untitled"
+
     def _encode_uri_component(self, s: str) -> str:
         """匹配 JS encodeURIComponentFull：除字母数字 _ . - ~ 外全部编码"""
         return quote(s, safe='')
@@ -1121,7 +1134,7 @@ class Yun139:
             raise NotImplementedError("目前仅支持新版个人云上传")
         
         import os
-        file_name = os.path.basename(file_path)
+        file_name = self.sanitize_filename(os.path.basename(file_path))
         file_size = os.path.getsize(file_path)
         
         # 计算SHA256
@@ -1354,6 +1367,7 @@ class Yun139:
         """
         秒传文件（不实际上传，通过 SHA256 匹配已有文件）
         """
+        filename = self.sanitize_filename(filename)
         if not part_infos:
             part_infos = [{"partNumber": 1, "partSize": 1000, "parallelHashCtx": {"partOffset": 0}}]
 

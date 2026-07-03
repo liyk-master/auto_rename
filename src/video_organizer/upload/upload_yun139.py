@@ -1184,7 +1184,8 @@ class Yun139Uploader:
         from tqdm import tqdm
 
         # 使用目标文件名或原文件名
-        file_name = target_filename if target_filename else os.path.basename(file_path)
+        raw_name = target_filename if target_filename else os.path.basename(file_path)
+        file_name = self.client.sanitize_filename(raw_name)
         file_size = os.path.getsize(file_path)
 
         # 计算 SHA256（带进度条）
