@@ -7,6 +7,7 @@ emya 入库服务
 """
 
 import logging
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import Optional, Dict, List, Any, Tuple
 
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
+from sqlalchemy.exc import IntegrityError
 
 from .emya_models import (
     Library,
@@ -38,6 +40,9 @@ logger = logging.getLogger(__name__)
 
 class EmyaService:
     """emya 入库服务"""
+
+    _SHA256_RE = re.compile(r'/139getDownloadUrl/([a-fA-F0-9]{64})/')
+    _FOLDER_REGEX = re.compile(r'^(.+?) \((\d{4})\) \{tmdbid=(\d+)\}$')
 
     def __init__(self, default_user_id: Optional[int] = None):
         """
@@ -190,25 +195,35 @@ class EmyaService:
                 logger.warning(f"无效的日期格式: {date_air}，将设为 None")
                 date_air = None
 
-        video_list = VideoList(
-            video_library_id=video_library_id,
-            video_type=video_type,
-            title=title,
-            origin_title=origin_title,
-            description=description,
-            date_air=date_air,
-            runtime=runtime,
-            tmdb_id=tmdb_id,
-            tagline=tagline,
-            genres=genres,
-            peoples=peoples,
-            upcoming=upcoming,
-            remark=remark,
-        )
-        session.add(video_list)
-        session.flush()
-        logger.info(f"创建视频: {title} (ID: {video_list.id}, TMDB: {tmdb_id})")
-        return video_list
+        try:
+            video_list = VideoList(
+                video_library_id=video_library_id,
+                video_type=video_type,
+                title=title,
+                origin_title=origin_title,
+                description=description,
+                date_air=date_air,
+                runtime=runtime,
+                tmdb_id=tmdb_id,
+                tagline=tagline,
+                genres=genres,
+                peoples=peoples,
+                upcoming=upcoming,
+                remark=remark,
+            )
+            session.add(video_list)
+            session.flush()
+            logger.info(f"创建视频: {title} (ID: {video_list.id}, TMDB: {tmdb_id})")
+            return video_list
+        except IntegrityError:
+            session.rollback()
+            existing = self.get_video_by_tmdb_id(session, tmdb_id, video_type)
+            if existing:
+                logger.warning(
+                    f"视频已存在，返回已有记录: {title} (TMDB: {tmdb_id})"
+                )
+                return existing
+            raise
 
     def update_video_list(
         self, session: Session, video_list: VideoList, **kwargs
@@ -271,6 +286,11 @@ class EmyaService:
         session.flush()
         return alias
 
+    def _touch_video_list_updated_at(self, session: Session, video_list_id: int) -> None:
+        session.query(VideoList).filter(VideoList.id == video_list_id).update(
+            {"updated_at": datetime.now()}
+        )
+
     # ============================================================
     # 季操作
     # ============================================================
@@ -318,20 +338,30 @@ class EmyaService:
         except (ValueError, TypeError):
             season_number = 1
 
-        season = VideoSeason(
-            video_list_id=video_list_id,
-            season_number=season_number,
-            title=title or f"第{season_number}季",
-            description=description,
-            date_air=date_air,
-            season_number_custom=season_number_custom,
-        )
-        session.add(season)
-        session.flush()
-        logger.info(
-            f"创建季: S{season_number:02d} (ID: {season.id}, Video: {video_list_id})"
-        )
-        return season
+        try:
+            season = VideoSeason(
+                video_list_id=video_list_id,
+                season_number=season_number,
+                title=title or f"第{season_number}季",
+                description=description,
+                date_air=date_air,
+                season_number_custom=season_number_custom,
+            )
+            session.add(season)
+            session.flush()
+            logger.info(
+                f"创建季: S{season_number:02d} (ID: {season.id}, Video: {video_list_id})"
+            )
+            return season
+        except IntegrityError:
+            session.rollback()
+            existing = self.get_season(session, video_list_id, season_number)
+            if existing:
+                logger.warning(
+                    f"季已存在，返回已有记录: S{season_number:02d} (Video: {video_list_id})"
+                )
+                return existing
+            raise
 
     # ============================================================
     # 集操作
@@ -390,25 +420,36 @@ class EmyaService:
         except (ValueError, TypeError):
             episode_number = 1
 
-        episode = VideoEpisode(
-            video_list_id=video_list_id,
-            video_season_id=video_season_id,
-            episode_number=episode_number,
-            title=title or f"第{episode_number}集",
-            description=description,
-            date_air=date_air,
-            runtime=runtime,
-            poster=poster,
-            still=still,
-            tmdb_id=tmdb_id,
-            imdb_id=imdb_id,
-        )
-        session.add(episode)
-        session.flush()
-        logger.info(
-            f"创建集: E{episode_number:02d} (ID: {episode.id}, Season: {video_season_id})"
-        )
-        return episode
+        try:
+            episode = VideoEpisode(
+                video_list_id=video_list_id,
+                video_season_id=video_season_id,
+                episode_number=episode_number,
+                title=title or f"第{episode_number}集",
+                description=description,
+                date_air=date_air,
+                runtime=runtime,
+                poster=poster,
+                still=still,
+                tmdb_id=tmdb_id,
+                imdb_id=imdb_id,
+            )
+            session.add(episode)
+            session.flush()
+            self._touch_video_list_updated_at(session, video_list_id)
+            logger.info(
+                f"创建集: E{episode_number:02d} (ID: {episode.id}, Season: {video_season_id})"
+            )
+            return episode
+        except IntegrityError:
+            session.rollback()
+            existing = self.get_episode(session, video_season_id, episode_number)
+            if existing:
+                logger.warning(
+                    f"集已存在，返回已有记录: E{episode_number:02d} (Season: {video_season_id})"
+                )
+                return existing
+            raise
 
     # ============================================================
     # 媒体资源操作
@@ -477,8 +518,26 @@ class EmyaService:
         )
         session.add(media)
         session.flush()
+        self._touch_video_list_updated_at(session, video_list_id)
         logger.info(f"创建媒体资源: {name} (ID: {media.id})")
         return media
+
+    def get_media_by_path_url_sha256(self, session: Session, path_url: str) -> Optional[VideoMedia]:
+        """
+        根据 path_url 中的 sha256 查找已有的媒体记录（去重用）。
+        与 ImportMedia.ts 的去重逻辑一致：从 path_url 正则提取 sha256 后查询。
+        """
+        match = self._SHA256_RE.search(path_url or "")
+        if not match:
+            return None
+        sha256 = match.group(1)
+        existing = session.query(VideoMedia).filter(
+            and_(
+                VideoMedia.path_url.contains(sha256),
+                VideoMedia.deleted_at.is_(None),
+            )
+        ).first()
+        return existing
 
     def get_media_by_episode(
         self, session: Session, video_episode_id: int
@@ -656,6 +715,240 @@ class EmyaService:
             image_type=ImageType.THUMB,
             path_type=path_type,
         )
+
+    # ============================================================
+    # People 操作
+    # ============================================================
+
+    def upsert_people(
+        self,
+        session: Session,
+        tmdb_id: str,
+        name: str,
+        original_name: Optional[str] = None,
+        gender: Optional[int] = None,
+        profile_path: Optional[str] = None,
+        known_for_department: Optional[str] = None,
+    ) -> Optional[int]:
+        """
+        Upsert video_people 记录，并写入头像 image
+
+        Returns:
+            people.id 或 None
+        """
+        existing = session.query(VideoPeople).filter(
+            VideoPeople.tmdb_id == int(tmdb_id)
+        ).first()
+
+        if existing:
+            if profile_path:
+                existing_img = session.query(VideoImage).filter(
+                    and_(
+                        VideoImage.relation_type == RelationType.VIDEO_PEOPLE,
+                        VideoImage.relation_id == existing.id,
+                        VideoImage.deleted_at.is_(None),
+                    )
+                ).first()
+                if not existing_img:
+                    self.create_image(
+                        session=session,
+                        relation_type=RelationType.VIDEO_PEOPLE,
+                        relation_id=existing.id,
+                        path_url=profile_path,
+                        image_type=ImageType.PRIMARY,
+                    )
+            return existing.id
+
+        people = VideoPeople(
+            tmdb_id=int(tmdb_id),
+            name=name,
+            name_en=original_name,
+            gender=gender,
+            profile_path=profile_path,
+            known_for_department=known_for_department,
+        )
+        session.add(people)
+        session.flush()
+
+        if profile_path:
+            self.create_image(
+                session=session,
+                relation_type=RelationType.VIDEO_PEOPLE,
+                relation_id=people.id,
+                path_url=profile_path,
+                image_type=ImageType.PRIMARY,
+            )
+
+        logger.debug(f"创建 people: {name} (tmdb_id={tmdb_id}, id={people.id})")
+        return people.id
+
+    # ============================================================
+    # TMDB 富信息补全（与 ImportMedia.ts 一致）
+    # ============================================================
+
+    def _enrich_video_list_from_tmdb(
+        self,
+        session: Session,
+        video_list: VideoList,
+        tmdb_id: str,
+        video_type: str,
+        tmdb_client: Any,
+    ) -> None:
+        """
+        TMDB 富信息补全 video_list：description, poster, backdrop, peoples
+
+        与 ImportMedia.ts findOrCreateVideoList 一致
+        """
+        try:
+            tmdb_type = 'tv' if video_type == VideoType.TV else 'movie'
+            if tmdb_type == 'tv':
+                details = tmdb_client.get_tv_details(int(tmdb_id))
+            else:
+                details = tmdb_client.get_movie_details(int(tmdb_id))
+
+            if not details:
+                logger.warning(f"TMDB 详情获取失败: {tmdb_id} ({tmdb_type})")
+                return
+
+            if details.get('poster_path'):
+                self.add_poster(
+                    session, RelationType.VIDEO_LIST, video_list.id,
+                    details['poster_path']
+                )
+            if details.get('backdrop_path'):
+                self.add_backdrop(
+                    session, RelationType.VIDEO_LIST, video_list.id,
+                    details['backdrop_path']
+                )
+            if details.get('overview') and not video_list.description:
+                video_list.description = details['overview']
+                session.flush()
+
+            credits_data = details.get('credits')
+            if credits_data:
+                peoples_list: List[Dict[str, Any]] = []
+                for cast_item in (credits_data.get('cast') or [])[:15]:
+                    pid = self.upsert_people(
+                        session=session,
+                        tmdb_id=str(cast_item.get('id', '')),
+                        name=cast_item.get('name', ''),
+                        original_name=cast_item.get('original_name'),
+                        gender=cast_item.get('gender'),
+                        profile_path=cast_item.get('profile_path'),
+                        known_for_department=cast_item.get('known_for_department'),
+                    )
+                    if pid:
+                        peoples_list.append({
+                            'id': pid,
+                            'role': cast_item.get('character', ''),
+                            'type': 'Actor',
+                        })
+
+                seen_tmdb_ids: set = set()
+                for crew_item in (credits_data.get('crew') or []):
+                    crew_tmdb_id = str(crew_item.get('id', ''))
+                    if crew_tmdb_id in seen_tmdb_ids:
+                        continue
+                    if crew_item.get('job') not in ('Director', 'Writer', 'Producer', 'Creator', 'Screenplay'):
+                        continue
+                    seen_tmdb_ids.add(crew_tmdb_id)
+                    pid = self.upsert_people(
+                        session=session,
+                        tmdb_id=crew_tmdb_id,
+                        name=crew_item.get('name', ''),
+                        original_name=crew_item.get('original_name'),
+                        gender=crew_item.get('gender'),
+                        profile_path=crew_item.get('profile_path'),
+                        known_for_department=crew_item.get('known_for_department'),
+                    )
+                    if pid:
+                        peoples_list.append({
+                            'id': pid,
+                            'role': '',
+                            'type': crew_item.get('job', ''),
+                        })
+
+                if peoples_list and not video_list.peoples:
+                    import json
+                    video_list.peoples = json.dumps(peoples_list, ensure_ascii=False)
+                    session.flush()
+
+            if details.get('genres'):
+                self.create_genres_from_list(session, details['genres'])
+
+            logger.info(f"TMDB 富信息写入成功: {video_list.title} (id={video_list.id})")
+        except Exception as e:
+            logger.warning(f"TMDB 富信息补全失败 (video_list id={video_list.id}): {e}")
+
+    def _enrich_season_from_tmdb(
+        self,
+        session: Session,
+        season_obj: VideoSeason,
+        tmdb_id: str,
+        season_num: int,
+        tmdb_client: Any,
+    ) -> None:
+        """
+        TMDB 季富信息补全：poster, description
+
+        与 ImportMedia.ts findOrCreateSeason 一致
+        """
+        try:
+            sd = tmdb_client.get_season_details(int(tmdb_id), season_num)
+            if not sd:
+                return
+
+            if sd.get('poster_path'):
+                self.add_poster(
+                    session, RelationType.VIDEO_SEASON, season_obj.id,
+                    sd['poster_path']
+                )
+            if sd.get('overview') and not season_obj.description:
+                season_obj.description = sd['overview']
+                session.flush()
+        except Exception as e:
+            logger.warning(f"TMDB 季富信息补全失败 (season id={season_obj.id}): {e}")
+
+    def _enrich_episode_from_tmdb(
+        self,
+        session: Session,
+        episode_obj: VideoEpisode,
+        tmdb_id: str,
+        season_num: int,
+        episode_num: int,
+        tmdb_client: Any,
+    ) -> None:
+        """
+        TMDB 集富信息补全：still, description
+
+        与 ImportMedia.ts findOrCreateEpisode 一致
+        注意：TS 对 episode still 用 type='Primary'，不用 Thumb
+        """
+        try:
+            sd = tmdb_client.get_season_details(int(tmdb_id), season_num)
+            if not sd:
+                return
+
+            ep_data = None
+            for ep in (sd.get('episodes') or []):
+                if ep.get('episode_number') == episode_num:
+                    ep_data = ep
+                    break
+
+            if ep_data:
+                if ep_data.get('still_path'):
+                    self.create_image(
+                        session=session,
+                        relation_type=RelationType.VIDEO_EPISODE,
+                        relation_id=episode_obj.id,
+                        path_url=ep_data['still_path'],
+                        image_type=ImageType.PRIMARY,
+                    )
+                if ep_data.get('overview') and not episode_obj.description:
+                    episode_obj.description = ep_data['overview']
+                    session.flush()
+        except Exception as e:
+            logger.warning(f"TMDB 集富信息补全失败 (episode id={episode_obj.id}): {e}")
 
     # ============================================================
     # 类型操作
@@ -863,6 +1156,13 @@ class EmyaService:
                     season_num = media_file.get("season_number")
                     episode_num = media_file.get("episode_number")
 
+                    existing_media = self.get_media_by_path_url_sha256(
+                        session, media_file.get("path_url", "")
+                    )
+                    if existing_media:
+                        logger.info(f"媒体已存在（sha256 去重），跳过: {media_file.get('path_url', '')[:80]}")
+                        continue
+
                     season = self.get_season(session, video_list.id, season_num)
                     if season:
                         episode = self.get_episode(session, season.id, episode_num)
@@ -947,6 +1247,13 @@ class EmyaService:
             # 2. 添加媒体资源（电影直接关联 video_list）
             if media_files:
                 for media_file in media_files:
+                    existing_media = self.get_media_by_path_url_sha256(
+                        session, media_file.get("path_url", "")
+                    )
+                    if existing_media:
+                        logger.info(f"媒体已存在（sha256 去重），跳过: {media_file.get('path_url', '')[:80]}")
+                        continue
+
                     self.create_media(
                         session=session,
                         name=media_file.get("name"),
@@ -1098,6 +1405,164 @@ class EmyaService:
             return self.import_tv_show(tmdb_data, video_library_id, media_files)
         else:
             return self.import_movie(tmdb_data, video_library_id, media_files)
+
+    def import_by_path(
+        self,
+        folder_parts: List[str],
+        media_url: str,
+        quality_tags: Optional[str] = None,
+        file_size: Optional[int] = None,
+        season: Optional[int] = None,
+        episode: Optional[int] = None,
+        path_type: str = PathType.URL,
+        tmdb_client: Any = None,
+    ) -> Optional[VideoList]:
+        """
+        按路径结构入库（与 ImportMedia.ts 逻辑一致）
+
+        folder_parts 示例:
+          TV:  ['TV Shows', '日韩剧', 'Title (2026) {tmdbid=295509}', 'Season 01']
+          Movie: ['Movies', 'Title (2026) {tmdbid=295509}']
+
+        解析逻辑:
+          parts[0] → 判断 TV/Movie
+          找到匹配 Title (Year) {tmdbid=xxx} 的层级 → 提取 title, year, tmdbId
+          其前一层 → categoryName → library
+
+        tmdb_client: TMDB API 客户端，提供后补写富信息（description/poster/people 等）
+        """
+        if not folder_parts or len(folder_parts) < 1:
+            logger.warning(f"folder_parts 为空，无法入库")
+            return None
+
+        first_part = folder_parts[0].lower()
+        is_tv = first_part.startswith('tv') or first_part == 'anime'
+        video_type = VideoType.TV if is_tv else VideoType.MOVIE
+
+        folder_idx = None
+        for i, part in enumerate(folder_parts):
+            if self._FOLDER_REGEX.match(part):
+                folder_idx = i
+                break
+
+        if folder_idx is None:
+            logger.warning(f"folder_parts 中未找到 Title (Year) {{tmdbid=xxx}} 格式: {folder_parts}")
+            return None
+
+        match = self._FOLDER_REGEX.match(folder_parts[folder_idx])
+        title = match.group(1).strip()
+        year = match.group(2)
+        tmdb_id = match.group(3)
+
+        if folder_idx > 0:
+            category_name = folder_parts[folder_idx - 1]
+        else:
+            category_name = "电视剧" if is_tv else "电影"
+
+        with self.db.session_scope() as session:
+            library = self.get_or_create_library(session, category_name, "public")
+            video_library_id = library.id
+            logger.info(f"使用媒体库: {category_name} (ID: {video_library_id})")
+
+            video_list = self.get_video_by_tmdb_id(session, tmdb_id, video_type)
+            if video_list is None:
+                video_list = self.create_video_list(
+                    session=session,
+                    video_library_id=video_library_id,
+                    video_type=video_type,
+                    title=title,
+                    date_air=f"{year}-01-01",
+                    tmdb_id=tmdb_id,
+                )
+                logger.info(f"创建 video_list: {title} (tmdb_id={tmdb_id})")
+
+                if tmdb_client:
+                    self._enrich_video_list_from_tmdb(session, video_list, tmdb_id, video_type, tmdb_client)
+            else:
+                logger.info(f"video_list 已存在: {title} (tmdb_id={tmdb_id}, id={video_list.id})")
+
+                if tmdb_client and (not video_list.description or not video_list.peoples):
+                    self._enrich_video_list_from_tmdb(session, video_list, tmdb_id, video_type, tmdb_client)
+
+            if is_tv:
+                season_num = season or 1
+                for part in folder_parts:
+                    season_match = re.match(r'Season (\d+)', part, re.IGNORECASE)
+                    if season_match:
+                        season_num = int(season_match.group(1))
+                        break
+
+                season_obj = self.get_season(session, video_list.id, season_num)
+                if season_obj is None:
+                    season_obj = self.create_season(
+                        session=session,
+                        video_list_id=video_list.id,
+                        season_number=season_num,
+                        title=f"第 {season_num} 季",
+                    )
+
+                    if tmdb_client:
+                        self._enrich_season_from_tmdb(session, season_obj, tmdb_id, season_num, tmdb_client)
+                else:
+                    if tmdb_client and not season_obj.description:
+                        self._enrich_season_from_tmdb(session, season_obj, tmdb_id, season_num, tmdb_client)
+
+                episode_id = None
+                if episode:
+                    episode_obj = self.get_episode(session, season_obj.id, episode)
+                    if episode_obj is None:
+                        episode_obj = self.create_episode(
+                            session=session,
+                            video_list_id=video_list.id,
+                            video_season_id=season_obj.id,
+                            episode_number=episode,
+                            title=f"第 {episode} 集",
+                            date_air=f"{year}-01-01",
+                        )
+
+                        if tmdb_client:
+                            self._enrich_episode_from_tmdb(session, episode_obj, tmdb_id, season_num, episode, tmdb_client)
+                    else:
+                        if tmdb_client and not episode_obj.description:
+                            self._enrich_episode_from_tmdb(session, episode_obj, tmdb_id, season_num, episode, tmdb_client)
+                    episode_id = episode_obj.id
+
+                existing = self.get_media_by_path_url_sha256(session, media_url)
+                if existing:
+                    logger.info(f"媒体已存在（sha256 去重），跳过: {media_url[:80]}")
+                    session.expunge(video_list)
+                    return video_list
+
+                self.create_media(
+                    session=session,
+                    name=quality_tags or "Original",
+                    path_url=media_url,
+                    path_type=path_type,
+                    video_list_id=video_list.id,
+                    video_season_id=season_obj.id,
+                    video_episode_id=episode_id,
+                    file_size=file_size,
+                    status="complete",
+                )
+            else:
+                existing = self.get_media_by_path_url_sha256(session, media_url)
+                if existing:
+                    logger.info(f"媒体已存在（sha256 去重），跳过: {media_url[:80]}")
+                    session.expunge(video_list)
+                    return video_list
+
+                self.create_media(
+                    session=session,
+                    name=quality_tags or "Original",
+                    path_url=media_url,
+                    path_type=path_type,
+                    video_list_id=video_list.id,
+                    file_size=file_size,
+                    status="complete",
+                )
+
+            session.expunge(video_list)
+            return video_list
 
     # ============================================================
     # 查询方法

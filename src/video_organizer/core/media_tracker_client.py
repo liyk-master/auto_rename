@@ -19,6 +19,8 @@ class MediaTrackerClient:
         config: Dict[str, Any],
         renamer=None,
         yun139_uploader=None,
+        emya_controller=None,
+        emya_db_config: Optional[Dict[str, Any]] = None,
     ):
         self.enabled = config.get("enabled", False)
         host = config.get("host", "localhost")
@@ -35,6 +37,10 @@ class MediaTrackerClient:
 
         self.renamer = renamer
         self.yun139_uploader = yun139_uploader
+        self.emya_import = config.get("emya_import", False)
+        self.generate_strm = config.get("generate_strm", True)
+        self.emya_controller = emya_controller
+        self.emya_db_config = emya_db_config or {}
 
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -204,6 +210,12 @@ class MediaTrackerClient:
         tmdb_id = payload.get("tmdb_id")
         media_type = payload.get("media_type")
         title = payload.get("title", file_name)
+        strm_url = ""
+        metadata = None
+        renamed_filename = ""
+        season = None
+        episode = None
+        quality_tags = None
 
         if not file_name or not sha256 or not file_size:
             logger.warning("new_media \u6570\u636e\u4e0d\u5b8c\u6574: %s", payload)
@@ -222,6 +234,18 @@ class MediaTrackerClient:
                     return
                 renamed_filename = parts[-1]
                 folder_parts = [p for p in parts[:-1] if p and p.lower() != "media"]
+
+                season_episode_match = re.search(r'S(\d+)E(\d+)', title, re.IGNORECASE)
+                if not season_episode_match:
+                    season_episode_match = re.search(r'S(\d+)E(\d+)', renamed_filename, re.IGNORECASE)
+                if season_episode_match:
+                    season = int(season_episode_match.group(1))
+                    episode = int(season_episode_match.group(2))
+                    logger.info("suggested_path 分支提取季集: S%02dE%02d", season, episode)
+
+                if self.renamer:
+                    quality_tags = self.renamer._extract_keywords(Path(renamed_filename).stem)
+
                 logger.info("使用 suggested_path 跳过 TMDB: %s", suggested_path)
             else:
                 # 原有的 TMDB 处理逻辑
@@ -351,7 +375,7 @@ class MediaTrackerClient:
                         file_id = result.get("fileId")
 
                     # \u751f\u6210 STRM \u6587\u4ef6\uff08App \u6a21\u5f0f\u4f7f\u7528 fileId\uff09
-                    if file_id and uploader.strm_server and uploader.strm_output_dir:
+                    if self.generate_strm and file_id and uploader.strm_server and uploader.strm_output_dir:
                         try:
                             logger.info("\u751f\u6210 STRM \u6587\u4ef6\uff08App \u6a21\u5f0f\uff0cfileId\uff09: %s", renamed_filename)
                             strm_url = uploader.generate_strm_url(
@@ -379,7 +403,7 @@ class MediaTrackerClient:
             else:
                 logger.info("PC \u6a21\u5f0f\uff1a\u76f4\u63a5\u751f\u6210 STRM\uff08\u4e0d\u521b\u5efa\u4e91\u76d8\u76ee\u5f55\uff09")
 
-                if uploader.strm_server and uploader.strm_output_dir:
+                if self.generate_strm and uploader.strm_server and uploader.strm_output_dir:
                     try:
                         logger.info("\u751f\u6210 STRM \u6587\u4ef6\uff08PC \u6a21\u5f0f\uff0cSHA256\uff09: %s", renamed_filename)
 
@@ -410,6 +434,41 @@ class MediaTrackerClient:
                         logger.error("\u751f\u6210 STRM \u6587\u4ef6\u65f6\u51fa\u9519: %s", e, exc_info=True)
                 else:
                     logger.info("\u672a\u914d\u7f6e STRM \u670d\u52a1\u5668\uff0c\u8df3\u8fc7 STRM \u751f\u6210")
+
+            # === emya 入库（如果启用，独立于 STRM） ===
+            if self.emya_import and self.emya_controller:
+                try:
+                    emya_media_url = ""
+                    if uploader.strm_server and sha256 and file_size:
+                        emya_media_url = uploader.generate_strm_url(
+                            file_id="",
+                            file_name=renamed_filename,
+                            content_hash=sha256,
+                            file_size=file_size,
+                            part_infos=[{"partNumber": 1, "partSize": 1000, "parallelHashCtx": {"partOffset": 0}}],
+                        )
+                    elif strm_url:
+                        emya_media_url = strm_url
+
+                    if emya_media_url:
+                        tmdb_client = getattr(self.renamer, 'tmdb_client', None) if self.renamer else None
+                        emya_result = self.emya_controller.import_by_path(
+                            folder_parts=folder_parts,
+                            media_url=emya_media_url,
+                            quality_tags=quality_tags,
+                            file_size=file_size,
+                            season=season,
+                            episode=episode,
+                            tmdb_client=tmdb_client,
+                        )
+                        if emya_result.success:
+                            logger.info("emya 入库成功: video_id=%s, title=%s", emya_result.data.get("video_id"), emya_result.data.get("title"))
+                        else:
+                            logger.warning("emya 入库失败: %s", emya_result.message)
+                    else:
+                        logger.warning("emya 入库: 无法构建 media_url，跳过")
+                except Exception as e:
+                    logger.error("emya 入库异常: %s", e, exc_info=True)
 
         except Exception as e:
             logger.error("\u5904\u7406 new_media \u5931\u8d25 (%s): %s", file_name, e, exc_info=True)

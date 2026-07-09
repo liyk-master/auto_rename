@@ -1431,69 +1431,43 @@ class VideoFileHandler:
                         elif upload_results.get("cloud189"):
                             media_url = upload_results["cloud189"].get("url") or upload_results["cloud189"].get("file_id")
                         elif upload_results.get("yun139"):
-                            media_url = upload_results["yun139"].get("url") or upload_results["yun139"].get("file_id")
+                            media_url = (
+                                upload_results["yun139"].get("strm_url")
+                                or upload_results["yun139"].get("url")
+                                or upload_results["yun139"].get("file_id")
+                            )
 
                         if media_url:
-                            # 构建入库元数据
-                            import_metadata = {
-                                "show_name": title,
-                                "title": title,
-                                "tmdb_id": int(tmdb_id) if tmdb_id else None,
-                                "media_type": media_type,
-                                "season": metadata.get("season"),
-                                "episode": metadata.get("episode"),
-                                "year": metadata.get("year"),
-                                "quality_tags": metadata.get("quality_tags"),
-                                "release_group": metadata.get("release_group"),
-                                "runtime": metadata.get("runtime"),
-                                # 使用 overview 作为 description
-                                "description": metadata.get("overview") or metadata.get("description"),
-                                "poster_path": metadata.get("poster_path"),
-                                "backdrop_path": metadata.get("backdrop_path"),
-                                "genres": metadata.get("genres"),
-                                "origin_country": metadata.get("origin_country"),
-                                "vote_average": metadata.get("rating") or metadata.get("vote_average"),
-                                # 添加原始标题
-                                "origin_title": metadata.get("original_name") or metadata.get("original_title"),
-                                # 添加演员和导演信息
-                                "peoples": {
-                                    "cast": metadata.get("cast", []),
-                                    "crew": metadata.get("crew", []),
-                                },
-                                # 添加剧集详细信息
-                                "episode_title": metadata.get("episode_name"),
-                                "still_path": metadata.get("still_path"),
-                                "air_date": metadata.get("air_date"),
-                                # 添加季信息（包含季海报）
-                                "seasons_info": metadata.get("seasons_info", []),
-                                # 文件信息
-                                "file_size": os.path.getsize(file_path) if os.path.exists(file_path) else None,
-                                "container": os.path.splitext(file_path)[1].lstrip('.'),
-                            }
+                            try:
+                                renamed_relative_path = self.renamer.generate_new_path(
+                                    metadata, original_path=file_path
+                                )
+                                folder_parts = list(renamed_relative_path.parent.parts)
+                            except Exception:
+                                folder_parts = None
 
-                            # 获取或创建默认媒体库
-                            from .emya_models import VideoType
-                            library_name = (
-                                self.emya_db_config.get("default_tv_library", "电视剧")
-                                if media_type == VideoType.TV
-                                else self.emya_db_config.get("default_movie_library", "电影")
-                            )
-
-                            # 执行入库
-                            result = self.emya_controller.import_from_metadata(
-                                metadata=import_metadata,
-                                library_id=0,  # 0 表示自动创建/获取默认媒体库
-                                media_url=str(media_url),
-                            )
-
-                            if result.success:
-                                emya_import_result = result.data
-                                console_log(f"✅ [线程#{worker_id}] emya 入库成功!")
-                                print(f"   视频ID: {result.data.get('video_id')}")
-                                self.logger.info(f"emya 入库成功: {result.data}")
+                            if folder_parts:
+                                tmdb_client = getattr(self.renamer, 'tmdb_client', None) if hasattr(self, 'renamer') else None
+                                result = self.emya_controller.import_by_path(
+                                    folder_parts=folder_parts,
+                                    media_url=str(media_url),
+                                    quality_tags=metadata.get("quality_tags"),
+                                    file_size=os.path.getsize(file_path) if os.path.exists(file_path) else None,
+                                    season=metadata.get("season"),
+                                    episode=metadata.get("episode"),
+                                    tmdb_client=tmdb_client,
+                                )
+                                if result.success:
+                                    emya_import_result = result.data
+                                    console_log(f"✅ [线程#{worker_id}] emya 入库成功!")
+                                    print(f"   视频ID: {result.data.get('video_id')}")
+                                    self.logger.info(f"emya 入库成功: {result.data}")
+                                else:
+                                    console_log(f"❌ [线程#{worker_id}] emya 入库失败: {result.message}")
+                                    self.logger.warning(f"emya 入库失败: {result.message}")
                             else:
-                                console_log(f"❌ [线程#{worker_id}] emya 入库失败: {result.message}")
-                                self.logger.warning(f"emya 入库失败: {result.message}")
+                                console_log(f"⚠️ [线程#{worker_id}] 无法生成路径结构，跳过 emya 入库")
+                                self.logger.warning("无法生成路径结构，跳过 emya 入库")
                         else:
                             console_log(f"⚠️ [线程#{worker_id}] 未获取到媒体URL，跳过 emya 入库")
                             self.logger.warning("未获取到媒体URL，跳过 emya 入库")

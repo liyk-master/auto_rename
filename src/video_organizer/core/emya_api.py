@@ -460,6 +460,67 @@ class EmyaApiController:
                 error_code="IMPORT_METADATA_ERROR",
             )
 
+    def import_by_path(
+        self,
+        folder_parts: list,
+        media_url: str,
+        quality_tags: Optional[str] = None,
+        file_size: Optional[int] = None,
+        season: Optional[int] = None,
+        episode: Optional[int] = None,
+        path_type: str = PathType.URL,
+        tmdb_client: Any = None,
+    ) -> ApiResponse:
+        """
+        按路径结构入库（与 ImportMedia.ts 逻辑一致）
+
+        Args:
+            folder_parts: 整理后的路径层级
+            media_url: 媒体URL
+            quality_tags: 品质标签（作为 video_media.name）
+            file_size: 文件大小
+            season: 季号
+            episode: 集号
+            path_type: 路径类型
+            tmdb_client: TMDB API 客户端（用于补写富信息）
+
+        Returns:
+            ApiResponse
+        """
+        try:
+            video_list = self.service.import_by_path(
+                folder_parts=folder_parts,
+                media_url=media_url,
+                quality_tags=quality_tags,
+                file_size=file_size,
+                season=season,
+                episode=episode,
+                path_type=path_type,
+                tmdb_client=tmdb_client,
+            )
+            if video_list is None:
+                return ApiResponse(
+                    success=False,
+                    message="路径解析失败，无法入库",
+                    error_code="IMPORT_PATH_PARSE_ERROR",
+                )
+            return ApiResponse(
+                success=True,
+                message=f"'{video_list.title}' 导入成功",
+                data={
+                    "video_id": video_list.id,
+                    "title": video_list.title,
+                    "tmdb_id": video_list.tmdb_id,
+                },
+            )
+        except Exception as e:
+            logger.error(f"按路径导入失败: {e}")
+            return ApiResponse(
+                success=False,
+                message=f"按路径导入失败: {str(e)}",
+                error_code="IMPORT_PATH_ERROR",
+            )
+
     def import_from_video_name(
         self,
         video_name: str,

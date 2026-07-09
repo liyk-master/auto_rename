@@ -259,6 +259,7 @@ class VideoList(Base, TimestampMixin):
     __table_args__ = (
         Index("idx_video_list_tmdb", "tmdb_id"),
         Index("idx_video_list_library", "video_library_id"),
+        UniqueConstraint("video_type", "tmdb_id", name="unx_list"),
     )
 
 
@@ -313,6 +314,7 @@ class VideoSeason(Base, TimestampMixin):
 
     __table_args__ = (
         Index("idx_video_season_list", "video_list_id"),
+        UniqueConstraint("video_list_id", "season_number", name="unx_season"),
     )
 
 
@@ -520,10 +522,17 @@ class VideoPeople(Base, TimestampMixin):
     name_en: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, comment="英文名称"
     )
+    type: Mapped[str] = mapped_column(String(255), default="", comment="类型")
+    original_name: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, comment="原始名称"
+    )
+    gender: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="性别: 1女/2男")
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="简介")
+    birthday: Mapped[Optional[str]] = mapped_column(String(10), nullable=True, comment="出生日期")
+    deathday: Mapped[Optional[str]] = mapped_column(String(10), nullable=True, comment="死亡日期")
     profile_path: Mapped[Optional[str]] = mapped_column(
         String(500), nullable=True, comment="头像路径"
     )
-    gender: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="性别: 1女/2男")
     known_for_department: Mapped[Optional[str]] = mapped_column(
         String(50), nullable=True, comment="部门: Acting/Directing"
     )
@@ -541,6 +550,7 @@ class RelationType:
     VIDEO_LIST = "vl"     # video_list
     VIDEO_SEASON = "vs"   # video_season
     VIDEO_EPISODE = "ve"  # video_episode
+    VIDEO_PEOPLE = "vp"   # video_people
 
 
 class ImageType:

@@ -655,6 +655,7 @@ def main() -> None:
             )
 
         # 启动 Media Tracker 监听客户端
+        mt_client = None
         if config.get("media_tracker", {}).get("enabled", False):
             try:
                 video_handler = getattr(monitor, "event_handler", None)
@@ -664,6 +665,8 @@ def main() -> None:
                         config=config.get("media_tracker", {}),
                         renamer=video_handler.renamer,
                         yun139_uploader=video_handler.yun139_uploader,
+                        emya_controller=video_handler.emya_controller if video_handler.emya_enabled else None,
+                        emya_db_config=config.get("emya_db", {}),
                     )
                     mt_client.start()
             except Exception as e:
@@ -707,6 +710,14 @@ def main() -> None:
                 cli_output.print_success("监控服务已成功停止")
             except:
                 pass
+
+            # 停止 Media Tracker 客户端
+            if mt_client:
+                try:
+                    mt_client.stop()
+                    logger.info("Media Tracker 客户端已停止")
+                except Exception as e:
+                    logger.warning(f"停止 Media Tracker 客户端时出错: {e}")
 
     except ValueError as e:
         # 处理配置验证错误

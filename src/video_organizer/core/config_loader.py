@@ -135,6 +135,8 @@ DEFAULT_CONFIG = {
         # 上传配置
         "upload_enabled": False,  # 是否启用上传到 media_tracker
         "upload_cloud": "cloud-1",  # 云盘标识
+        "emya_import": False,  # 是否在秒传成功后触发 emya 入库（需同时启用 [emya_db]）
+        "generate_strm": True,  # 是否在秒传后生成 STRM 文件（独立于 [yun139] generate_strm）
     },
     "auth": {
         "enabled": False,
