@@ -586,7 +586,9 @@ class VideoRenamer:
             if rg_match:
                 potential_group = rg_match.group(1)
                 is_chinese_only = bool(re.match(r'^[\u4e00-\u9fff]+$', potential_group))
-                if not (is_chinese_only and metadata.get("show_name") == potential_group):
+                # 正则还没运行，metadata.get("show_name") 可能为空，所以额外判断：
+                # 纯中文且长度 >= 2 的更可能是剧名而非发布组
+                if not (is_chinese_only and len(potential_group) >= 2):
                     release_group_from_filename = potential_group
             logger.debug(f"预提取发布组: '{release_group_from_filename}'")
 
@@ -2807,7 +2809,12 @@ class VideoRenamer:
                     year_int = None
 
             # 使用处理后的年份（过滤了无效年份）
-            search_year: Optional[str] = str(year_int) if year_int else None
+            # 注意：对于电视剧不传年份，因为文件名中的年份可能是任意一季的播出年份，
+            # 而 TMDB 的 first_air_date_year 只匹配第一季首播年份，会导致多季剧集搜不到
+            if media_type_hint == "tv":
+                search_year: Optional[str] = None
+            else:
+                search_year: Optional[str] = str(year_int) if year_int else None
 
             # 定义缓存键
             cache_key = (prepared_search_term, media_type_hint, search_year)

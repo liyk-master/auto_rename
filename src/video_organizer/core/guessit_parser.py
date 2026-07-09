@@ -295,21 +295,37 @@ class GuessItParser:
                     if '.' in release_group:
                         release_group = release_group.split('.')[0]
 
+                # 检测 en_title 中是否包含 SxxExx（剧集格式）
+                # 如 Blades.of.the.Guardians.S02E06 → season=2, episode=6
+                season_num = None
+                episode_num = None
+                clean_en_title = en_title
+                se_match = re.search(r'[\.\s]S(\d+)E(\d+)$', en_title, re.IGNORECASE)
+                if se_match:
+                    season_num = int(se_match.group(1))
+                    episode_num = int(se_match.group(2))
+                    clean_en_title = re.sub(r'[\.\s]S\d+E\d+$', '', en_title, flags=re.IGNORECASE)
+                    logger.debug(f"PT 命名法检测到剧集格式: season={season_num}, episode={episode_num}")
+
                 # 直接构造元数据，跳过 GuessIt（避免误判为电视剧）
-                logger.debug(f"PT 命名法检测到，直接构造元数据: cn_title={cn_title}, en_title={en_title}, year={year}")
+                logger.debug(f"PT 命名法检测到，直接构造元数据: cn_title={cn_title}, en_title={clean_en_title}, year={year}")
                 # quality_tags 需要是字符串（用点连接），以便与后续代码兼容
                 quality_tags_str = '.'.join(quality_tags) if quality_tags else None
                 metadata = {
                     'show_name': cn_title,  # 使用中文标题作为主标题
-                    'en_title': en_title,
+                    'en_title': clean_en_title,
                     'year': int(year),
-                    'media_type': 'movie',  # 强制指定为电影
+                    'media_type': 'tv' if se_match else 'movie',  # 有 SxxExx 则为剧集
                     'origin_filename': Path(filename).name,
                     'quality_tags': quality_tags_str,
                     'release_group': release_group,
                     'screen_size': resolution,
                     'extension': Path(filename).suffix.lower().lstrip('.'),  # 添加扩展名
                 }
+                if season_num is not None:
+                    metadata['season'] = season_num
+                if episode_num is not None:
+                    metadata['episode'] = episode_num
                 logger.debug(f"PT 命名法直接构造结果: {metadata}")
                 return metadata
 
@@ -913,6 +929,11 @@ class GuessItParser:
                         metadata[internal_key] = value[0] if value else None
                         if len(value) > 1:
                             metadata['episode_range'] = value
+                    else:
+                        metadata[internal_key] = value
+                elif guessit_key == 'episode_title':
+                    if isinstance(value, list):
+                        metadata[internal_key] = ' '.join(str(v) for v in value)
                     else:
                         metadata[internal_key] = value
                 else:
