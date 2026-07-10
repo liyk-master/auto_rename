@@ -562,6 +562,85 @@ class EmyaService:
             )
         ).all()
 
+    def find_media_by_sha256(self, session: Session, sha256: str) -> Optional[VideoMedia]:
+        """通过 sha256 查找媒体记录"""
+        return session.query(VideoMedia).filter(
+            VideoMedia.path_url.contains(sha256),
+        ).first()
+
+    def hard_delete_media_cascade(self, session: Session, sha256: str) -> bool:
+        """
+        硬删除媒体记录并级联清理空父级。
+
+        删除链: VideoMedia -> VideoEpisode(空) -> VideoSeason(空) -> VideoList(空)
+        每级只在上二级删除后无剩余记录时继续向上级联。
+        """
+        media = self.find_media_by_sha256(session, sha256)
+        if not media:
+            logger.warning(f"未找到 sha256={sha256[:16]}... 的媒体记录")
+            return False
+
+        episode_id = media.video_episode_id
+        season_id = media.video_season_id
+        list_id = media.video_list_id
+
+        # 删除关联字幕
+        session.query(VideoSubtitle).filter(
+            VideoSubtitle.video_media_id == media.id
+        ).delete(synchronize_session=False)
+
+        # 删除媒体记录
+        session.delete(media)
+        session.flush()
+
+        # 级联删除空 Episode
+        if episode_id:
+            remaining_media = session.query(VideoMedia).filter(
+                VideoMedia.video_episode_id == episode_id
+            ).count()
+            if remaining_media == 0:
+                session.query(VideoImage).filter(
+                    VideoImage.relation_type == RelationType.VIDEO_EPISODE,
+                    VideoImage.relation_id == episode_id,
+                ).delete(synchronize_session=False)
+                episode = session.get(VideoEpisode, episode_id)
+                if episode:
+                    session.delete(episode)
+                    session.flush()
+
+        # 级联删除空 Season
+        if season_id:
+            remaining_episodes = session.query(VideoEpisode).filter(
+                VideoEpisode.video_season_id == season_id
+            ).count()
+            if remaining_episodes == 0:
+                session.query(VideoImage).filter(
+                    VideoImage.relation_type == RelationType.VIDEO_SEASON,
+                    VideoImage.relation_id == season_id,
+                ).delete(synchronize_session=False)
+                season_obj = session.get(VideoSeason, season_id)
+                if season_obj:
+                    session.delete(season_obj)
+                    session.flush()
+
+        # 级联删除空 VideoList
+        if list_id:
+            remaining_seasons = session.query(VideoSeason).filter(
+                VideoSeason.video_list_id == list_id
+            ).count()
+            if remaining_seasons == 0:
+                session.query(VideoImage).filter(
+                    VideoImage.relation_type == RelationType.VIDEO_LIST,
+                    VideoImage.relation_id == list_id,
+                ).delete(synchronize_session=False)
+                video_list = session.get(VideoList, list_id)
+                if video_list:
+                    session.delete(video_list)
+                    session.flush()
+
+        logger.info(f"已级联删除 media (sha256={sha256[:16]}...) 及其空父级")
+        return True
+
     # ============================================================
     # 字幕操作
     # ============================================================

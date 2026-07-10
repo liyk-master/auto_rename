@@ -161,14 +161,21 @@ class MediaTrackerClient:
         """\u5e76\u53d1\u5904\u7406 worker\uff0c\u907f\u514d\u963b\u585e WebSocket \u4e8b\u4ef6\u5faa\u73af"""
         logger.info(f"Media Tracker worker-{worker_id} \u5df2\u542f\u52a8")
         while True:
-            payload = await self._processing_queue.get()
-            if payload is None:  # \u505c\u6b62\u4fe1\u53f7
+            task = await self._processing_queue.get()
+            if task is None:  # \u505c\u6b62\u4fe1\u53f7
                 logger.info(f"Media Tracker worker-{worker_id} \u6536\u5230\u505c\u6b62\u4fe1\u53f7")
                 break
             try:
                 # \u5728\u7ebf\u7a0b\u6c60\u4e2d\u6267\u884c\u540c\u6b65\u5904\u7406\u903b\u8f91\uff08\u907f\u514d\u963b\u585e asyncio\uff09
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, self._handle_new_media_sync, payload)
+                if isinstance(task, tuple):
+                    task_type, payload = task
+                    if task_type == "delete":
+                        await loop.run_in_executor(None, self._handle_media_deleted_sync, payload)
+                    elif task_type == "update":
+                        await loop.run_in_executor(None, self._handle_media_updated_sync, payload)
+                else:
+                    await loop.run_in_executor(None, self._handle_new_media_sync, task)
                 self._total_processed += 1
             except Exception as e:
                 logger.error(f"Worker-{worker_id} \u5904\u7406\u6d88\u606f\u5931\u8d25: %s", e, exc_info=True)
@@ -202,6 +209,28 @@ class MediaTrackerClient:
                     f"\u961f\u5217\u5df2\u6ee1\u4e14\u7b49\u5f85\u8d85\u65f6\uff0c\u4e22\u5f03\u6d88\u606f: {payload.get('file_name', '')[:50]}"
                 )
                 self._total_failed += 1
+        elif msg_type == "media_updated":
+            self._total_received += 1
+            try:
+                await asyncio.wait_for(
+                    self._processing_queue.put(("update", payload)),
+                    timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"\u961f\u5217\u5df2\u6ee1\u4e14\u7b49\u5f85\u8d85\u65f6\uff0c\u4e22\u5f03 media_updated: {payload.get('file_name', '')[:50]}"
+                )
+                self._total_failed += 1
+        elif msg_type == "media_deleted":
+            try:
+                await asyncio.wait_for(
+                    self._processing_queue.put(("delete", payload)),
+                    timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"\u961f\u5217\u5df2\u6ee1\u4e14\u7b49\u5f85\u8d85\u65f6\uff0c\u4e22\u5f03 media_deleted: {payload.get('file_name', '')[:50]}"
+                )
 
     def _handle_new_media_sync(self, payload: Dict):
         file_name = payload.get("file_name", "")
@@ -472,3 +501,94 @@ class MediaTrackerClient:
 
         except Exception as e:
             logger.error("\u5904\u7406 new_media \u5931\u8d25 (%s): %s", file_name, e, exc_info=True)
+
+    def _handle_media_deleted_sync(self, payload: Dict):
+        sha256 = payload.get("sha256", "")
+        if not sha256:
+            logger.warning("media_deleted \u6570\u636e\u7f3a\u5c11 sha256: %s", payload)
+            return
+        logger.info("\u5904\u7406 media_deleted: sha256=%s...", sha256[:16])
+        if self.emya_controller:
+            result = self.emya_controller.delete_media_by_sha256(sha256)
+            if result.success:
+                logger.info("emya \u5220\u9664\u6210\u529f: %s", result.message)
+            else:
+                logger.warning("emya \u5220\u9664\u5931\u8d25: %s", result.message)
+        else:
+            logger.info("emya_controller \u672a\u542f\u7528\uff0c\u8df3\u8fc7\u5220\u9664")
+
+    def _handle_media_updated_sync(self, payload: Dict):
+        sha256 = payload.get("sha256", "")
+        file_name = payload.get("file_name", "")
+        file_size = payload.get("file_size", 0)
+        tmdb_id = payload.get("tmdb_id")
+        suggested_path = payload.get("suggested_path", "")
+
+        if not sha256 or not suggested_path or not tmdb_id:
+            logger.warning("media_updated \u6570\u636e\u4e0d\u5b8c\u6574: %s", payload)
+            return
+
+        logger.info("\u5904\u7406 media_updated: %s (tmdb_id=%s)", file_name, tmdb_id)
+
+        # Step 1: \u89e3\u6790 folder_parts
+        suggested_path = suggested_path.replace("/", "\\")
+        parts = [p for p in suggested_path.split("\\") if p]
+        if len(parts) < 1:
+            logger.warning("media_updated suggested_path \u65e0\u6548: %s", suggested_path)
+            return
+        renamed_filename = parts[-1]
+        folder_parts = [p for p in parts[:-1] if p and p.lower() != "media"]
+
+        # \u63d0\u53d6\u5b63\u96c6
+        season = None
+        episode = None
+        title = payload.get("title", renamed_filename)
+        season_episode_match = re.search(r'S(\d+)E(\d+)', title, re.IGNORECASE)
+        if not season_episode_match:
+            season_episode_match = re.search(r'S(\d+)E(\d+)', renamed_filename, re.IGNORECASE)
+        if season_episode_match:
+            season = int(season_episode_match.group(1))
+            episode = int(season_episode_match.group(2))
+
+        quality_tags = self.renamer._extract_keywords(Path(renamed_filename).stem) if self.renamer else None
+
+        # Step 2: \u5220\u9664\u65e7 media\uff08\u786c\u5220\u9664\u94fe\uff09
+        if self.emya_controller:
+            delete_result = self.emya_controller.delete_media_by_sha256(sha256)
+            if delete_result.success:
+                logger.info("emya \u65e7\u8bb0\u5f55\u5220\u9664\u6210\u529f: %s", delete_result.message)
+            else:
+                logger.warning("emya \u65e7\u8bb0\u5f55\u5220\u9664\u5931\u8d25\uff08\u53ef\u80fd\u4e0d\u5b58\u5728\uff09: %s", delete_result.message)
+
+        # Step 3: \u6784\u5efa media_url \u5e76\u91cd\u65b0\u5165\u5e93
+        if self.emya_import and self.emya_controller:
+            uploader = self.yun139_uploader
+            emya_media_url = ""
+            if uploader and uploader.strm_server and sha256 and file_size:
+                emya_media_url = uploader.generate_strm_url(
+                    file_id="",
+                    file_name=renamed_filename,
+                    content_hash=sha256,
+                    file_size=file_size,
+                    part_infos=[{"partNumber": 1, "partSize": 1000, "parallelHashCtx": {"partOffset": 0}}],
+                )
+
+            if not emya_media_url:
+                logger.warning("media_updated: \u65e0\u6cd5\u6784\u5efa media_url\uff0c\u8df3\u8fc7\u91cd\u65b0\u5165\u5e93")
+                return
+
+            tmdb_client = getattr(self.renamer, 'tmdb_client', None) if self.renamer else None
+            emya_result = self.emya_controller.import_by_path(
+                folder_parts=folder_parts,
+                media_url=emya_media_url,
+                quality_tags=quality_tags,
+                file_size=file_size,
+                season=season,
+                episode=episode,
+                tmdb_client=tmdb_client,
+            )
+            if emya_result.success:
+                logger.info("emya \u91cd\u65b0\u5165\u5e93\u6210\u529f: video_id=%s, title=%s",
+                            emya_result.data.get("video_id"), emya_result.data.get("title"))
+            else:
+                logger.warning("emya \u91cd\u65b0\u5165\u5e93\u5931\u8d25: %s", emya_result.message)

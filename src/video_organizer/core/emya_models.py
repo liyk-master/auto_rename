@@ -20,6 +20,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     UniqueConstraint,
+    quoted_name,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship, Mapped, mapped_column
 from sqlalchemy.ext.declarative import declared_attr
@@ -71,7 +72,7 @@ class User(Base, TimestampMixin):
         String(500), nullable=True, comment="头像"
     )
     role: Mapped[str] = mapped_column(
-        String(50), default="user", comment="角色: admin/user"
+        quoted_name("role", quote=True), String(50), default="user", comment="角色: admin/user"
     )
     status: Mapped[str] = mapped_column(
         String(50), default="active", comment="状态: active/banned"
@@ -133,17 +134,17 @@ class Favorite(Base, TimestampMixin):
     )
 
 
-class UserVideoRecord(Base, TimestampMixin):
+class UserVideoRecord(Base):
     """用户播放记录表"""
 
     __tablename__ = "user_video_record"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("user.id"), nullable=False, comment="用户ID"
+    video_list_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("video_list.id"), nullable=False, comment="视频ID"
     )
-    video_list_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("video_list.id"), nullable=True, comment="视频ID"
+    video_season_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("video_season.id"), nullable=True, comment="季ID"
     )
     video_episode_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("video_episode.id"), nullable=True, comment="剧集ID"
@@ -151,17 +152,22 @@ class UserVideoRecord(Base, TimestampMixin):
     video_media_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("video_media.id"), nullable=True, comment="媒体ID"
     )
-    progress: Mapped[int] = mapped_column(
-        Integer, default=0, comment="播放进度(秒)"
+    play_seconds: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True, comment="播放进度(秒)"
     )
-    duration: Mapped[int] = mapped_column(Integer, default=0, comment="总时长(秒)")
-    last_played_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime, nullable=True, comment="最后播放时间"
+    is_complete: Mapped[Optional[bool]] = mapped_column(
+        Integer, nullable=True, comment="是否播放完成"
+    )
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("user.id"), nullable=False, comment="用户ID"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
     )
 
     # 关系
     user: Mapped["User"] = relationship("User", back_populates="video_records")
-    video_list: Mapped[Optional["VideoList"]] = relationship(
+    video_list: Mapped["VideoList"] = relationship(
         "VideoList", back_populates="user_records"
     )
     video_episode: Mapped[Optional["VideoEpisode"]] = relationship(
@@ -169,6 +175,14 @@ class UserVideoRecord(Base, TimestampMixin):
     )
     video_media: Mapped[Optional["VideoMedia"]] = relationship(
         "VideoMedia", back_populates="user_records"
+    )
+
+    __table_args__ = (
+        Index("idx_list_id", "video_list_id"),
+        Index("idx_season_id", "video_season_id"),
+        Index("idx_episode_id", "video_episode_id"),
+        Index("idx_video_media_id", "video_media_id"),
+        Index("idx_user_id", "user_id"),
     )
 
 
@@ -185,7 +199,7 @@ class Library(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="媒体库名称")
     role: Mapped[Optional[str]] = mapped_column(
-        String(255), default="public", nullable=True, comment="角色权限"
+        quoted_name("role", quote=True), String(255), default="public", nullable=True, comment="角色权限"
     )
     # 注意: 数据库中没有 description 和 poster 字段
     # library 是二级分类，如"国产剧"、"外语电影"等
