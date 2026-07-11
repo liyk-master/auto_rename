@@ -883,24 +883,16 @@ class EmyaService:
         self,
         session: Session,
         video_list: VideoList,
-        tmdb_id: str,
-        video_type: str,
-        tmdb_client: Any,
+        details: Dict[str, Any],
     ) -> None:
         """
         TMDB 富信息补全 video_list：description, poster, backdrop, peoples
 
         与 ImportMedia.ts findOrCreateVideoList 一致
+        details 由调用方预取（import_by_path 中在事务外获取）
         """
         try:
-            tmdb_type = 'tv' if video_type == VideoType.TV else 'movie'
-            if tmdb_type == 'tv':
-                details = tmdb_client.get_tv_details(int(tmdb_id))
-            else:
-                details = tmdb_client.get_movie_details(int(tmdb_id))
-
             if not details:
-                logger.warning(f"TMDB 详情获取失败: {tmdb_id} ({tmdb_type})")
                 return
 
             if details.get('poster_path'):
@@ -977,27 +969,25 @@ class EmyaService:
         self,
         session: Session,
         season_obj: VideoSeason,
-        tmdb_id: str,
-        season_num: int,
-        tmdb_client: Any,
+        season_details: Dict[str, Any],
     ) -> None:
         """
         TMDB 季富信息补全：poster, description
 
         与 ImportMedia.ts findOrCreateSeason 一致
+        season_details 由调用方预取（import_by_path 中在事务外获取）
         """
         try:
-            sd = tmdb_client.get_season_details(int(tmdb_id), season_num)
-            if not sd:
+            if not season_details:
                 return
 
-            if sd.get('poster_path'):
+            if season_details.get('poster_path'):
                 self.add_poster(
                     session, RelationType.VIDEO_SEASON, season_obj.id,
-                    sd['poster_path']
+                    season_details['poster_path']
                 )
-            if sd.get('overview') and not season_obj.description:
-                season_obj.description = sd['overview']
+            if season_details.get('overview') and not season_obj.description:
+                season_obj.description = season_details['overview']
                 session.flush()
         except Exception as e:
             logger.warning(f"TMDB 季富信息补全失败 (season id={season_obj.id}): {e}")
@@ -1006,40 +996,29 @@ class EmyaService:
         self,
         session: Session,
         episode_obj: VideoEpisode,
-        tmdb_id: str,
-        season_num: int,
-        episode_num: int,
-        tmdb_client: Any,
+        episode_data: Dict[str, Any],
     ) -> None:
         """
         TMDB 集富信息补全：still, description
 
         与 ImportMedia.ts findOrCreateEpisode 一致
-        注意：TS 对 episode still 用 type='Primary'，不用 Thumb
+        episode_data 由调用方预取（import_by_path 中在事务外从 season_details 中提取）
         """
         try:
-            sd = tmdb_client.get_season_details(int(tmdb_id), season_num)
-            if not sd:
+            if not episode_data:
                 return
 
-            ep_data = None
-            for ep in (sd.get('episodes') or []):
-                if ep.get('episode_number') == episode_num:
-                    ep_data = ep
-                    break
-
-            if ep_data:
-                if ep_data.get('still_path'):
-                    self.create_image(
-                        session=session,
-                        relation_type=RelationType.VIDEO_EPISODE,
-                        relation_id=episode_obj.id,
-                        path_url=ep_data['still_path'],
-                        image_type=ImageType.PRIMARY,
-                    )
-                if ep_data.get('overview') and not episode_obj.description:
-                    episode_obj.description = ep_data['overview']
-                    session.flush()
+            if episode_data.get('still_path'):
+                self.create_image(
+                    session=session,
+                    relation_type=RelationType.VIDEO_EPISODE,
+                    relation_id=episode_obj.id,
+                    path_url=episode_data['still_path'],
+                    image_type=ImageType.PRIMARY,
+                )
+            if episode_data.get('overview') and not episode_obj.description:
+                episode_obj.description = episode_data['overview']
+                session.flush()
         except Exception as e:
             logger.warning(f"TMDB 集富信息补全失败 (episode id={episode_obj.id}): {e}")
 
@@ -1552,6 +1531,41 @@ class EmyaService:
         else:
             category_name = "电视剧" if is_tv else "电影"
 
+        # 预取 season number（TMDB 预取需要，纯运算无事务）
+        if is_tv:
+            season_num = season or 1
+            for part in folder_parts:
+                season_match = re.match(r'Season (\d+)', part, re.IGNORECASE)
+                if season_match:
+                    season_num = int(season_match.group(1))
+                    break
+        else:
+            season_num = None
+
+        # ===== TMDB 预取 (无事务, 纯 HTTP) =====
+        tmdb_list_details = None
+        tmdb_season_details = None
+        tmdb_episode_data = None
+
+        if tmdb_client:
+            try:
+                tmdb_type = 'tv' if video_type == VideoType.TV else 'movie'
+                if tmdb_type == 'tv':
+                    tmdb_list_details = tmdb_client.get_tv_details(int(tmdb_id))
+                else:
+                    tmdb_list_details = tmdb_client.get_movie_details(int(tmdb_id))
+
+                if is_tv and tmdb_list_details:
+                    tmdb_season_details = tmdb_client.get_season_details(int(tmdb_id), season_num)
+                    if episode is not None and tmdb_season_details:
+                        for ep in (tmdb_season_details.get('episodes') or []):
+                            if ep.get('episode_number') == episode:
+                                tmdb_episode_data = ep
+                                break
+            except Exception as e:
+                logger.warning(f"TMDB 预取失败 (将在事务内跳过富信息): {e}")
+
+        # ===== 数据库操作 (短事务, 无 HTTP) =====
         with self.db.session_scope() as session:
             library = self.get_or_create_library(session, category_name, "public")
             video_library_id = library.id
@@ -1569,22 +1583,15 @@ class EmyaService:
                 )
                 logger.info(f"创建 video_list: {title} (tmdb_id={tmdb_id})")
 
-                if tmdb_client:
-                    self._enrich_video_list_from_tmdb(session, video_list, tmdb_id, video_type, tmdb_client)
+                if tmdb_list_details:
+                    self._enrich_video_list_from_tmdb(session, video_list, tmdb_list_details)
             else:
                 logger.info(f"video_list 已存在: {title} (tmdb_id={tmdb_id}, id={video_list.id})")
 
-                if tmdb_client and (not video_list.description or not video_list.peoples):
-                    self._enrich_video_list_from_tmdb(session, video_list, tmdb_id, video_type, tmdb_client)
+                if tmdb_list_details and (not video_list.description or not video_list.peoples):
+                    self._enrich_video_list_from_tmdb(session, video_list, tmdb_list_details)
 
             if is_tv:
-                season_num = season or 1
-                for part in folder_parts:
-                    season_match = re.match(r'Season (\d+)', part, re.IGNORECASE)
-                    if season_match:
-                        season_num = int(season_match.group(1))
-                        break
-
                 season_obj = self.get_season(session, video_list.id, season_num)
                 if season_obj is None:
                     season_obj = self.create_season(
@@ -1594,11 +1601,11 @@ class EmyaService:
                         title=f"第 {season_num} 季",
                     )
 
-                    if tmdb_client:
-                        self._enrich_season_from_tmdb(session, season_obj, tmdb_id, season_num, tmdb_client)
+                    if tmdb_season_details:
+                        self._enrich_season_from_tmdb(session, season_obj, tmdb_season_details)
                 else:
-                    if tmdb_client and not season_obj.description:
-                        self._enrich_season_from_tmdb(session, season_obj, tmdb_id, season_num, tmdb_client)
+                    if tmdb_season_details and not season_obj.description:
+                        self._enrich_season_from_tmdb(session, season_obj, tmdb_season_details)
 
                 episode_id = None
                 if episode:
@@ -1613,11 +1620,11 @@ class EmyaService:
                             date_air=f"{year}-01-01",
                         )
 
-                        if tmdb_client:
-                            self._enrich_episode_from_tmdb(session, episode_obj, tmdb_id, season_num, episode, tmdb_client)
+                        if tmdb_episode_data:
+                            self._enrich_episode_from_tmdb(session, episode_obj, tmdb_episode_data)
                     else:
-                        if tmdb_client and not episode_obj.description:
-                            self._enrich_episode_from_tmdb(session, episode_obj, tmdb_id, season_num, episode, tmdb_client)
+                        if tmdb_episode_data and not episode_obj.description:
+                            self._enrich_episode_from_tmdb(session, episode_obj, tmdb_episode_data)
                     episode_id = episode_obj.id
 
                 existing = self.get_media_by_path_url_sha256(session, media_url)
