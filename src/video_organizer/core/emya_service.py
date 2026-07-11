@@ -28,6 +28,7 @@ from .emya_models import (
     VideoListTitleAlias,
     VideoGenre,
     VideoPeople,
+    UserVideoRecord,
     RelationType,
     ImageType,
     PathType,
@@ -584,6 +585,11 @@ class EmyaService:
         season_id = media.video_season_id
         list_id = media.video_list_id
 
+        # 删除关联播放记录
+        session.query(UserVideoRecord).filter(
+            UserVideoRecord.video_media_id == media.id
+        ).delete(synchronize_session=False)
+
         # 删除关联字幕
         session.query(VideoSubtitle).filter(
             VideoSubtitle.video_media_id == media.id
@@ -599,6 +605,10 @@ class EmyaService:
                 VideoMedia.video_episode_id == episode_id
             ).count()
             if remaining_media == 0:
+                # 删除关联播放记录
+                session.query(UserVideoRecord).filter(
+                    UserVideoRecord.video_episode_id == episode_id
+                ).delete(synchronize_session=False)
                 session.query(VideoImage).filter(
                     VideoImage.relation_type == RelationType.VIDEO_EPISODE,
                     VideoImage.relation_id == episode_id,
@@ -629,6 +639,10 @@ class EmyaService:
                 VideoSeason.video_list_id == list_id
             ).count()
             if remaining_seasons == 0:
+                # 删除关联播放记录
+                session.query(UserVideoRecord).filter(
+                    UserVideoRecord.video_list_id == list_id
+                ).delete(synchronize_session=False)
                 session.query(VideoImage).filter(
                     VideoImage.relation_type == RelationType.VIDEO_LIST,
                     VideoImage.relation_id == list_id,
