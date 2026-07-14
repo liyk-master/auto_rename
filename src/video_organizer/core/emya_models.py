@@ -194,7 +194,7 @@ class UserVideoRecord(Base):
 class Library(Base, TimestampMixin):
     """媒体库表"""
 
-    __tablename__ = "library"
+    __tablename__ = quoted_name("library", quote=True)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="媒体库名称")

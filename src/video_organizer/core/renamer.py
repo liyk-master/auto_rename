@@ -412,7 +412,7 @@ class VideoRenamer:
         # TMDB 搜索结果缓存：避免重复搜索
         self._search_cache: Dict[str, List] = {}
         # 季后验年份匹配缓存：避免同一剧集重复请求
-        self._season_year_boost_cache: Dict[int, int] = {}
+        self._season_year_boost_cache: Dict[tuple, int] = {}
         logger.info("VideoRenamer: TMDB 缓存已初始化")
 
         # 手动规则引擎初始化
@@ -2377,27 +2377,47 @@ class VideoRenamer:
 
         return results
 
-    def _get_season_year_boost(self, tmdb_id: int, target_year: int) -> int:
-        """检查TMDB剧集的各季播出年份是否匹配目标年份，返回加分值（0或500）"""
-        if tmdb_id in self._season_year_boost_cache:
-            return self._season_year_boost_cache[tmdb_id]
+    def _get_season_year_boost(self, tmdb_id: int, target_year: int, target_season: Optional[int] = None) -> int:
+        """检查TMDB剧集的各季播出年份是否匹配目标年份，返回加分值（0或500）
+
+        Args:
+            tmdb_id: TMDB ID
+            target_year: 文件名中的目标年份
+            target_season: 文件名中的季号（可选）；传入时只检查对应季
+        """
+        # metadata["season"] 可能为 str，统一转 int
+        if isinstance(target_season, str):
+            try:
+                target_season = int(target_season)
+            except (ValueError, TypeError):
+                target_season = None
+        cache_key = (tmdb_id, target_season)
+        if cache_key in self._season_year_boost_cache:
+            return self._season_year_boost_cache[cache_key]
         try:
             details = self.tmdb_client.get_tv_details(tmdb_id)
             if details and "seasons" in details:
                 for season in details["seasons"]:
+                    season_number = season.get("season_number")
+                    # 跳过第0季（Specials），除非目标季号也是0
+                    if season_number == 0 and target_season != 0:
+                        continue
+                    # 如果指定了目标季号，只检查对应季
+                    if target_season is not None and season_number != target_season:
+                        continue
                     season_air_date = season.get("air_date", "")
                     if season_air_date:
                         season_year = season_air_date.split("-")[0]
                         if season_year == str(target_year):
                             logger.info(
-                                f"TMDB ID {tmdb_id} 第{season.get('season_number')}季播出年份 {season_year} "
+                                f"TMDB ID {tmdb_id} 第{season_number}季播出年份 {season_year} "
                                 f"匹配目标年份 {target_year}，+500 分"
                             )
-                            self._season_year_boost_cache[tmdb_id] = 500
+                            self._season_year_boost_cache[cache_key] = 500
                             return 500
         except Exception as e:
             logger.debug(f"获取TMDB剧集详情失败 (ID: {tmdb_id}): {e}")
-        self._season_year_boost_cache[tmdb_id] = 0
+        self._season_year_boost_cache[cache_key] = 0
         return 0
 
     def _save_to_tmdb_cache(self, metadata: Dict) -> None:
@@ -3028,7 +3048,9 @@ class VideoRenamer:
                     if media_type_hint == "tv" and year_int:
                         for _r in exact_matches:
                             if _r.get("_season_year_boost") is None:
-                                _r["_season_year_boost"] = self._get_season_year_boost(_r["id"], year_int)
+                                _r["_season_year_boost"] = self._get_season_year_boost(
+                                    _r["id"], year_int, metadata.get("season")
+                                )
 
                     def _exact_match_key(r):
                         return r.get("popularity", 0) + r.get("_season_year_boost", 0)
@@ -3133,7 +3155,9 @@ class VideoRenamer:
                             if media_type_hint == "tv" and year_int:
                                 for _r in exact_matches:
                                     if _r.get("_season_year_boost") is None:
-                                        _r["_season_year_boost"] = self._get_season_year_boost(_r["id"], year_int)
+                                        _r["_season_year_boost"] = self._get_season_year_boost(
+                                            _r["id"], year_int, metadata.get("season")
+                                        )
 
                             def _secondary_exact_match_key(r):
                                 return r.get("popularity", 0) + r.get("_season_year_boost", 0)
@@ -3419,7 +3443,9 @@ class VideoRenamer:
             if media_type_hint == "tv" and year_int:
                 for _r in target_results:
                     if _r.get("media_type") == "tv":
-                        boost = self._get_season_year_boost(_r["id"], year_int)
+                        boost = self._get_season_year_boost(
+                            _r["id"], year_int, metadata.get("season")
+                        )
                         if boost:
                             tv_season_year_boost[_r["id"]] = boost
 
