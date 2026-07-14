@@ -411,6 +411,8 @@ class VideoRenamer:
         self._tmdb_name_to_id: Dict[str, int] = {}
         # TMDB 搜索结果缓存：避免重复搜索
         self._search_cache: Dict[str, List] = {}
+        # 季后验年份匹配缓存：避免同一剧集重复请求
+        self._season_year_boost_cache: Dict[int, int] = {}
         logger.info("VideoRenamer: TMDB 缓存已初始化")
 
         # 手动规则引擎初始化
@@ -2375,6 +2377,29 @@ class VideoRenamer:
 
         return results
 
+    def _get_season_year_boost(self, tmdb_id: int, target_year: int) -> int:
+        """检查TMDB剧集的各季播出年份是否匹配目标年份，返回加分值（0或500）"""
+        if tmdb_id in self._season_year_boost_cache:
+            return self._season_year_boost_cache[tmdb_id]
+        try:
+            details = self.tmdb_client.get_tv_details(tmdb_id)
+            if details and "seasons" in details:
+                for season in details["seasons"]:
+                    season_air_date = season.get("air_date", "")
+                    if season_air_date:
+                        season_year = season_air_date.split("-")[0]
+                        if season_year == str(target_year):
+                            logger.info(
+                                f"TMDB ID {tmdb_id} 第{season.get('season_number')}季播出年份 {season_year} "
+                                f"匹配目标年份 {target_year}，+500 分"
+                            )
+                            self._season_year_boost_cache[tmdb_id] = 500
+                            return 500
+        except Exception as e:
+            logger.debug(f"获取TMDB剧集详情失败 (ID: {tmdb_id}): {e}")
+        self._season_year_boost_cache[tmdb_id] = 0
+        return 0
+
     def _save_to_tmdb_cache(self, metadata: Dict) -> None:
         """
         将元数据保存到 TMDB 缓存，供同一剧集的其他集数使用
@@ -2998,6 +3023,16 @@ class VideoRenamer:
 
                     # 如果有字幕组类型提示，优先选择匹配的结果
                     best_match = None
+
+                    # 对电视剧精确匹配，预计算季年份加分
+                    if media_type_hint == "tv" and year_int:
+                        for _r in exact_matches:
+                            if _r.get("_season_year_boost") is None:
+                                _r["_season_year_boost"] = self._get_season_year_boost(_r["id"], year_int)
+
+                    def _exact_match_key(r):
+                        return r.get("popularity", 0) + r.get("_season_year_boost", 0)
+
                     if len(exact_matches) == 1:
                         best_match = exact_matches[0]
                         logger.info(f"[DEBUG] 唯一精确匹配: id={best_match.get('id')}")
@@ -3005,24 +3040,24 @@ class VideoRenamer:
                         anime_matches = [r for r in exact_matches if has_anime_genre(r)]
                         logger.info(f"[DEBUG] 动漫过滤后 anime_matches={len(anime_matches)}个: {[{'id':_m.get('id'),'genre_ids':_m.get('genre_ids')} for _m in anime_matches]}")
                         if anime_matches:
-                            best_match = max(anime_matches, key=lambda r: r.get("popularity", 0))
+                            best_match = max(anime_matches, key=_exact_match_key)
                             logger.info(f"字幕组 '{release_group}' 映射为动漫，优先选择动画类型结果: id={best_match.get('id')}, name={best_match.get('name')}")
                         else:
-                            best_match = max(exact_matches, key=lambda r: r.get("popularity", 0))
-                            logger.warning(f"[DEBUG] 无动画匹配结果，按 popularity 选择: id={best_match.get('id')}, name={best_match.get('name')}, genre_ids={best_match.get('genre_ids')}")
+                            best_match = max(exact_matches, key=_exact_match_key)
+                            logger.warning(f"[DEBUG] 无动画匹配结果，按 popularity+季年份 选择: id={best_match.get('id')}, name={best_match.get('name')}, genre_ids={best_match.get('genre_ids')}")
                     elif preferred_type == "drama":
                         drama_matches = [r for r in exact_matches if not has_anime_genre(r)]
                         if drama_matches:
-                            best_match = max(drama_matches, key=lambda r: r.get("popularity", 0))
+                            best_match = max(drama_matches, key=_exact_match_key)
                             logger.info(f"字幕组 '{release_group}' 映射为电视剧，优先选择非动画类型结果")
                         else:
-                            best_match = max(exact_matches, key=lambda r: r.get("popularity", 0))
+                            best_match = max(exact_matches, key=_exact_match_key)
                     else:
-                        best_match = max(exact_matches, key=lambda r: r.get("popularity", 0))
+                        best_match = max(exact_matches, key=_exact_match_key)
 
                     logger.info(
                         f"找到完全匹配: {best_match.get('name', best_match.get('title'))}"
-                        + (f" (共{len(exact_matches)}个完全匹配，已根据字幕组类型选择)" if len(exact_matches) > 1 else "")
+                        + (f" (共{len(exact_matches)}个完全匹配，已根据字幕组类型/季年份选择)" if len(exact_matches) > 1 else "")
                     )
                     results = [best_match]
                 else:
@@ -3094,25 +3129,34 @@ class VideoRenamer:
                                 genre_ids = result.get("genre_ids", [])
                                 return 16 in genre_ids
 
+                            # 对电视剧精确匹配，预计算季年份加分
+                            if media_type_hint == "tv" and year_int:
+                                for _r in exact_matches:
+                                    if _r.get("_season_year_boost") is None:
+                                        _r["_season_year_boost"] = self._get_season_year_boost(_r["id"], year_int)
+
+                            def _secondary_exact_match_key(r):
+                                return r.get("popularity", 0) + r.get("_season_year_boost", 0)
+
                             best_match = None
                             if len(exact_matches) == 1:
                                 best_match = exact_matches[0]
                             elif preferred_type == "anime":
                                 anime_matches = [r for r in exact_matches if has_anime_genre(r)]
                                 if anime_matches:
-                                    best_match = max(anime_matches, key=lambda r: r.get("popularity", 0))
+                                    best_match = max(anime_matches, key=_secondary_exact_match_key)
                                     logger.info(f"字幕组 '{release_group}' 映射为动漫，优先选择动画类型结果")
                                 else:
-                                    best_match = max(exact_matches, key=lambda r: r.get("popularity", 0))
+                                    best_match = max(exact_matches, key=_secondary_exact_match_key)
                             elif preferred_type == "drama":
                                 drama_matches = [r for r in exact_matches if not has_anime_genre(r)]
                                 if drama_matches:
-                                    best_match = max(drama_matches, key=lambda r: r.get("popularity", 0))
+                                    best_match = max(drama_matches, key=_secondary_exact_match_key)
                                     logger.info(f"字幕组 '{release_group}' 映射为电视剧，优先选择非动画类型结果")
                                 else:
-                                    best_match = max(exact_matches, key=lambda r: r.get("popularity", 0))
+                                    best_match = max(exact_matches, key=_secondary_exact_match_key)
                             else:
-                                best_match = max(exact_matches, key=lambda r: r.get("popularity", 0))
+                                best_match = max(exact_matches, key=_secondary_exact_match_key)
 
                             logger.info(
                                 f"在跨语言搜索中找到完全匹配: {best_match.get('name', best_match.get('title'))}"
@@ -3370,6 +3414,15 @@ class VideoRenamer:
             # 计算标题相似度并按相似度和流行度排序
             search_term_lower = search_term.lower()
 
+            # 对电视剧结果预计算季年份加分
+            tv_season_year_boost: Dict[int, int] = {}
+            if media_type_hint == "tv" and year_int:
+                for _r in target_results:
+                    if _r.get("media_type") == "tv":
+                        boost = self._get_season_year_boost(_r["id"], year_int)
+                        if boost:
+                            tv_season_year_boost[_r["id"]] = boost
+
             def calculate_score(result):
                 title = result.get("name", result.get("title", "")).lower()
                 original_name = result.get("original_name", "").lower()
@@ -3435,7 +3488,8 @@ class VideoRenamer:
                 ):
                     score = 500
 
-                total_score = score + result.get("popularity", 0)
+                season_year_boost = tv_season_year_boost.get(result.get("id"), 0) if result.get("media_type") == "tv" else 0
+                total_score = score + result.get("popularity", 0) + season_year_boost
                 return total_score
 
             # 按得分排序
