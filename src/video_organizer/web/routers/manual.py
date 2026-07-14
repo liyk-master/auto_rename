@@ -190,12 +190,12 @@ async def scan_directory(request: ScanDirectoryRequest):
             for ext in extensions:
                 video_files.extend(directory.glob(f"*{ext}"))
         
-        # 转换为字符串列表
-        file_list = [str(f) for f in video_files if f.is_file()]
+        # 转换为字符串列表（使用 as_posix() 确保 Linux 下正斜杠）
+        file_list = [f.as_posix() for f in video_files if f.is_file()]
         
         return ScanDirectoryResponse(
             success=True,
-            directory=request.directory,
+            directory=str(Path(request.directory).as_posix()),
             files=file_list,
             count=len(file_list),
         )
@@ -519,12 +519,12 @@ async def browse_directory(path: str = ""):
         except PermissionError:
             raise HTTPException(status_code=403, detail=f"无权限访问目录: {path}")
         
-        # 获取父目录
-        parent = str(directory.parent) if directory.parent != directory else None
+        # 获取父目录（使用 as_posix() 确保 Linux 下返回正斜杠）
+        parent = directory.parent.as_posix() if directory.parent != directory else None
         
         return {
             "success": True,
-            "path": str(directory),
+            "path": directory.as_posix(),
             "parent": parent,
             "directories": sorted(directories),
             "files": sorted(files, key=lambda x: x["name"]),

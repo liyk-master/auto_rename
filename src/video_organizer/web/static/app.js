@@ -1022,7 +1022,7 @@ function showBrowseModal(data) {
     </div><div class="file-list">`;
 
     (data.directories || []).forEach(dir => {
-        const fullPath = data.path ? `${data.path}\\${dir}` : dir;
+        const fullPath = data.path ? `${data.path}/${dir}` : dir;
         html += `<div class="file-item" data-path="${escapeHtml(fullPath)}" data-type="dir">
             <svg class="file-icon folder" viewBox="0 0 24 24" fill="currentColor"><path d="M10 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V8a2 2 0 00-2-2h-8l-2-2z"/></svg>
             <span>${escapeHtml(dir)}</span>
@@ -1031,7 +1031,7 @@ function showBrowseModal(data) {
 
     (data.files || []).forEach(file => {
         const isVideo = ['.mp4','.mkv','.avi','.mov','.wmv','.flv'].includes(file.extension);
-        const fullPath = data.path ? `${data.path}\\${file.name}` : file.name;
+        const fullPath = data.path ? `${data.path}/${file.name}` : file.name;
         html += `<div class="file-item" data-path="${escapeHtml(fullPath)}" data-type="file">
             <svg class="file-icon ${isVideo ? 'video' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
