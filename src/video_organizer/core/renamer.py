@@ -3421,17 +3421,35 @@ class VideoRenamer:
                     )
                 else:
                     # 没有匹配的类型结果，尝试用英文标题重试搜索
-                    en_title = metadata.get("title", "")
-                    if en_title and en_title.strip().lower() != search_term.strip().lower():
+                    # 依次尝试: title(GuessIt) > en_title(regex)，清洗后用于TMDB搜索
+                    en_title = (
+                        metadata.get("title") or metadata.get("en_title", "")
+                    )
+                    if en_title:
+                        # 清洗：去季集标记、年份，替换dots
+                        cleaned = re.sub(
+                            r'[.\s]*S\d+E\d+[.\s]*', ' ',
+                            str(en_title), flags=re.IGNORECASE
+                        )
+                        cleaned = re.sub(
+                            r'[.\s]*\d{4}[.\s]*', ' ', cleaned
+                        )
+                        cleaned = cleaned.replace('.', ' ').strip()
+                        if not cleaned:
+                            cleaned = en_title.replace('.', ' ')
+                    else:
+                        cleaned = ""
+
+                    if cleaned and cleaned.strip().lower() != search_term.strip().lower():
                         logger.info(
                             f"中文搜索无 {media_type_hint} 类型结果，"
-                            f"尝试英文标题搜索: '{en_title}'"
+                            f"尝试英文标题搜索: '{cleaned}'"
                         )
                         en_results = (
                             self._search_with_language(
-                                en_title, media_type_hint, search_year, "en-US"
+                                cleaned, media_type_hint, search_year, "en-US"
                             ) or self._search_with_language(
-                                en_title, media_type_hint, search_year, None
+                                cleaned, media_type_hint, search_year, None
                             )
                         )
                         if en_results:
@@ -3441,7 +3459,7 @@ class VideoRenamer:
                             ]
                             if en_type_matched:
                                 results = en_results
-                                search_term = en_title
+                                search_term = cleaned
                                 target_results = en_type_matched
                                 logger.info(
                                     f"英文标题搜索找到 {len(en_type_matched)} 个"
@@ -3459,6 +3477,10 @@ class VideoRenamer:
                             )
                             target_results = results
                     else:
+                        logger.warning(
+                            f"TMDB 搜索无 {media_type_hint} 类型结果 "
+                            f"(confidence={confidence:.2f})，使用所有结果"
+                        )
                         target_results = results
             else:
                 # 低置信度或无类型提示：不过滤
