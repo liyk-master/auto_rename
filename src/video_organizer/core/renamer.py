@@ -838,7 +838,7 @@ class VideoRenamer:
 
                     if self.tmdb_client:
                         logger.info(f"[DEBUG]  before _enrich_with_tmdb: release_group='{metadata.get('release_group')}', show_name='{metadata.get('show_name')}'")
-                        tmdb_meta = self._enrich_with_tmdb(metadata)
+                        tmdb_meta = self._enrich_with_tmdb(dict(metadata))
                         # 确保 tmdb_meta 是字典
                         if tmdb_meta is None:
                             tmdb_meta = {}
@@ -3420,12 +3420,46 @@ class VideoRenamer:
                         f"{len(type_matched_results)}/{len(results)} 个结果匹配 {media_type_hint}"
                     )
                 else:
-                    # 没有匹配的结果，记录警告
-                    logger.warning(
-                        f"TMDB 搜索无 {media_type_hint} 类型结果 "
-                        f"(confidence={confidence:.2f})，使用所有结果"
-                    )
-                    target_results = results
+                    # 没有匹配的类型结果，尝试用英文标题重试搜索
+                    en_title = metadata.get("title", "")
+                    if en_title and en_title.strip().lower() != search_term.strip().lower():
+                        logger.info(
+                            f"中文搜索无 {media_type_hint} 类型结果，"
+                            f"尝试英文标题搜索: '{en_title}'"
+                        )
+                        en_results = (
+                            self._search_with_language(
+                                en_title, media_type_hint, search_year, "en-US"
+                            ) or self._search_with_language(
+                                en_title, media_type_hint, search_year, None
+                            )
+                        )
+                        if en_results:
+                            en_type_matched = [
+                                r for r in en_results
+                                if r.get("media_type") == media_type_hint
+                            ]
+                            if en_type_matched:
+                                results = en_results
+                                search_term = en_title
+                                target_results = en_type_matched
+                                logger.info(
+                                    f"英文标题搜索找到 {len(en_type_matched)} 个"
+                                    f" {media_type_hint} 类型结果"
+                                )
+                            else:
+                                logger.warning(
+                                    f"英文标题搜索也无 {media_type_hint} 类型结果，"
+                                    f"使用原结果"
+                                )
+                                target_results = results
+                        else:
+                            logger.warning(
+                                f"英文标题搜索无结果"
+                            )
+                            target_results = results
+                    else:
+                        target_results = results
             else:
                 # 低置信度或无类型提示：不过滤
                 target_results = results
@@ -3837,8 +3871,16 @@ class VideoRenamer:
                 metadata["poster_path"] = details.get("poster_path", "")
                 metadata["backdrop_path"] = details.get("backdrop_path", "")
 
-            # 设置媒体类型
-            metadata["media_type"] = media_type
+            # 设置媒体类型 - 类型冲突保护
+            confidence = metadata.get("_media_type_confidence", 0.0)
+            detected_type = metadata.get("media_type", "")
+            if not (detected_type and media_type and detected_type != media_type and confidence >= 0.5):
+                metadata["media_type"] = media_type
+            else:
+                logger.info(
+                    f"类型冲突保护：已检测到 {detected_type}(confidence={confidence:.2f})，"
+                    f"不覆盖为 TMDB 的 {media_type} 类型"
+                )
             # 恢复原始的quality_tags和release_group
             metadata["quality_tags"] = original_quality_tags
             metadata["release_group"] = original_release_group

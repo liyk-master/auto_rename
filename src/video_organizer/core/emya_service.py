@@ -639,18 +639,25 @@ class EmyaService:
                 VideoSeason.video_list_id == list_id
             ).count()
             if remaining_seasons == 0:
-                # 删除关联播放记录
-                session.query(UserVideoRecord).filter(
-                    UserVideoRecord.video_list_id == list_id
-                ).delete(synchronize_session=False)
-                session.query(VideoImage).filter(
-                    VideoImage.relation_type == RelationType.VIDEO_LIST,
-                    VideoImage.relation_id == list_id,
-                ).delete(synchronize_session=False)
-                video_list = session.get(VideoList, list_id)
-                if video_list:
-                    session.delete(video_list)
-                    session.flush()
+                # 额外检查：是否有剩余的 VideoMedia 直接引用该列表（电影类型）
+                remaining_media = session.query(VideoMedia).filter(
+                    VideoMedia.video_list_id == list_id
+                ).count()
+                if remaining_media > 0:
+                    logger.info("列表 %s 仍有 %s 条媒体记录，保留列表", list_id, remaining_media)
+                else:
+                    # 删除关联播放记录
+                    session.query(UserVideoRecord).filter(
+                        UserVideoRecord.video_list_id == list_id
+                    ).delete(synchronize_session=False)
+                    session.query(VideoImage).filter(
+                        VideoImage.relation_type == RelationType.VIDEO_LIST,
+                        VideoImage.relation_id == list_id,
+                    ).delete(synchronize_session=False)
+                    video_list = session.get(VideoList, list_id)
+                    if video_list:
+                        session.delete(video_list)
+                        session.flush()
 
         logger.info(f"已级联删除 media (sha256={sha256[:16]}...) 及其空父级")
         return True
