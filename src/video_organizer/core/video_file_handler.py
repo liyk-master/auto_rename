@@ -149,8 +149,8 @@ class VideoFileHandler:
         self.emos_auth_token = str(raw_token).split("#")[0].split(";")[0].strip()
         self.emos_base_url = self.emos_config.get("base_url", "https://emos.lol")
         self.emos_file_storage = self.emos_config.get(
-            "file_storage", "internal"
-        )  # internal 或 global
+            "file_storage", "default"
+        )  # default / internal / global
         self.emos_chunk_size_mb = self.emos_config.get(
             "chunk_size_mb", 50
         )  # 分片大小(MB)，默认50
