@@ -321,6 +321,7 @@ class VideoRenamer:
             tmdb_api_key,
             base_url=tmdb_config.get("base_url"),
         ) if tmdb_api_key else None
+        self.max_search_pages = tmdb_config.get("max_search_pages", 5) if tmdb_config else 5
         self.ai_service_url = ai_service_url
         self.watch_path = watch_path
         self.naming_rules = naming_rules or self.DEFAULT_NAMING_RULES
@@ -2318,7 +2319,7 @@ class VideoRenamer:
         self, search_term: str, media_type_hint: str, year: Optional[str], language: Optional[str]
     ) -> List[Dict]:
         """
-        基于语言的搜索辅助方法
+        基于语言的搜索辅助方法（支持分页）
 
         Args:
             search_term (str): 搜索词
@@ -2333,6 +2334,7 @@ class VideoRenamer:
         try:
             # 直接使用搜索词，不翻译
             final_search_term = search_term
+            tmdb = self.tmdb_client
 
             # 安全地处理年份参数，避免无效年份导致搜索失败
             year_param = None
@@ -2347,31 +2349,33 @@ class VideoRenamer:
 
             # 搜索方法选择
             if media_type_hint == "tv":
-                search_method = self.tmdb_client.search_tv
+                method_name = "search_tv"
             elif media_type_hint == "movie":
-                search_method = self.tmdb_client.search_movie
+                method_name = "search_movie"
             else:
                 return results
 
-            # 1. 第一次搜索：使用年份参数
-            search_results = search_method(
-                final_search_term, year_param, language=language
+            # 1. 第一次搜索：使用年份参数（分页搜索）
+            results = tmdb.search_all_pages(
+                method_name, final_search_term,
+                max_pages=self.max_search_pages,
+                year=year_param,
+                language=language,
             )
-            if isinstance(search_results, dict) and "results" in search_results:
-                results = search_results["results"]
 
             # 2. 降级搜索：如果没有找到结果且使用了年份参数，则去掉年份重新搜索
             if not results and year_param:
                 logger.info(
                     f"使用年份 {year_param} 搜索无结果，尝试去掉年份参数重新搜索"
                 )
-                search_results = search_method(
-                    final_search_term, None, language=language
+                results = tmdb.search_all_pages(
+                    method_name, final_search_term,
+                    max_pages=self.max_search_pages,
+                    year=None,
+                    language=language,
                 )
-                if isinstance(search_results, dict) and "results" in search_results:
-                    results = search_results["results"]
-                    if results:
-                        logger.info(f"去掉年份后搜索到 {len(results)} 个结果")
+                if results:
+                    logger.info(f"去掉年份后搜索到 {len(results)} 个结果")
         except Exception as e:
             logger.error(f"语言搜索失败: {e}")
 
@@ -2435,14 +2439,14 @@ class VideoRenamer:
         if not show_name or not tmdb_id:
             return
         
-        # 保存 name -> tmdb_id 映射
-        name_key = show_name.lower().strip()
+        # 保存 name -> tmdb_id 映射（含 media_type 防同名电影/剧集污染）
+        name_key = f"{show_name.lower().strip()}_{media_type}"
         if name_key and name_key not in self._tmdb_name_to_id:
             self._tmdb_name_to_id[name_key] = tmdb_id
             logger.debug(f"TMDB 缓存: 保存名称映射 {show_name} -> TMDB ID {tmdb_id}")
         
-        # 保存完整元数据缓存
-        cache_key = f"tmdb_{tmdb_id}"
+        # 保存完整元数据缓存（含 media_type 防跨类型污染）
+        cache_key = f"tmdb_{tmdb_id}_{media_type}"
         if cache_key not in self._tmdb_cache:
             # 只保存基础信息，不保存集数等变化的信息
             cache_data = {}
@@ -2501,10 +2505,12 @@ class VideoRenamer:
         elif 0.4 <= confidence < 0.7 and media_type_hint:
             logger.info(
                 f"中等置信度搜索 (confidence={confidence:.2f}): "
-                f"multi 搜索，优先 {media_type_hint} 类型"
+                f"multi 搜索（分页），优先 {media_type_hint} 类型"
             )
-            multi_results = self.tmdb_client.search_multi(
-                search_term, year, language=language
+            multi_results = self.tmdb_client.search_all_pages(
+                "search_multi", search_term,
+                max_pages=self.max_search_pages,
+                year=year, language=language,
             )
 
             if multi_results:
@@ -2532,10 +2538,12 @@ class VideoRenamer:
         # 策略 3: 低置信度 (< 0.4) - multi 搜索，不过滤
         else:
             logger.info(
-                f"低置信度搜索 (confidence={confidence:.2f}): multi 搜索，不过滤类型"
+                f"低置信度搜索 (confidence={confidence:.2f}): multi 搜索（分页），不过滤类型"
             )
-            multi_results = self.tmdb_client.search_multi(
-                search_term, year, language=language
+            multi_results = self.tmdb_client.search_all_pages(
+                "search_multi", search_term,
+                max_pages=self.max_search_pages,
+                year=year, language=language,
             )
 
             if multi_results:
@@ -2581,7 +2589,7 @@ class VideoRenamer:
             # 构建缓存键：优先使用 tmdb_id，否则使用 show_name + year + media_type
             cache_key = None
             if existing_tmdb_id:
-                cache_key = f"tmdb_{existing_tmdb_id}"
+                cache_key = f"tmdb_{existing_tmdb_id}_{media_type}"
             elif show_name:
                 cache_key = f"{show_name}_{year}_{media_type}".lower().strip()
             
@@ -2611,9 +2619,10 @@ class VideoRenamer:
                     metadata["release_group"] = metadata.get("release_group", "")
                     return metadata
             
-            # 检查是否已有 name -> tmdb_id 的映射（用于同一剧集不同集数）
-            if show_name and show_name.lower().strip() in self._tmdb_name_to_id:
-                cached_tmdb_id = self._tmdb_name_to_id[show_name.lower().strip()]
+            # 检查是否已有 name -> tmdb_id 的映射（用于同一剧集不同集数，含 media_type 防污染）
+            name_key = f"{show_name.lower().strip()}_{media_type}"
+            if show_name and name_key in self._tmdb_name_to_id:
+                cached_tmdb_id = self._tmdb_name_to_id[name_key]
                 logger.info(f"TMDB 名称缓存命中: {show_name} -> TMDB ID {cached_tmdb_id}")
                 # 使用缓存的 tmdb_id 直接获取详情
                 metadata["tmdb_id"] = cached_tmdb_id
@@ -2997,11 +3006,13 @@ class VideoRenamer:
                         f"popularity={result_popularity})"
                     )
 
-            # 如果第一次搜索没有结果，尝试通用搜索
+            # 如果第一次搜索没有结果，尝试通用搜索（分页）
             if not primary_results:
-                logger.info("第一次搜索无结果，尝试通用搜索...")
-                general_results = self.tmdb_client.search_video_show(
-                    prepared_search_term, search_year, language=primary_language
+                logger.info("第一次搜索无结果，尝试通用搜索（分页）...")
+                general_results = self.tmdb_client.search_all_pages(
+                    "search_video_show", prepared_search_term,
+                    max_pages=self.max_search_pages,
+                    year=search_year, language=primary_language,
                 )
                 if general_results:
                     primary_results = general_results
@@ -3124,9 +3135,10 @@ class VideoRenamer:
 
                         if not secondary_results:
                             general_secondary_results = (
-                                self.tmdb_client.search_video_show(
-                                    prepared_search_term,
-                                    search_year,
+                                self.tmdb_client.search_all_pages(
+                                    "search_video_show", prepared_search_term,
+                                    max_pages=self.max_search_pages,
+                                    year=search_year,
                                     language=None,  # 不限制语言
                                 )
                             )

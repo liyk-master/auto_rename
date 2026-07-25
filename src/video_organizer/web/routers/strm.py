@@ -10,11 +10,12 @@ import json
 import logging
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import unquote, urlparse, parse_qs
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse, Response
 
 from ..services.state import get_state_manager
 
@@ -80,6 +81,22 @@ def _make_302(url: str, ttl: Optional[int] = None) -> RedirectResponse:
     resp.headers["Cache-Control"] = f"max-age={max_age}"
     resp.headers["Referrer-Policy"] = "no-referrer"
     return resp
+
+
+def _make_139_302(url: str) -> Response:
+    """用于 Yun139 反代的 302 响应（带 HTML body + 完整 headers）"""
+    html_content = f'<a href="{url}">Found</a>.\n'
+    content_length = len(html_content.encode('utf-8'))
+    now = datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')
+    headers = {
+        'Location': url,
+        'Cache-Control': 'max-age=0, no-cache, no-store, must-revalidate',
+        'Content-Type': 'text/html; charset=utf-8',
+        'Referrer-Policy': 'no-referrer',
+        'Date': now,
+        'Content-Length': str(content_length),
+    }
+    return Response(html_content, status_code=302, headers=headers)
 
 
 # ==================== Cloud189 直链获取 ====================
@@ -272,7 +289,7 @@ async def yun139_download_url(
 
     cached = _cache_get(key)
     if cached:
-        return _make_302(cached)
+        return _make_139_302(cached)
 
     state = get_state_manager()
     handler = state.get_video_handler()
@@ -361,7 +378,7 @@ async def yun139_download_url(
             logger.warning(f"删除 Yun139 临时文件失败: {e}")
 
     _cache_set(key, download_url)
-    return _make_302(download_url)
+    return _make_139_302(download_url)
 
 
 @router.get("/139createGetDownloadUrl/{fileId}/{fileName}")
@@ -383,7 +400,7 @@ async def yun139_create_get_download_url(
 
     cached = _cache_get(key)
     if cached:
-        return _make_302(cached)
+        return _make_139_302(cached)
 
     state = get_state_manager()
     handler = state.get_video_handler()
@@ -406,4 +423,4 @@ async def yun139_create_get_download_url(
     logger.info(f"Yun139 获取直链成功，文件ID: {fileId}, 文件名: {decoded_name}, 直链: {download_url[:100]}...")
 
     _cache_set(key, download_url)
-    return _make_302(download_url)
+    return _make_139_302(download_url)

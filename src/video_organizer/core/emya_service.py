@@ -859,16 +859,25 @@ class EmyaService:
                     )
             return existing.id
 
-        people = VideoPeople(
-            tmdb_id=int(tmdb_id),
-            name=name,
-            name_en=original_name,
-            gender=gender,
-            profile_path=profile_path,
-            known_for_department=known_for_department,
-        )
-        session.add(people)
-        session.flush()
+        try:
+            people = VideoPeople(
+                tmdb_id=int(tmdb_id),
+                name=name,
+                name_en=original_name,
+                gender=gender,
+                profile_path=profile_path,
+                known_for_department=known_for_department,
+            )
+            session.add(people)
+            session.flush()
+        except IntegrityError:
+            session.rollback()
+            existing = session.query(VideoPeople).filter(
+                VideoPeople.tmdb_id == int(tmdb_id)
+            ).first()
+            if existing:
+                return existing.id
+            raise
 
         if profile_path:
             self.create_image(

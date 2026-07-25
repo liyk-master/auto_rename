@@ -3,7 +3,7 @@ TMDB API client for fetching TV show information.
 """
 
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable
 from collections import deque
 import requests
 
@@ -41,6 +41,7 @@ class TMDBClient:
         self,
         query: str,
         year: Optional[str] = None,
+        page: int = 1,
         include_adult: Optional[bool] = True,
         language: Optional[str] = "zh-CN",
     ) -> List[Dict]:
@@ -50,6 +51,7 @@ class TMDBClient:
         url = f"{self.BASE_URL}/search/multi"
         params = {
             "query": query,
+            "page": page,
             "include_adult": include_adult,
         }
         # 只有当 language 不为 None 时才添加 language 参数
@@ -78,6 +80,74 @@ class TMDBClient:
         else:
             logger.warning(f"search_video_show 返回的数据为 None")
             return []
+
+    def search_all_pages(
+        self,
+        method_name: str,
+        query: str,
+        max_pages: int = 5,
+        include_adult: Optional[bool] = True,
+        **kwargs,
+    ) -> List[Dict]:
+        """
+        通用分页搜索：遍历多页 TMDB 搜索结果，去重合并返回。
+
+        Args:
+            method_name: 搜索方法名 ('search_tv', 'search_movie', 'search_multi', 'search_video_show')
+            query: 搜索词
+            max_pages: 最大搜索页数
+            include_adult: 是否包含成人内容
+            **kwargs: 其他搜索参数（year, language 等）
+
+        Returns:
+            合并后的去重结果列表
+        """
+        all_results: List[Dict] = []
+        seen_ids: set = set()
+        method: Callable = getattr(self, method_name)
+
+        for page in range(1, max_pages + 1):
+            result = method(query, page=page, include_adult=include_adult, **kwargs)
+
+            if not result:
+                break
+
+            # 处理不同返回类型：search_tv/search_movie 返回 dict（含 total_pages），
+            # search_multi/search_video_show 返回 List[Dict]
+            if isinstance(result, dict):
+                page_results = result.get("results", [])
+                total_pages = result.get("total_pages", 0)
+            else:
+                page_results = result
+                total_pages = 0  # 列表返回类型无法获知总页数
+
+            if not page_results:
+                break
+
+            # 按 tmdb_id 去重
+            for item in page_results:
+                item_id = item.get("id")
+                if item_id is not None and item_id not in seen_ids:
+                    seen_ids.add(item_id)
+                    all_results.append(item)
+
+            logger.debug(
+                f"search_all_pages({method_name}): 第{page}页获取 {len(page_results)} 条, "
+                f"累计 {len(all_results)} 条"
+            )
+
+            # 已到最后页则提前停止
+            if isinstance(result, dict) and total_pages > 0 and page >= total_pages:
+                logger.debug(
+                    f"search_all_pages({method_name}): 已到第{page}/{total_pages}页，停止翻页"
+                )
+                break
+
+        logger.info(
+            f"分页搜索完成({method_name}): 共{len(all_results)}条结果 "
+            f"(搜索了最多{min(page, max_pages)}页)"
+        )
+        return all_results
 
     def get_media_show_details(
         self, show_id: int, media_type: str, language: Optional[str] = "zh-CN"
@@ -358,13 +428,14 @@ class TMDBClient:
         year: Optional[int] = None,
         page: int = 1,
         language: Optional[str] = "zh-CN",
+        include_adult: Optional[bool] = True,
     ) -> Optional[Dict]:
         """专门搜索电影"""
         url = f"{self.BASE_URL}/search/movie"
         params = (
-            {"query": query, "page": page}
+            {"query": query, "page": page, "include_adult": include_adult}
             if not self.api_key.startswith("eyJ")
-            else {"query": query, "page": page}
+            else {"query": query, "page": page, "include_adult": include_adult}
         )
         # 只有当 language 不为 None 时才添加 language 参数
         if language is not None:

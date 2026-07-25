@@ -76,6 +76,7 @@ DEFAULT_CONFIG = {
         "region": "CN",
         "retry_count": 3,
         "timeout": 30,
+        "max_search_pages": 5,
     },
     "processing": {
         "rename_only": False,
