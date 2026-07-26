@@ -52,6 +52,7 @@ class RobustEmosVideoUploader:
         telegram_config=None,
         cache_dir=None,
         cache_expire_hours=24,
+        max_workers=3,
     ):
         self.base_url = base_url
         self.session = self._create_robust_session()
@@ -64,6 +65,8 @@ class RobustEmosVideoUploader:
         }
         # 设置分片大小，限制在 10MB - 200MB 之间
         self.chunk_size_mb = max(50, min(200, chunk_size_mb))
+        # 并发上传线程数
+        self.max_workers = max(1, min(10, max_workers))
         self.upload_stats = {
             "total_uploaded": 0,
             "start_time": None,
@@ -1193,8 +1196,10 @@ class RobustEmosVideoUploader:
         return True  # 即使验证失败，也认为上传可能已完成
 
     def _step3_multipart(self, file_path, upload_data, file_size, presigns, cache_key=None, resume_from_cache=False):
-        """multipart 预签名分片上传"""
-        # 如果没有 presigns，退化为 onedrive 方式
+        """multipart 预签名分片上传（支持并发多线程）"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
         if not presigns:
             print("⚠ multipart 类型但无 presigns，退化到 onedrive 方式")
             upload_url = upload_data.get("data", {}).get("upload_url", "")
@@ -1205,9 +1210,14 @@ class RobustEmosVideoUploader:
         total_chunks = len(presigns)
         chunk_size = self.chunk_size_mb * 1024 * 1024
 
+        # 线程安全
+        _lock = threading.Lock()
+        _completed_count = len([])  # 将在下方初始化
+        _failed_count = 0
+
+        # 断点续传：从缓存加载已上传分片
         uploaded_chunks = []
         uploaded_etags = []
-
         if resume_from_cache and cache_key:
             cache_data = self._load_upload_cache(cache_key, file_path)
             if cache_data:
@@ -1218,98 +1228,152 @@ class RobustEmosVideoUploader:
         print(f"文件大小: {self._format_size(file_size)}")
         print(f"分片大小: {self._format_size(chunk_size)}")
         print(f"总分片数: {total_chunks}")
+        print(f"并发线程: {self.max_workers}")
 
+        # 重置统计
         current_time = time.time()
         self.upload_stats = {
             "total_uploaded": 0, "start_time": current_time,
             "last_update_time": current_time, "last_uploaded": 0,
         }
 
-        with open(file_path, "rb") as f:
-            for idx, presign in enumerate(presigns):
-                chunk_num = presign.get("number", idx + 1) - 1
+        # 计算每个分片的信息
+        chunk_info_list = []
+        for idx, presign in enumerate(presigns):
+            chunk_num = presign.get("number", idx + 1) - 1
+            start_byte = chunk_num * chunk_size
+            end_byte = min(start_byte + chunk_size, file_size)
+            chunk_info_list.append({
+                "idx": idx,
+                "chunk_num": chunk_num,
+                "start_byte": start_byte,
+                "end_byte": end_byte,
+                "part_len": end_byte - start_byte,
+                "url": presign["upload_url"],
+            })
 
-                if chunk_num in uploaded_chunks:
-                    print(f"⊘ 分片 {chunk_num + 1}/{total_chunks} 已上传，跳过")
-                    continue
+        # 统计已上传的字节数（用于进度条）
+        for ci in chunk_info_list:
+            if ci["chunk_num"] in uploaded_chunks:
+                self.upload_stats["total_uploaded"] += ci["part_len"]
 
-                part_url = presign["upload_url"]
-                start_byte = chunk_num * chunk_size
-                end_byte = min(start_byte + chunk_size, file_size)
-                part_len = end_byte - start_byte
+        _completed_count = len(uploaded_chunks)
+        file_path_str = str(file_path)
 
-                f.seek(start_byte)
+        def _upload_one(ci):
+            """上传单个分片（在子线程中执行）"""
+            nonlocal _completed_count, _failed_count
+
+            chunk_num = ci["chunk_num"]
+            part_len = ci["part_len"]
+
+            if chunk_num in uploaded_chunks:
+                return True
+
+            # 每个线程独立打开文件读取
+            with open(file_path_str, "rb") as f:
+                f.seek(ci["start_byte"])
                 chunk_data = f.read(part_len)
 
-                success = False
-                for attempt in range(5):
-                    try:
-                        part_headers = {
-                            "Content-Length": str(part_len),
-                            "Content-Type": "application/octet-stream",
-                        }
-                        part_resp = self.session.put(
-                            part_url,
-                            headers=part_headers,
-                            data=chunk_data,
-                            timeout=600,
-                        )
+            for attempt in range(5):
+                try:
+                    part_headers = {
+                        "Content-Length": str(part_len),
+                        "Content-Type": "application/octet-stream",
+                    }
+                    part_resp = self.session.put(
+                        ci["url"],
+                        headers=part_headers,
+                        data=chunk_data,
+                        timeout=600,
+                    )
 
-                        if idx == 0:
-                            resp_body = part_resp.text[:500] if part_resp.text else "(空)"
-                            print(f"  ── 分片1 响应 ──")
-                            print(f"  状态码: {part_resp.status_code}")
-                            print(f"  响应头: {dict(part_resp.headers)}")
-                            print(f"  响应体: {resp_body}")
-                            print(f"  ────────────────")
+                    if part_resp.status_code in [200, 201, 204]:
+                        etag = part_resp.headers.get("ETag", "").strip('"')
 
-                        if part_resp.status_code in [200, 201, 204]:
-                            etag = part_resp.headers.get("ETag", "").strip('"')
-                            if idx == 0:
-                                print(f"  提取的 ETag: '{etag}'")
+                        with _lock:
+                            uploaded_chunks.append(chunk_num)
                             uploaded_etags.append({
                                 "number": chunk_num + 1,
                                 "etag": etag,
                             })
-                            uploaded_chunks.append(chunk_num)
+                            _completed_count += 1
 
+                            # 更新统计 & 进度
+                            instant_speed, average_speed, _ = self._update_upload_stats(
+                                part_len, time.time()
+                            )
+                            self._print_upload_progress(
+                                _completed_count - 1, total_chunks,
+                                part_len, file_size,
+                                instant_speed, average_speed,
+                                time.time() - self.upload_stats["start_time"],
+                                file_name=Path(file_path_str).name,
+                                file_path=file_path_str,
+                            )
+                            self._send_tg_progress(
+                                Path(file_path_str).name,
+                                _completed_count - 1, total_chunks,
+                                part_len, file_size,
+                                instant_speed, average_speed,
+                                time.time() - self.upload_stats["start_time"],
+                            )
+
+                            # 保存缓存
                             if cache_key:
                                 self._save_multipart_cache(
                                     cache_key, upload_data,
                                     uploaded_chunks, uploaded_etags, file_path
                                 )
 
-                            instant_speed, average_speed, elapsed_time = (
-                                self._update_upload_stats(part_len, time.time())
-                            )
-                            self._print_upload_progress(
-                                chunk_num, total_chunks, part_len, file_size,
-                                instant_speed, average_speed, elapsed_time,
-                                file_name=file_path.name, file_path=file_path,
-                            )
-                            success = True
-                            break
-                        else:
-                            print(f"multipart 分片 {chunk_num + 1} 失败: {part_resp.status_code}")
-                            if attempt < 4:
-                                time.sleep(min(attempt + 1, 3))
-                    except Exception as e:
-                        print(f"multipart 分片 {chunk_num + 1} 异常: {e}")
-                        if attempt < 4:
-                            time.sleep(min(attempt + 1, 3))
-                    finally:
+                        del chunk_data
+                        return True
+
+                    print(f"分片 {chunk_num + 1} 失败: {part_resp.status_code}")
+                    if attempt < 4:
+                        time.sleep(min(attempt + 1, 3))
+                except Exception as e:
+                    print(f"分片 {chunk_num + 1} 异常: {e}")
+                    if attempt < 4:
+                        time.sleep(min(attempt + 1, 3))
+                finally:
+                    if 'chunk_data' in locals():
                         del chunk_data
 
-                if not success:
-                    print(f"✗ multipart 分片 {chunk_num + 1} 上传失败")
-                    if cache_key:
-                        self._save_multipart_cache(
-                            cache_key, upload_data,
-                            uploaded_chunks, uploaded_etags, file_path
-                        )
-                    return False
+            with _lock:
+                _failed_count += 1
+            return False
 
-                time.sleep(0.3)
+        # 提交并发任务
+        futures = {}
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            for ci in chunk_info_list:
+                if ci["chunk_num"] in uploaded_chunks:
+                    continue
+                future = executor.submit(_upload_one, ci)
+                futures[future] = ci
+
+            for future in as_completed(futures):
+                ci = futures[future]
+                if not future.result():
+                    print(f"✗ 分片 {ci['chunk_num'] + 1} 上传失败，取消剩余任务")
+                    for f in futures:
+                        if not f.done():
+                            f.cancel()
+                    break
+
+        if _failed_count > 0:
+            print(f"✗ 有 {_failed_count} 个分片上传失败")
+            if cache_key:
+                self._save_multipart_cache(
+                    cache_key, upload_data,
+                    uploaded_chunks, uploaded_etags, file_path
+                )
+            return False
+
+        if _completed_count < total_chunks:
+            print(f"✗ 上传未完成: {_completed_count}/{total_chunks}")
+            return False
 
         # 所有分片上传完成，调用合并
         print(f"所有分片上传完成，调用合并接口...")

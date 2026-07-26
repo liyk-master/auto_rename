@@ -154,6 +154,9 @@ class VideoFileHandler:
         self.emos_chunk_size_mb = self.emos_config.get(
             "chunk_size_mb", 50
         )  # 分片大小(MB)，默认50
+        self.emos_max_workers = int(
+            self.emos_config.get("max_workers", 3)
+        )  # 并发上传线程数，默认3
         self.max_upload_workers = int(
             self.processing_config.get("max_upload_workers", 1)
         )  # 并发上传数（全局默认）
@@ -641,7 +644,8 @@ class VideoFileHandler:
             console_log(f"项目ID: {matched_item_id}")
             console_log(f"{'='*80}\n")
             uploader = RobustEmosVideoUploader(
-                self.emos_auth_token, chunk_size_mb=int(self.emos_chunk_size_mb)
+                self.emos_auth_token, chunk_size_mb=int(self.emos_chunk_size_mb),
+                max_workers=int(self.emos_max_workers),
             )
             upload_result = uploader.upload_video(
                 file_path,
@@ -1159,6 +1163,7 @@ class VideoFileHandler:
                             self.emos_auth_token,
                             chunk_size_mb=int(self.emos_chunk_size_mb),
                             telegram_config=self.telegram_config,
+                            max_workers=int(self.emos_max_workers),
                         )
                         upload_results["emos"] = uploader.upload_video(
                             file_path,
