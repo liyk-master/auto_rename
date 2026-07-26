@@ -63,8 +63,8 @@ class RobustEmosVideoUploader:
             "origin": base_url,
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         }
-        # 设置分片大小，限制在 10MB - 200MB 之间
-        self.chunk_size_mb = max(50, min(200, chunk_size_mb))
+        # 分片大小（由用户配置决定，不设上下限）
+        self.chunk_size_mb = chunk_size_mb
         # 并发上传线程数
         self.max_workers = max(1, min(10, max_workers))
         self.upload_stats = {
