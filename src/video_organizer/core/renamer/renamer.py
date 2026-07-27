@@ -17,6 +17,10 @@ from ...utils.llm_translator import LLMTranslator
 from ..manual_rule_engine import ManualRuleEngine
 from ..media_type_resolver import MediaTypeResolver
 
+from .chinese_utils import decode_filename, roman_to_digit, chinese_to_digit
+from .category_detector import DEFAULT_RELEASE_GROUP_MAPPING, determine_category, determine_anime_subcategory
+from .path_builder import sanitize_filename, handle_file_conflict
+
 # 繁简转换支持
 try:
     import zhconv
@@ -328,7 +332,7 @@ class VideoRenamer:
         self.config = config  # 保存完整配置对象
 
         # 加载字幕组映射配置
-        self._release_group_mapping = dict(self.DEFAULT_RELEASE_GROUP_MAPPING)
+        self._release_group_mapping = dict(DEFAULT_RELEASE_GROUP_MAPPING)
         custom_mapping = {}
         if config and isinstance(config, dict):
             custom_mapping = config.get("release_group_mapping", {})
@@ -2046,93 +2050,16 @@ class VideoRenamer:
 
     def _roman_to_digit(self, roman: str) -> Optional[int]:
         """将罗马数字转换为阿拉伯数字 (I-X)"""
-        roman_dict = {
-            "I": 1,
-            "II": 2,
-            "III": 3,
-            "IV": 4,
-            "V": 5,
-            "VI": 6,
-            "VII": 7,
-            "VIII": 8,
-            "IX": 9,
-            "X": 10,
-        }
-        if not roman:
-            return None
-        return roman_dict.get(roman.upper())
+        return roman_to_digit(roman)
 
     def _chinese_to_digit(self, cn_str: str) -> Optional[int]:
-        """将中文数字转换为阿拉伯数字 (1-99)，支持简体、繁体大写数字"""
-        cn_map = {
-            # 简体数字
-            "一": 1,
-            "二": 2,
-            "两": 2,
-            "三": 3,
-            "四": 4,
-            "五": 5,
-            "六": 6,
-            "七": 7,
-            "八": 8,
-            "九": 9,
-            "十": 10,
-            # 繁体大写数字（用于日文"之章"等格式）
-            "壹": 1,
-            "贰": 2,
-            "參": 3,  # "三"的大写形式，常见于日文"參之章"
-            "肆": 4,
-            "伍": 5,
-            "陆": 6,
-            "柒": 7,
-            "捌": 8,
-            "玖": 9,
-            "拾": 10,
-            # 阿拉伯数字
-            "0": 0,
-            "1": 1,
-            "2": 2,
-            "3": 3,
-            "4": 4,
-            "5": 5,
-            "6": 6,
-            "7": 7,
-            "8": 8,
-            "9": 9,
-        }
-
-        if not cn_str:
-            return None
-
-        # 如果是纯数字字符串
-        if cn_str.isdigit():
-            return int(cn_str)
-
-        # 处理简单的中文数字
-        if len(cn_str) == 1:
-            return cn_map.get(cn_str)
-
-        # 处理“十”开头的（如：十一、十二）
-        if len(cn_str) == 2 and cn_str[0] == "十":
-            return 10 + cn_map.get(cn_str[1], 0)
-
-        # 处理“二十”、“三十”等
-        if len(cn_str) == 2 and cn_str[1] == "十":
-            return cn_map.get(cn_str[0], 0) * 10
-
-        # 处理“二十一”等
-        if len(cn_str) == 3 and cn_str[1] == "十":
-            return cn_map.get(cn_str[0], 0) * 10 + cn_map.get(cn_str[2], 0)
-
-        return None
+        """将中文数字转换为阿拉伯数字 (1-99)"""
+        return chinese_to_digit(cn_str)
 
     def _extract_with_ai(self, filename: str, existing_metadata: Dict) -> Dict:
-        """
-        Use AI service to extract metadata from filename.
-        """
-        logger.warning("AI extraction not implemented, using regex results only")
-
-        return existing_metadata
+        """Use AI service to extract metadata from filename."""
+        from .ai_parser import extract_with_ai
+        return extract_with_ai(filename, existing_metadata)
 
     def _clean_filename_for_search(self, filename: str) -> str:
         """清理文件名，移除常见的修饰词和标记，为搜索做准备"""
@@ -3937,231 +3864,19 @@ class VideoRenamer:
             if "genre_ids" not in metadata and best_match:
                 metadata["genre_ids"] = best_match.get("genre_ids", [])
             return metadata
-
     def _determine_anime_subcategory(
         self, metadata: Dict, origin_countries: List, original_language: str
     ) -> str:
         """根据元数据确定动漫子分类（国漫、日番、欧美动漫等）"""
-        chinese_countries = ["CN", "HK", "TW"]
-        english_countries = ["US", "GB", "CA", "AU", "NZ"]
-
-        has_cn = any(country in chinese_countries for country in origin_countries)
-        has_jp = any(country in ["JP", "日本"] for country in origin_countries)
-        has_en = any(country in english_countries for country in origin_countries)
-
-        if has_cn and has_jp:
-            if original_language in ["zh", "cn", "zh-cn", "zh-tw", "zh-hk"]:
-                return "国漫"
-            elif original_language in ["ja", "ja-jp"]:
-                return "日番"
-            else:
-                title = metadata.get("show_name", "") or metadata.get("original_show_name", "")
-                if re.search(r"[\u4E00-\u9FFF]", title):
-                    return "国漫"
-                else:
-                    return "日番"
-        elif has_cn:
-            return "国漫"
-        elif has_jp:
-            return "日番"
-        elif has_en:
-            return "欧美动漫"
-        elif original_language in ["zh", "cn", "zh-cn", "zh-tw", "zh-hk"]:
-            return "国漫"
-        elif original_language in ["ja", "ja-jp"]:
-            return "日番"
-        elif original_language in ["en", "en-us", "en-gb"]:
-            return "欧美动漫"
-        else:
-            title = metadata.get("show_name", "") or metadata.get(
-                "original_show_name", ""
-            )
-            if re.search(r"[\u3040-\u30FF]", title):
-                return "日番"
-            elif re.search(r"[\u4E00-\u9FFF]", title):
-                return "国漫"
-            else:
-                return "其他动漫"
+        return determine_anime_subcategory(metadata, origin_countries, original_language)
 
     def _determine_category(self, metadata: Dict) -> str:
-        """
-        根据元数据确定视频的分类目录
-
-        Args:
-            metadata (Dict): 包含视频元数据的字典
-
-        Returns:
-            str: 分类目录路径
-        """
-        # 获取字幕组信息（仅在 TMDB 没有明确分类时使用）
-        release_group = metadata.get("release_group", "")
-        forced_content_type = None
-        if release_group:
-            # 仅使用精确匹配，避免模糊匹配误判
-            if release_group in self._release_group_mapping:
-                forced_content_type = self._release_group_mapping[release_group]
-                logger.debug(
-                    f"字幕组 '{release_group}' 映射到类型: {forced_content_type}（后备）"
-                )
-
-        # 获取语言和地区信息
-        original_language = metadata.get("original_language", "").lower()
-        origin_countries = metadata.get("origin_country", [])
-        genres = metadata.get("genres", [])
-        genre_names = [genre.lower() for genre in genres]
-        logger.info(f"[DEBUG] _determine_category 入口: tmdb_id={metadata.get('tmdb_id')}, forced_content_type={forced_content_type}, genres={genres}, genre_names={genre_names}, media_type={metadata.get('media_type')}")
-
-        # 扩展的国家/地区识别列表
-        chinese_countries = ["CN", "HK", "TW"]
-        english_countries = ["US", "GB", "CA", "AU", "NZ"]
-        asian_countries = ["JP", "KR", "TH", "IN"]
-
-        # 子分类逻辑
-        sub_category = ""
-        base_category = "Other"  # 默认值
-
-        # 1. 优先使用 TMDB 分类
-        media_type = metadata.get("media_type")
-        if media_type == "movie":
-            base_category = "Movies"
-            # 电影子分类
-            if any(
-                genre in genre_names for genre in ["animation", "animated", "动画"]
-            ):
-                sub_category = "动画电影"
-            else:
-                original_title = metadata.get("original_title", "")
-                if original_title and re.search(r"[\u4e00-\u9fff]", original_title):
-                    sub_category = "华语电影"
-                elif original_language in ["zh", "cn"] or any(
-                    country in chinese_countries for country in origin_countries
-                ):
-                    sub_category = "华语电影"
-                else:
-                    sub_category = "外语电影"
-        elif media_type == "tv":
-            base_category = "TV Shows"
-            # 电视剧子分类
-            # 综艺和纪录片不分地区，直接归类
-            if any(genre in genre_names for genre in ["documentary", "纪录片", "纪录"]):
-                sub_category = "纪录片"
-            elif any(
-                genre in genre_names
-                for genre in ["reality", "variety", "综艺", "game show", "真人秀"]
-            ):
-                sub_category = "综艺"
-            elif any(genre in genre_names for genre in ["animation", "animated", "动画"]):
-                sub_category = self._determine_anime_subcategory(
-                    metadata, origin_countries, original_language
-                )
-            elif any(
-                genre in genre_names
-                for genre in ["kids", "children", "child", "儿童", "family"]
-            ):
-                sub_category = "儿童"
-            else:
-                # 使用字幕组映射作为优先判断（如果已经有 forced_content_type 且为 anime）
-                if forced_content_type == "anime":
-                    sub_category = self._determine_anime_subcategory(
-                        metadata, origin_countries, original_language
-                    )
-                    logger.info(f"基于字幕组映射判定为动漫: {sub_category}")
-                elif original_language in ["zh", "cn"] or any(
-                    country in chinese_countries for country in origin_countries
-                ):
-                    sub_category = "国产剧"
-                elif original_language in ["en"] or any(
-                    country in english_countries for country in origin_countries
-                ):
-                    sub_category = "欧美剧"
-                elif original_language in ["ja", "ko", "th", "hi"] or any(
-                    country in ["JP", "日本"] for country in origin_countries
-                ):
-                    sub_category = "日韩剧"
-                else:
-                    sub_category = "欧美剧"
-        else:
-            base_category = "Other"
-
-        # 2. 如果 TMDB 没有明确的分类（sub_category 为空或为"未分类"），则使用字幕组映射作为后备
-        # 或者TMDB没有搜索结果时，根据文件名中的字符判断
-        if not sub_category or sub_category == "未分类" or not metadata.get("tmdb_id"):
-            if forced_content_type:
-                logger.info(
-                    f"TMDB没有明确分类或未搜索到结果，使用字幕组映射: {forced_content_type}"
-                )
-                if forced_content_type == "anime":
-                    base_category = "TV Shows"
-                    # 根据语言和地区判断动漫子分类
-                    if original_language in ["ja", "ja-jp"] or any(
-                        country in ["JP", "日本"] for country in origin_countries
-                    ):
-                        sub_category = "日番"
-                    elif original_language in ["zh", "cn", "zh-cn", "zh-tw", "zh-hk"] or any(
-                        country in chinese_countries for country in origin_countries
-                    ):
-                        sub_category = "国漫"
-                    elif original_language in ["en", "en-us", "en-gb"] or any(
-                        country in english_countries for country in origin_countries
-                    ):
-                        sub_category = "欧美动漫"
-                    else:
-                        title = metadata.get("show_name", "") or metadata.get(
-                            "original_show_name", ""
-                        )
-                        if re.search(r"[\u3040-\u30FF]", title):
-                            sub_category = "日番"
-                        elif re.search(r"[\u4E00-\u9FFF]", title):
-                            sub_category = "国漫"
-                        else:
-                            sub_category = "其他动漫"
-                elif forced_content_type == "drama":
-                    base_category = "TV Shows"
-                    if original_language in ["zh", "cn"] or any(
-                        country in chinese_countries for country in origin_countries
-                    ):
-                        sub_category = "国产剧"
-                    elif original_language in ["en"] or any(
-                        country in english_countries for country in origin_countries
-                    ):
-                        sub_category = "欧美剧"
-                    elif original_language in ["ja", "ko", "th", "hi"] or any(
-                        country in asian_countries for country in origin_countries
-                    ):
-                        sub_category = "日韩剧"
-                    else:
-                        # 没有TMDB结果时，根据文件名字符判断
-                        title = metadata.get("show_name", "") or metadata.get("original_show_name", "")
-                        if re.search(r"[\u3040-\u30FF]", title):  # 日文平假名/片假名
-                            sub_category = "日番"
-                        elif re.search(r"[\u4E00-\u9FFF]", title):  # 中文
-                            sub_category = "国产剧"
-                        else:
-                            sub_category = "其他剧"
-                elif forced_content_type == "movie":
-                    base_category = "Movies"
-                    if any(genre in genre_names for genre in ["animation", "animated", "动画"]):
-                        sub_category = "动画电影"
-                    else:
-                        sub_category = "外语电影"
-            else:
-                # 没有字幕组映射，TMDB也没有分类或未搜索到结果时，根据文件名字符判断
-                if media_type == "tv":
-                    base_category = "TV Shows"
-                    title = metadata.get("show_name", "") or metadata.get("original_show_name", "")
-                    if re.search(r"[\u3040-\u30FF]", title):  # 日文平假名/片假名
-                        sub_category = "日番"
-                    elif re.search(r"[\u4E00-\u9FFF]", title):  # 中文
-                        sub_category = "国产剧"
-                    else:
-                        sub_category = "欧美剧"
-                elif media_type == "movie":
-                    base_category = "Movies"
-                    sub_category = "外语电影"
-
-        # 组合分类路径
-        return f"{base_category}/{sub_category}"
-
+        """根据元数据确定视频的分类目录"""
+        return determine_category(
+            metadata,
+            self._release_group_mapping,
+            tmdb_id=metadata.get("tmdb_id"),
+        )
     def generate_new_path(
         self,
         metadata: Dict,
@@ -4503,43 +4218,14 @@ class VideoRenamer:
 
     def _sanitize_filename(self, name: str) -> str:
         """Sanitize a string to be safe for use as a filename."""
-        if not name:
-            return ""
-
-        # Replace problematic characters
-        import re
-
-        name = re.sub(r"[<>:/\\|?*]", "", name)
-        name = re.sub(r"\s+", " ", name).strip()
-        return name
+        return sanitize_filename(name)
 
     def _handle_file_conflict(self, file_path: Path) -> Path:
-        """
-        处理文件冲突，当文件存在时发出警告但保留原始文件名
-
-        Args:
-            file_path (Path): 原始文件路径
-
-        Returns:
-            Path: 原始文件路径
-
-        Raises:
-            FileExistsError: 当文件已存在时抛出异常，提醒冲突
-        """
-        if file_path.exists():
-            logger.warning(f"文件已存在，无法覆盖: {file_path}")
-            # 不自动生成新名称，而是提醒冲突
-            raise FileExistsError(f"文件已存在，无法覆盖: {file_path}")
-
-        # 如果文件不存在，直接返回原始路径
-        return file_path
+        """处理文件冲突"""
+        return handle_file_conflict(file_path)
 
     def set_naming_rules(self, rules: Dict[str, str]) -> None:
-        """设置自定义命名规则
-
-        Args:
-            rules (Dict[str, str]): 命名规则字典，键为媒体类型，值为模板字符串
-        """
+        """设置自定义命名规则"""
         for media_type, template in rules.items():
             if media_type in self.naming_rules:
                 self.naming_rules[media_type] = template
