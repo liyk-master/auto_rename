@@ -16,7 +16,7 @@ from .core.config_loader import load_config, save_default_config
 
 # 导入监控器和处理器
 from .core.filesystem_monitor import FileSystemMonitor
-from .core.video_file_handler import VideoFileHandler
+from .core.file_handler import VideoFileHandler
 from .core.downloader import DownloaderMonitorFactory
 
 # 导入日志工具
