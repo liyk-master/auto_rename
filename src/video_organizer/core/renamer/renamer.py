@@ -11,11 +11,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union, Set
 
 from jinja2 import Template
-from .tmdb_client import TMDBClient
-from .guessit_parser import GuessItParser, GUESSIT_AVAILABLE
-from ..utils.llm_translator import LLMTranslator
-from .manual_rule_engine import ManualRuleEngine
-from .media_type_resolver import MediaTypeResolver
+from ..tmdb_client import TMDBClient
+from ..guessit_parser import GuessItParser, GUESSIT_AVAILABLE
+from ...utils.llm_translator import LLMTranslator
+from ..manual_rule_engine import ManualRuleEngine
+from ..media_type_resolver import MediaTypeResolver
 
 # 繁简转换支持
 try:

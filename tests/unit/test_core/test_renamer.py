@@ -4,7 +4,7 @@ Tests for the VideoRenamer class.
 
 import pytest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, MagicMock, patch
 
 from video_organizer.core.renamer import VideoRenamer
 
@@ -51,22 +51,62 @@ class TestVideoRenamer:
             result = renamer._sanitize_filename(input_name)
             assert result == expected
     
-    @patch("video_organizer.core.renamer.TMDBClient")
-    def test_enrich_with_tmdb(self, mock_tmdb_client, renamer):
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_enrich_with_tmdb(self, mock_tmdb_client):
         """Test metadata enrichment with TMDB data."""
         # Mock TMDB client responses
-        mock_client_instance = Mock()
+        mock_client_instance = MagicMock()
         mock_tmdb_client.return_value = mock_client_instance
 
-        # 模拟实际代码中使用的方法名
-        mock_client_instance.search_tv.return_value = {"results": [{"id": 123, "name": "Game of Thrones", "media_type": "tv"}]}
+        # 模拟 TMDB search 返回结果
+        mock_client_instance.search_all_pages.return_value = [
+            {"id": 123, "name": "Game of Thrones", "media_type": "tv", "first_air_date": "2011-04-17"}
+        ]
         mock_client_instance.get_tv_details.return_value = {
             "name": "Game of Thrones",
-            "first_air_date": "2011-04-17"
+            "first_air_date": "2011-04-17",
+            "genres": [],
+            "origin_country": [],
+            "original_language": "en",
+            "poster_path": "",
+            "backdrop_path": "",
+            "vote_average": 0,
+            "vote_count": 0,
+            "popularity": 0,
+            "number_of_seasons": 8,
+            "number_of_episodes": 73,
+            "status": "Ended",
+            "overview": "",
+            "networks": [],
         }
         mock_client_instance.get_tv_episode_details.return_value = {
-            "name": "Winter Is Coming"
+            "name": "Winter Is Coming",
+            "still_path": "",
+            "overview": "",
+            "vote_average": 0,
         }
+        mock_client_instance.get_tv_credits.return_value = {
+            "cast": [],
+            "crew": [],
+        }
+        mock_client_instance.get_external_ids.return_value = {
+            "imdb_id": "tt0944947",
+            "tvdb_id": 121361,
+            "tvrage_id": 0,
+        }
+
+        # 在 patch 生效后创建 renamer，确保 TMDBClient 被 mock
+        renamer = VideoRenamer("your_tmdb_api_key")
+
+        # Test metadata enrichment
+        metadata = {"show_name": "Game of Thrones", "season": "1", "episode": "1", "media_type": "tv"}
+        result = renamer._enrich_with_tmdb(metadata)
+
+        assert result["show_name"] == "Game of Thrones"
+        assert result["year"] == "2011"
+
+        # 在 patch 生效后创建 renamer，确保 TMDBClient 被 mock
+        renamer = VideoRenamer("your_tmdb_api_key")
 
         # Test metadata enrichment
         metadata = {"show_name": "Game of Thrones", "season": "1", "episode": "1", "media_type": "tv"}
