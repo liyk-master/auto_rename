@@ -11,9 +11,9 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field, asdict
 
-from .db_manager import get_db, init_db
-from .emya_service import EmyaService
-from .emya_models import (
+from ..db_manager import get_db, init_db
+from .service import EmyaService
+from .models import (
     VideoType,
     RelationType,
     ImageType,
@@ -249,7 +249,7 @@ class EmyaApiController:
         """
         try:
             with self.service.db.session_scope() as session:
-                from .emya_models import Library
+                from .models import Library
                 from sqlalchemy import and_
                 libraries = (
                     session.query(Library)
@@ -799,7 +799,7 @@ class EmyaApiController:
         try:
             with self.service.db.session_scope() as session:
                 # 获取视频信息
-                from .emya_models import VideoList
+                from .models import VideoList
                 video = session.query(VideoList).filter(
                     VideoList.id == video_id
                 ).first()

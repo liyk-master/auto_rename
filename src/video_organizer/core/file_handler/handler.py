@@ -329,7 +329,7 @@ class VideoFileHandler:
 
         if self.emya_enabled:
             try:
-                from .emya_api import init_controller, EmyaApiController
+                from .emya.api import init_controller, EmyaApiController
 
                 # 初始化数据库连接
                 db_config = {

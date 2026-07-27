@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, event, pool
 from sqlalchemy.orm import sessionmaker, Session, scoped_session
 from sqlalchemy.engine import Engine
 
-from .emya_models import Base
+from .emya.models import Base
 
 logger = logging.getLogger(__name__)
 

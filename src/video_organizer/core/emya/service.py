@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
 
-from .emya_models import (
+from .models import (
     Library,
     VideoList,
     VideoSeason,
@@ -34,7 +34,7 @@ from .emya_models import (
     PathType,
     VideoType,
 )
-from .db_manager import get_db
+from ..db_manager import get_db
 
 logger = logging.getLogger(__name__)
 
