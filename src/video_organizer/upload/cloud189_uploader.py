@@ -10,7 +10,7 @@ import requests
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from .cloud189_upload import Cloud189Client
+from .cloud189_client import Cloud189Client
 
 # 进度报告函数
 def _report_progress(file_path, filename, uploader, progress, uploaded_bytes, total_bytes, speed, status, error=None):

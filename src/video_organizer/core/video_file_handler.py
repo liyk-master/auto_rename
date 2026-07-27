@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
 # 导入项目内部的上传工具
-from ..upload.upload_emos import RobustEmosVideoUploader
+from ..upload.emos_uploader import RobustEmosVideoUploader
 
 from .renamer import VideoRenamer
 from .tmdb_client import TMDBClient
@@ -237,7 +237,7 @@ class VideoFileHandler:
         self.p123_uploader = None
         if self.p123_token and self.p123_parent_id != 0:
             try:
-                from ..upload.upload_p123 import P123Uploader
+                from ..upload.p123_uploader import P123Uploader
 
                 self.p123_uploader = P123Uploader(
                     self.p123_token,
@@ -253,7 +253,7 @@ class VideoFileHandler:
         self.cloud189_uploader = None
         if self.cloud189_username or self.cloud189_cookie:
             try:
-                from ..upload.upload_cloud189 import Cloud189Uploader
+                from ..upload.cloud189_uploader import Cloud189Uploader
 
                 self.cloud189_uploader = Cloud189Uploader(
                     username=self.cloud189_username,
@@ -275,7 +275,7 @@ class VideoFileHandler:
         self.yun139_uploader = None
         if self.yun139_authorization:
             try:
-                from ..upload.upload_yun139 import Yun139Uploader
+                from ..upload.yun139_uploader import Yun139Uploader
 
                 self.yun139_uploader = Yun139Uploader(
                     authorization=self.yun139_authorization,
@@ -1157,7 +1157,7 @@ class VideoFileHandler:
                     upload_results["emos"] = None
                 else:
                     try:
-                        from ..upload.upload_emos import RobustEmosVideoUploader
+                        from ..upload.emos_uploader import RobustEmosVideoUploader
 
                         uploader = RobustEmosVideoUploader(
                             self.emos_auth_token,
@@ -1195,7 +1195,7 @@ class VideoFileHandler:
                         uploader = self.p123_uploader
                         if not uploader:
                             # 兜底：如果初始化失败，尝试在此重新初始化
-                            from ..upload.upload_p123 import P123Uploader
+                            from ..upload.p123_uploader import P123Uploader
 
                             uploader = P123Uploader(
                                 self.p123_token,

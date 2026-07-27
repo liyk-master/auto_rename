@@ -3,8 +3,8 @@
 支持多种云盘上传服务
 """
 
-from .yun139 import Yun139, CloudType, FileInfo
-from .upload_yun139 import Yun139Uploader
+from .yun139_client import Yun139, CloudType, FileInfo
+from .yun139_uploader import Yun139Uploader
 
 __all__ = [
     "Yun139",

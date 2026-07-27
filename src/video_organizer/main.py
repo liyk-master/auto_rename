@@ -591,7 +591,7 @@ def main() -> None:
             yun139_auth = str(raw_auth).split("#")[0].split(";")[0].strip()
             if yun139_auth:
                 try:
-                    from .upload.upload_yun139 import Yun139Uploader
+                    from .upload.yun139_uploader import Yun139Uploader
                     uploader = Yun139Uploader(
                         authorization=yun139_auth,
                         cloud_type=yun139_cfg.get("cloud_type", "personal_new"),

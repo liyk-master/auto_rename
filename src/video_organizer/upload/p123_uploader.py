@@ -55,7 +55,7 @@ except ImportError:
     P123Client = None
 
 # 导入 p123do 的上传函数
-from .p123do import upload_file as p123_upload_file, calculate_md5, get_file_size
+from .p123_client import upload_file as p123_upload_file, calculate_md5, get_file_size
 
 
 class P123Uploader:

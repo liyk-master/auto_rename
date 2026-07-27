@@ -379,7 +379,7 @@ class MediaTrackerClient:
                         if file_id:
                             try:
                                 # \u6784\u9020 FileInfo \u5bf9\u8c61\u7528\u4e8e\u91cd\u547d\u540d
-                                from ..upload.yun139 import FileInfo
+                                from ..upload.yun139_client import FileInfo
                                 from datetime import datetime
 
                                 file_info = FileInfo(

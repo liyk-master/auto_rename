@@ -19,7 +19,7 @@ from urllib.parse import quote
 from typing import Optional, Dict, Any, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .yun139 import Yun139, CloudType, FileInfo
+from .yun139_client import Yun139, CloudType, FileInfo
 
 _logger = logging.getLogger(__name__)
 
