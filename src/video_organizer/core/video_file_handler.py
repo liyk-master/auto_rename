@@ -18,7 +18,7 @@ from ..upload.emos_uploader import RobustEmosVideoUploader
 from .renamer import VideoRenamer
 from .tmdb_client import TMDBClient
 from .subtitle_handler import SubtitleHandler
-from .downloader_monitor import decode_file_path
+from .downloader import decode_file_path
 from ..utils.logging_utils import get_logger, log_success, log_failure, log_exception
 from ..database.operations import record_task
 from ..database.session import init_db as init_task_db

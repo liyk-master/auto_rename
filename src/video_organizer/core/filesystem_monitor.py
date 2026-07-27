@@ -14,7 +14,7 @@ from typing import Dict, Optional, List
 
 # 导入更新后的VideoFileHandler
 from .video_file_handler import VideoFileHandler
-from .downloader_monitor import DownloaderMonitorFactory, decode_file_path, resolve_file_path
+from .downloader import DownloaderMonitorFactory, decode_file_path, resolve_file_path
 
 logger = logging.getLogger(__name__)
 
