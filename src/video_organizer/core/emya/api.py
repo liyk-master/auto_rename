@@ -967,6 +967,7 @@ def init_controller(
     Returns:
         EmyaApiController 实例
     """
+    logger.info(f"[DEBUG] init_controller called with db_config={db_config}")
     global _controller
     _controller = EmyaApiController(
         db_config=db_config,
