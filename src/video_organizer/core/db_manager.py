@@ -12,8 +12,6 @@ from sqlalchemy import create_engine, event, pool
 from sqlalchemy.orm import sessionmaker, Session, scoped_session
 from sqlalchemy.engine import Engine
 
-from .emya.models import Base
-
 logger = logging.getLogger(__name__)
 
 
@@ -168,11 +166,13 @@ class DatabaseManager:
 
     def create_tables(self):
         """创建所有表（如果不存在）"""
+        from .emya.models import Base
         Base.metadata.create_all(self._engine)
         logger.info("数据库表创建完成")
 
     def drop_tables(self):
         """删除所有表（危险操作！）"""
+        from .emya.models import Base
         Base.metadata.drop_all(self._engine)
         logger.warning("数据库表已删除")
 
