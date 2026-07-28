@@ -327,11 +327,9 @@ class VideoFileHandler:
         self.emya_enabled = self.emya_db_config.get("enabled", False)
         self.emya_controller = None
 
-        self.logger.info(f"[DEBUG] emya_db_config={self.emya_db_config}, emya_enabled={self.emya_enabled}")
-
         if self.emya_enabled:
             try:
-                from .emya.api import init_controller, EmyaApiController
+                from ..emya.api import init_controller, EmyaApiController
 
                 # 初始化数据库连接
                 db_config = {
