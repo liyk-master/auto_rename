@@ -489,6 +489,7 @@ class MediaTrackerClient:
                             season=season,
                             episode=episode,
                             tmdb_client=tmdb_client,
+                            content_hash=sha256,
                         )
                         if emya_result.success:
                             logger.info("emya 入库成功: video_id=%s, title=%s", emya_result.data.get("video_id"), emya_result.data.get("title"))
@@ -586,6 +587,7 @@ class MediaTrackerClient:
                 season=season,
                 episode=episode,
                 tmdb_client=tmdb_client,
+                content_hash=sha256,
             )
             if emya_result.success:
                 logger.info("emya \u91cd\u65b0\u5165\u5e93\u6210\u529f: video_id=%s, title=%s",

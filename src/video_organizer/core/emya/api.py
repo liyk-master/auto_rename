@@ -11,6 +11,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field, asdict
 
+from sqlalchemy.exc import IntegrityError
+
 from ..db_manager import get_db, init_db
 from .service import EmyaService
 from .models import (
@@ -470,23 +472,8 @@ class EmyaApiController:
         episode: Optional[int] = None,
         path_type: str = PathType.URL,
         tmdb_client: Any = None,
+        content_hash: Optional[str] = None,
     ) -> ApiResponse:
-        """
-        按路径结构入库（与 ImportMedia.ts 逻辑一致）
-
-        Args:
-            folder_parts: 整理后的路径层级
-            media_url: 媒体URL
-            quality_tags: 品质标签（作为 video_media.name）
-            file_size: 文件大小
-            season: 季号
-            episode: 集号
-            path_type: 路径类型
-            tmdb_client: TMDB API 客户端（用于补写富信息）
-
-        Returns:
-            ApiResponse
-        """
         try:
             video_list = self.service.import_by_path(
                 folder_parts=folder_parts,
@@ -497,6 +484,7 @@ class EmyaApiController:
                 episode=episode,
                 path_type=path_type,
                 tmdb_client=tmdb_client,
+                content_hash=content_hash,
             )
             if video_list is None:
                 return ApiResponse(
@@ -823,19 +811,27 @@ class EmyaApiController:
                         if episode:
                             episode_id = episode.id
 
-                media = self.service.create_media(
-                    session=session,
-                    name=name,
-                    path_url=path_url,
-                    path_type=path_type,
-                    video_list_id=video_id if video.video_type == VideoType.MOVIE else video_id,
-                    video_season_id=season_id,
-                    video_episode_id=episode_id,
-                    file_size=file_size,
-                    file_second=file_second,
-                    file_container=file_container,
-                    quality_tags=quality_tags,
-                )
+                try:
+                    media = self.service.create_media(
+                        session=session,
+                        name=name,
+                        path_url=path_url,
+                        path_type=path_type,
+                        video_list_id=video_id if video.video_type == VideoType.MOVIE else video_id,
+                        video_season_id=season_id,
+                        video_episode_id=episode_id,
+                        file_size=file_size,
+                        file_second=file_second,
+                        file_container=file_container,
+                        quality_tags=quality_tags,
+                    )
+                except IntegrityError:
+                    logger.info(f"媒体已存在（content_hash 去重），跳过: {path_url[:80]}")
+                    return ApiResponse(
+                        success=False,
+                        message="媒体资源已存在",
+                        error_code="MEDIA_ALREADY_EXISTS",
+                    )
 
                 return ApiResponse(
                     success=True,

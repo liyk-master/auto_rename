@@ -423,6 +423,9 @@ class VideoMedia(Base, TimestampMixin):
     file_resolution: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, comment="分辨率: 1080p/4k"
     )
+    content_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, comment="文件内容 SHA256 hash（去重用）"
+    )
 
     # 关系
     video_list: Mapped[Optional["VideoList"]] = relationship(
@@ -442,6 +445,7 @@ class VideoMedia(Base, TimestampMixin):
     __table_args__ = (
         Index("idx_video_media_episode", "video_episode_id"),
         Index("idx_video_media_list", "video_list_id"),
+        Index("uq_video_media_content_hash", "content_hash", unique=True),
     )
 
 

@@ -1442,6 +1442,9 @@ class VideoFileHandler:
                                 or upload_results["yun139"].get("file_id")
                             )
 
+                        # content_hash 暂只从移动云盘（yun139）提取
+                        content_hash = upload_results.get("yun139", {}).get("content_hash")
+
                         if media_url:
                             try:
                                 renamed_relative_path = self.renamer.generate_new_path(
@@ -1461,6 +1464,7 @@ class VideoFileHandler:
                                     season=metadata.get("season"),
                                     episode=metadata.get("episode"),
                                     tmdb_client=tmdb_client,
+                                    content_hash=content_hash,
                                 )
                                 if result.success:
                                     emya_import_result = result.data

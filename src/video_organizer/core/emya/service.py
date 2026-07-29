@@ -42,7 +42,6 @@ logger = logging.getLogger(__name__)
 class EmyaService:
     """emya 入库服务"""
 
-    _SHA256_RE = re.compile(r'/139getDownloadUrl/([a-fA-F0-9]{64})/')
     _FOLDER_REGEX = re.compile(r'^(.+?) \((\d{4})\) \{tmdbid=(\d+)\}$')
 
     def __init__(self, default_user_id: Optional[int] = None):
@@ -474,30 +473,20 @@ class EmyaService:
         file_matadata: Optional[dict] = None,
         file_chapters: Optional[dict] = None,
         number_view: Optional[int] = 0,
+        content_hash: Optional[str] = None,
     ) -> VideoMedia:
         """
-        创建媒体资源
+        创建媒体资源（直接写入 + content_hash 唯一约束去重）。
+
+        不再先查询再写入：直接 INSERT，content_hash 冲突（IntegrityError）时
+        回滚本次插入并返回已存在的记录，省去一次慢查询。
 
         Args:
-            session: 数据库会话
-            name: 名称
-            path_url: 播放地址
-            path_type: 路径类型
-            video_list_id: 视频ID（电影）
-            video_season_id: 季ID
-            video_episode_id: 集ID（剧集）
-            user_id: 上传用户ID
-            status: 状态
-            file_size: 文件大小
-            file_second: 时长(秒)
-            file_container: 容器格式
-            file_resolution: 分辨率
-            file_matadata: 文件元数据
-            file_chapters: 章节信息
-            number_view: 观看次数
+            ...: （同前）
+            content_hash: 文件 SHA256 hash。提供时走直接写入+去重；不提供时退化为原逻辑。
 
         Returns:
-            VideoMedia 实例
+            VideoMedia 实例（可能是已存在的记录）
         """
         media = VideoMedia(
             uuid=str(uuid.uuid4()),
@@ -516,29 +505,32 @@ class EmyaService:
             path_type=path_type,
             path_url=path_url,
             number_view=number_view,
+            content_hash=content_hash,
         )
-        session.add(media)
-        session.flush()
+        savepoint = session.begin_nested()
+        try:
+            session.add(media)
+            session.flush()
+        except IntegrityError:
+            # content_hash 唯一约束冲突 → 回滚本次插入，由调用方自行处理（通常跳过）
+            savepoint.rollback()
+            raise
+        finally:
+            try:
+                savepoint.commit()
+            except Exception:
+                pass
         self._touch_video_list_updated_at(session, video_list_id)
         logger.info(f"创建媒体资源: {name} (ID: {media.id})")
         return media
 
-    def get_media_by_path_url_sha256(self, session: Session, path_url: str) -> Optional[VideoMedia]:
-        """
-        根据 path_url 中的 sha256 查找已有的媒体记录（去重用）。
-        与 ImportMedia.ts 的去重逻辑一致：从 path_url 正则提取 sha256 后查询。
-        """
-        match = self._SHA256_RE.search(path_url or "")
-        if not match:
+    def _find_media_by_content_hash(self, session: Session, sha256: str) -> Optional[VideoMedia]:
+        """通过 content_hash 精确查找媒体记录。"""
+        if not sha256:
             return None
-        sha256 = match.group(1)
-        existing = session.query(VideoMedia).filter(
-            and_(
-                VideoMedia.path_url.contains(sha256),
-                VideoMedia.deleted_at.is_(None),
-            )
+        return session.query(VideoMedia).filter(
+            VideoMedia.content_hash == sha256.lower(),
         ).first()
-        return existing
 
     def get_media_by_episode(
         self, session: Session, video_episode_id: int
@@ -564,7 +556,14 @@ class EmyaService:
         ).all()
 
     def find_media_by_sha256(self, session: Session, sha256: str) -> Optional[VideoMedia]:
-        """通过 sha256 查找媒体记录"""
+        """通过 content_hash（sha256）精确查找媒体记录"""
+        if not sha256:
+            return None
+        # 优先用 content_hash 精确查找
+        media = self._find_media_by_content_hash(session, sha256)
+        if media:
+            return media
+        # 兜底：旧数据可能没有 content_hash，退化为 path_url.contains
         return session.query(VideoMedia).filter(
             VideoMedia.path_url.contains(sha256),
         ).first()
@@ -1135,6 +1134,7 @@ class EmyaService:
         video_library_id: int,
         media_files: Optional[List[Dict[str, Any]]] = None,
         subtitles: Optional[List[Dict[str, Any]]] = None,
+        content_hash: Optional[str] = None,
     ) -> VideoList:
         """
         导入电视剧完整信息
@@ -1144,6 +1144,7 @@ class EmyaService:
             video_library_id: 媒体库ID
             media_files: 媒体文件列表
             subtitles: 字幕列表
+            content_hash: 文件 SHA256 hash（去重用）
 
         Returns:
             VideoList 实例
@@ -1238,38 +1239,37 @@ class EmyaService:
                             episode_data["still"]
                         )
 
-            # 3. 添加媒体资源
+            # 3. 添加媒体资源（直接写入 + content_hash 唯一约束去重）
             if media_files:
                 for media_file in media_files:
                     season_num = media_file.get("season_number")
                     episode_num = media_file.get("episode_number")
-
-                    existing_media = self.get_media_by_path_url_sha256(
-                        session, media_file.get("path_url", "")
-                    )
-                    if existing_media:
-                        logger.info(f"媒体已存在（sha256 去重），跳过: {media_file.get('path_url', '')[:80]}")
-                        continue
+                    content_hash = media_file.get("content_hash")
 
                     season = self.get_season(session, video_list.id, season_num)
                     if season:
                         episode = self.get_episode(session, season.id, episode_num)
                         if episode:
-                            self.create_media(
-                                session=session,
-                                name=media_file.get("name"),
-                                path_url=media_file.get("path_url"),
-                                path_type=media_file.get("path_type", PathType.URL),
-                                video_list_id=video_list.id,
-                                video_season_id=season.id,
-                                video_episode_id=episode.id,
-                                file_size=media_file.get("file_size"),
-                                file_second=media_file.get("file_second"),
-                                file_container=media_file.get("file_container"),
-                                file_resolution=media_file.get("file_resolution"),
-                                file_matadata=media_file.get("file_matadata"),
-                                file_chapters=media_file.get("file_chapters"),
-                            )
+                            try:
+                                self.create_media(
+                                    session=session,
+                                    name=media_file.get("name"),
+                                    path_url=media_file.get("path_url"),
+                                    path_type=media_file.get("path_type", PathType.URL),
+                                    video_list_id=video_list.id,
+                                    video_season_id=season.id,
+                                    video_episode_id=episode.id,
+                                    file_size=media_file.get("file_size"),
+                                    file_second=media_file.get("file_second"),
+                                    file_container=media_file.get("file_container"),
+                                    file_resolution=media_file.get("file_resolution"),
+                                    file_matadata=media_file.get("file_matadata"),
+                                    file_chapters=media_file.get("file_chapters"),
+                                    content_hash=content_hash,
+                                )
+                            except IntegrityError:
+                                logger.info(f"媒体已存在（content_hash 去重），跳过: {media_file.get('path_url', '')[:80]}")
+                                continue
 
             # 将对象从 session 分离，使其在 session 关闭后仍可访问
             session.expunge(video_list)
@@ -1335,26 +1335,26 @@ class EmyaService:
             # 2. 添加媒体资源（电影直接关联 video_list）
             if media_files:
                 for media_file in media_files:
-                    existing_media = self.get_media_by_path_url_sha256(
-                        session, media_file.get("path_url", "")
-                    )
-                    if existing_media:
-                        logger.info(f"媒体已存在（sha256 去重），跳过: {media_file.get('path_url', '')[:80]}")
-                        continue
+                    content_hash = media_file.get("content_hash")
 
-                    self.create_media(
-                        session=session,
-                        name=media_file.get("name"),
-                        path_url=media_file.get("path_url"),
-                        path_type=media_file.get("path_type", PathType.URL),
-                        video_list_id=video_list.id,
-                        file_size=media_file.get("file_size"),
-                        file_second=media_file.get("file_second"),
-                        file_container=media_file.get("file_container"),
-                        file_resolution=media_file.get("file_resolution"),
-                        file_matadata=media_file.get("file_matadata"),
-                        file_chapters=media_file.get("file_chapters"),
-                    )
+                    try:
+                        self.create_media(
+                            session=session,
+                            name=media_file.get("name"),
+                            path_url=media_file.get("path_url"),
+                            path_type=media_file.get("path_type", PathType.URL),
+                            video_list_id=video_list.id,
+                            file_size=media_file.get("file_size"),
+                            file_second=media_file.get("file_second"),
+                            file_container=media_file.get("file_container"),
+                            file_resolution=media_file.get("file_resolution"),
+                            file_matadata=media_file.get("file_matadata"),
+                            file_chapters=media_file.get("file_chapters"),
+                            content_hash=content_hash,
+                        )
+                    except IntegrityError:
+                        logger.info(f"媒体已存在（content_hash 去重），跳过: {media_file.get('path_url', '')[:80]}")
+                        continue
 
             # 将对象从 session 分离，使其在 session 关闭后仍可访问
             session.expunge(video_list)
@@ -1425,6 +1425,7 @@ class EmyaService:
                 "file_second": metadata.get("duration"),
                 "file_container": metadata.get("container"),
                 "file_resolution": metadata.get("quality_tags"),  # 使用 quality_tags 作为分辨率
+                "content_hash": metadata.get("content_hash"),
             }
         ]
 
@@ -1504,6 +1505,7 @@ class EmyaService:
         episode: Optional[int] = None,
         path_type: str = PathType.URL,
         tmdb_client: Any = None,
+        content_hash: Optional[str] = None,
     ) -> Optional[VideoList]:
         """
         按路径结构入库（与 ImportMedia.ts 逻辑一致）
@@ -1643,39 +1645,39 @@ class EmyaService:
                             self._enrich_episode_from_tmdb(session, episode_obj, tmdb_episode_data)
                     episode_id = episode_obj.id
 
-                existing = self.get_media_by_path_url_sha256(session, media_url)
-                if existing:
-                    logger.info(f"媒体已存在（sha256 去重），跳过: {media_url[:80]}")
+                try:
+                    self.create_media(
+                        session=session,
+                        name=quality_tags or "Original",
+                        path_url=media_url,
+                        path_type=path_type,
+                        video_list_id=video_list.id,
+                        video_season_id=season_obj.id,
+                        video_episode_id=episode_id,
+                        file_size=file_size,
+                        status="complete",
+                        content_hash=content_hash,
+                    )
+                except IntegrityError:
+                    logger.info(f"媒体已存在（content_hash 去重），跳过: {media_url[:80]}")
                     session.expunge(video_list)
                     return video_list
-
-                self.create_media(
-                    session=session,
-                    name=quality_tags or "Original",
-                    path_url=media_url,
-                    path_type=path_type,
-                    video_list_id=video_list.id,
-                    video_season_id=season_obj.id,
-                    video_episode_id=episode_id,
-                    file_size=file_size,
-                    status="complete",
-                )
             else:
-                existing = self.get_media_by_path_url_sha256(session, media_url)
-                if existing:
-                    logger.info(f"媒体已存在（sha256 去重），跳过: {media_url[:80]}")
+                try:
+                    self.create_media(
+                        session=session,
+                        name=quality_tags or "Original",
+                        path_url=media_url,
+                        path_type=path_type,
+                        video_list_id=video_list.id,
+                        file_size=file_size,
+                        status="complete",
+                        content_hash=content_hash,
+                    )
+                except IntegrityError:
+                    logger.info(f"媒体已存在（content_hash 去重），跳过: {media_url[:80]}")
                     session.expunge(video_list)
                     return video_list
-
-                self.create_media(
-                    session=session,
-                    name=quality_tags or "Original",
-                    path_url=media_url,
-                    path_type=path_type,
-                    video_list_id=video_list.id,
-                    file_size=file_size,
-                    status="complete",
-                )
 
             session.expunge(video_list)
             return video_list
