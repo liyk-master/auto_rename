@@ -21,6 +21,7 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
     quoted_name,
+    event,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship, Mapped, mapped_column
 from sqlalchemy.ext.declarative import declared_attr

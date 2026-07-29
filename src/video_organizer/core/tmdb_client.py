@@ -64,6 +64,15 @@ class TMDBClient:
 
         data = self._request_with_retry(url, params)
 
+        # 与 search_movie 相同的降级逻辑
+        if language is not None and (data is None or not data.get("results")):
+            logger.debug(
+                f"search_video_show 带 language={language} 搜索无结果，"
+                f"尝试不带语言参数重新搜索"
+            )
+            params.pop("language", None)
+            data = self._request_with_retry(url, params)
+
         # 调试日志：打印返回数据的结构
         logger.debug(f"search_video_show 返回的数据类型: {type(data)}")
         if data:
@@ -416,6 +425,16 @@ class TMDBClient:
         if year:
             params["first_air_date_year"] = year
         result = self._request_with_retry(url, params)
+
+        # 与 search_movie 相同的降级逻辑
+        if language is not None and (result is None or not result.get("results")):
+            logger.debug(
+                f"search_tv 带 language={language} 搜索无结果，"
+                f"尝试不带语言参数重新搜索"
+            )
+            params.pop("language", None)
+            result = self._request_with_retry(url, params)
+
         # 为搜索结果添加media_type字段
         if result and "results" in result:
             for item in result["results"]:
@@ -443,6 +462,18 @@ class TMDBClient:
         if year:
             params["year"] = year
         result = self._request_with_retry(url, params)
+
+        # 如果带了 language 参数但无结果，去掉 language 再试一次
+        # TMDB 的 language 参数会限制搜索结果只匹配对应语言的标题变体，
+        # 对于只有英文/日文标题的影片，带语言参数的中文搜索会返回 0 结果
+        if language is not None and (result is None or not result.get("results")):
+            logger.debug(
+                f"search_movie 带 language={language} 搜索无结果，"
+                f"尝试不带语言参数重新搜索"
+            )
+            params.pop("language", None)
+            result = self._request_with_retry(url, params)
+
         # 为搜索结果添加media_type字段
         if result and "results" in result:
             for item in result["results"]:
@@ -509,6 +540,16 @@ class TMDBClient:
             params["first_air_date_year"] = year
 
         result = self._request_with_retry(url, params)
+
+        # 与 search_movie 相同的降级逻辑
+        if language is not None and (result is None or not result.get("results")):
+            logger.debug(
+                f"search_multi 带 language={language} 搜索无结果，"
+                f"尝试不带语言参数重新搜索"
+            )
+            params.pop("language", None)
+            result = self._request_with_retry(url, params)
+
         if result and "results" in result:
             # 返回结果列表
             return result["results"]

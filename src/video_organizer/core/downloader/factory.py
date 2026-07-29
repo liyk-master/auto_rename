@@ -1,7 +1,7 @@
 """下载器监控工厂"""
 
 import logging
-from typing import Callable, Optional
+from typing import Callable, Dict, Optional
 
 from .base import DownloaderMonitor
 from .aria2_monitor import Aria2Monitor

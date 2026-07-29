@@ -583,6 +583,27 @@ class VideoRenamer:
                     processed_filename = re.sub(r"[\[\{]tmdbid[=-]\d+[\]\}]", "", processed_filename).strip()
                     logger.debug(f"剥离简单 tmdbid 标记后文件名: '{processed_filename}'")
 
+            # 在整个路径字符串中搜索 tmdbid 标记（兜底：文件名和父目录中任意层级都生效）
+            if "tmdb_id" not in locked_fields and not metadata.get("tmdb_id"):
+                path_str = str(file_path)
+                full_marker_match_path = re.search(
+                    r"\{\[(?:tmdbid|doubanid)=(\d+);type=(tv|movie)(?:;s=\d+)?(?:;e=\d+)?\]\}",
+                    path_str, re.IGNORECASE
+                )
+                if full_marker_match_path:
+                    metadata["tmdb_id"] = full_marker_match_path.group(1)
+                    locked_fields.add("tmdb_id")
+                    logger.info(f"从完整路径提取到 tmdb_id: {metadata['tmdb_id']}")
+                    if "media_type" not in locked_fields and not metadata.get("media_type"):
+                        metadata["media_type"] = full_marker_match_path.group(2).lower()
+                        locked_fields.add("media_type")
+                else:
+                    simple_marker_match_path = re.search(r"[\[\{]tmdbid[=-](\d+)[\]\}]", path_str)
+                    if simple_marker_match_path:
+                        metadata["tmdb_id"] = simple_marker_match_path.group(1)
+                        locked_fields.add("tmdb_id")
+                        logger.info(f"从完整路径提取到 tmdb_id (简单格式): {metadata['tmdb_id']}")
+
             # 清理剥离后的残留分隔符（如 ".." 等）
             processed_filename = re.sub(r"\.{2,}", ".", processed_filename).strip(". ")
             processed_filename = re.sub(r"_{2,}", "_", processed_filename).strip("_ ")
@@ -847,6 +868,9 @@ class VideoRenamer:
                         # 确保 tmdb_meta 是字典
                         if tmdb_meta is None:
                             tmdb_meta = {}
+                        # 以 TMDB 结果的 media_type 为准更新 metadata，避免 _merge_metadata 的类型一致性检查拦截
+                        if "media_type" in tmdb_meta and "media_type" not in locked_fields:
+                            metadata["media_type"] = tmdb_meta["media_type"]
                         # 合并未锁定的字段
                         metadata = self._merge_metadata(metadata, tmdb_meta, locked_fields)
                         # 恢复锁定字段为原始值（规则设置的值）
@@ -3832,16 +3856,8 @@ class VideoRenamer:
                 metadata["poster_path"] = details.get("poster_path", "")
                 metadata["backdrop_path"] = details.get("backdrop_path", "")
 
-            # 设置媒体类型 - 类型冲突保护
-            confidence = metadata.get("_media_type_confidence", 0.0)
-            detected_type = metadata.get("media_type", "")
-            if not (detected_type and media_type and detected_type != media_type and confidence >= 0.5):
-                metadata["media_type"] = media_type
-            else:
-                logger.info(
-                    f"类型冲突保护：已检测到 {detected_type}(confidence={confidence:.2f})，"
-                    f"不覆盖为 TMDB 的 {media_type} 类型"
-                )
+            # 设置媒体类型 - 以TMDB结果为准（调用方通过 _merge_metadata + locked_fields 保护已锁定字段）
+            metadata["media_type"] = media_type
             # 恢复原始的quality_tags和release_group
             metadata["quality_tags"] = original_quality_tags
             metadata["release_group"] = original_release_group

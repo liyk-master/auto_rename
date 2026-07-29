@@ -213,12 +213,14 @@ def determine_category(
         if any(genre in genre_names for genre in ["animation", "animated", "动画"]):
             sub_category = "动画电影"
         else:
+            # 华语电影判定：需要有中文 CJK 标题 AND 原语言为中文
+            # 仅凭 CJK 标题不足以判定为华语，因为日语/韩语片名也使用 CJK 字符
             original_title = metadata.get("original_title", "")
-            if original_title and re.search(r"[一-鿿]", original_title):
-                sub_category = "华语电影"
-            elif original_language in ["zh", "cn"] or any(
+            has_cjk_title = original_title and re.search(r"[一-鿿]", original_title)
+            is_chinese_lang = original_language in ["zh", "cn"] or any(
                 country in chinese_countries for country in origin_countries
-            ):
+            )
+            if has_cjk_title and is_chinese_lang:
                 sub_category = "华语电影"
             else:
                 sub_category = "外语电影"
