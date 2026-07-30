@@ -509,7 +509,7 @@ class GuessItParser:
             episode_num, episode_end = episode_info  # episode_end 用于连集
 
             # 尝试从路径中提取剧名和季号
-            show_name, season = self._extract_show_info_from_path(path)
+            show_name, season, _year_from_path = self._extract_show_info_from_path(path)
 
             if show_name:
                 # 构造标准格式
@@ -631,16 +631,17 @@ class GuessItParser:
 
     def _extract_show_info_from_path(self, path: Path) -> tuple:
         """
-        从路径中提取剧名和季号
+        从路径中提取剧名、季号和年份
 
         Args:
             path: 文件路径对象
 
         Returns:
-            (剧名, 季号) 元组，季号可能为 None
+            (剧名, 季号, 年份) 元组，季号和年份可能为 None
         """
         show_name = None
         season = None
+        year = None
 
         # 遍历路径的父目录
         current = path.parent
@@ -667,6 +668,17 @@ class GuessItParser:
 
             # 如果还没找到剧名，检查当前部分
             if show_name is None:
+                # 从父目录名中提取年份（保存起来，不丢弃）
+                if year is None:
+                    year_match = re.search(r'[（\(](\d{4})[）\)]', part_str)
+                    if year_match:
+                        year = int(year_match.group(1))
+                    else:
+                        # 尝试末尾 4 位数字作为年份
+                        trailing_year = re.search(r'\s*(\d{4})\s*$', part_str)
+                        if trailing_year:
+                            year = int(trailing_year.group(1))
+
                 # 清理父目录名中的年份和其他干扰信息
                 clean_name = re.sub(r'[（\(]\d{4}[）\)]', '', part_str)
                 clean_name = re.sub(r'\s*\d{4}\s*$', '', clean_name)
@@ -696,7 +708,7 @@ class GuessItParser:
                 if clean_name:
                     show_name = clean_name
 
-        return (show_name, season)
+        return (show_name, season, year)
 
     def _is_episode_collection_directory(self, text: str) -> bool:
         """判断是否为集数集合目录（如 前100集、全100集、100集、第100集）。"""
@@ -834,7 +846,7 @@ class GuessItParser:
 
         if is_invalid_show_name:
             # 尝试从父目录获取剧名
-            show_name_from_path, season_from_path = self._extract_show_info_from_path(path)
+            show_name_from_path, season_from_path, year_from_path = self._extract_show_info_from_path(path)
 
             if show_name_from_path:
                 # 检查从父目录提取的剧名是否以"短数字+中文"开头
@@ -855,6 +867,11 @@ class GuessItParser:
             if metadata.get('season') is None and season_from_path is not None:
                 metadata['season'] = season_from_path
                 logger.debug(f"从路径补充季号: {season_from_path}")
+
+            # 如果还没有年份，使用从路径中提取的年份
+            if metadata.get('year') is None and year_from_path is not None:
+                metadata['year'] = year_from_path
+                logger.debug(f"从路径补充年份: {year_from_path}")
 
         # 处理字幕组格式：【字幕组】剧名 第1集
         if '【' in show_name and '】' in show_name:

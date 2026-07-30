@@ -830,6 +830,28 @@ class VideoRenamer:
             #     except Exception as e:
             #         logger.error(f"AI服务提取元数据失败: {e}")
 
+            # 5.5 从父目录路径中提取年份（如 "将夜（2026）" → year=2026）
+            # 文件名中的年份可能是季播出年份而非首播年份，所以搜索阶段不传年份，
+            # 但这里提取出来供 _get_season_year_boost 在搜索结果中按年份匹配使用
+            if not metadata.get("year") and "year" not in locked_fields:
+                try:
+                    for p_dir in file_path.parents:
+                        if not p_dir.name or p_dir.name in [".", ""]:
+                            continue
+                        # 匹配中文/英文括号中的 4 位年份：将夜（2026）
+                        year_match = re.search(r'[（\(](\d{4})[）\)]', p_dir.name)
+                        if year_match:
+                            candidate_year = int(year_match.group(1))
+                            # 验证是合理的年份范围
+                            if 1900 <= candidate_year <= 2030:
+                                metadata["year"] = candidate_year
+                                logger.debug(
+                                    f"从父目录 '{p_dir.name}' 提取到年份: {candidate_year}"
+                                )
+                                break
+                except Exception as e:
+                    logger.debug(f"父目录年份提取失败: {e}")
+
             # 6. TMDB 丰富
             if metadata.get("show_name"):
                 try:
@@ -2370,6 +2392,17 @@ class VideoRenamer:
                             )
                             self._season_year_boost_cache[cache_key] = 500
                             return 500
+            # 兜底：用剧集首播年份匹配（适用于季信息不完整的新剧）
+            if details:
+                first_air = details.get("first_air_date", "")
+                if first_air:
+                    first_air_year = first_air.split("-")[0]
+                    if first_air_year == str(target_year):
+                        logger.info(
+                            f"TMDB ID {tmdb_id} 首播年份 {first_air_year} 匹配目标年份 {target_year}，+500 分"
+                        )
+                        self._season_year_boost_cache[cache_key] = 500
+                        return 500
         except Exception as e:
             logger.debug(f"获取TMDB剧集详情失败 (ID: {tmdb_id}): {e}")
         self._season_year_boost_cache[cache_key] = 0
