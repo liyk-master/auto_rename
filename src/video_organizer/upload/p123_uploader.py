@@ -28,11 +28,12 @@ def _report_upload_progress(
     total_bytes: int,
     speed: str = "",
     status: str = "uploading",
-    error: Optional[str] = None
+    error: Optional[str] = None,
 ):
     """报告上传进度到 Web 状态管理器"""
     try:
         from ..web.services.state import report_upload_progress
+
         report_upload_progress(
             file_path=file_path,
             filename=filename,
@@ -42,20 +43,18 @@ def _report_upload_progress(
             total_bytes=total_bytes,
             speed=speed,
             status=status,
-            error=error
+            error=error,
         )
     except Exception:
         pass  # Web 模块未加载时忽略
 
-# 导入 p123 客户端
-try:
-    from p123client import P123Client
-except ImportError:
-    print("警告: p123client 未安装，123云盘上传功能不可用")
-    P123Client = None
 
-# 导入 p123do 的上传函数
-from .p123_client import upload_file as p123_upload_file, calculate_md5, get_file_size
+from .pan123_client import (
+    Pan123Client,
+    upload_file as p123_upload_file,
+    calculate_md5,
+    get_file_size,
+)
 
 
 class P123Uploader:
@@ -65,6 +64,8 @@ class P123Uploader:
         self,
         token: str,
         parent_id: int = 0,
+        username: str = "",
+        password: str = "",
         telegram_config: Optional[Dict[str, Any]] = None,
         max_workers: int = 2,
         tg_channel_123fslink: str = "liyk002",
@@ -75,19 +76,20 @@ class P123Uploader:
         Args:
             token: 123云盘 API Token
             parent_id: 根目录文件夹ID
+            username: 123云盘用户名（用于自动登录获取 token）
+            password: 123云盘密码
             telegram_config: Telegram 配置
             max_workers: 最大并发上传工作线程数，默认2
             tg_channel_123fslink: 123FSLinkV2 格式发送到的TG频道
         """
-        if not P123Client:
-            raise ImportError("p123client 未安装，无法使用 123 云盘上传功能")
-
         self.token = token
+        self.username = username
+        self.password = password
         self.root_parent_id = parent_id
         self.telegram_config = telegram_config or {}
-        self.max_workers = max_workers  # 保存并发线程数配置
-        self.tg_channel_123fslink = tg_channel_123fslink  # 123FSLinkV2 TG频道
-        self.client = P123Client(token)
+        self.max_workers = max_workers
+        self.tg_channel_123fslink = tg_channel_123fslink
+        self.client = Pan123Client(token=token, username=username, password=password)
 
         # TG 通知相关
         self.tg_bot_token = self.telegram_config.get("bot_token", "")
@@ -147,7 +149,7 @@ class P123Uploader:
                 f"  [文件夹] 正在网盘创建新目录: '{folder_name}' 在父目录 {parent_id} 下"
             )
             # 使用 fs_mkdir 创建文件夹
-            create_resp = self.client.fs_mkdir(folder_name, parent_id, 0)
+            create_resp = self.client.fs_mkdir(folder_name, parent_id)
             if create_resp.get("code") == 0:
                 folder_id = create_resp.get("data", {}).get("Info", {}).get("FileId")
                 self._folder_cache[cache_key] = folder_id
@@ -235,7 +237,13 @@ class P123Uploader:
                     # 消息可能已被删除，尝试重新发送
                     self._tg_message_ids[file_path] = None
                     self._send_tg_progress(
-                        file_path, file_name, progress_percent, uploaded_mb, total_mb, speed_mbps, force=True
+                        file_path,
+                        file_name,
+                        progress_percent,
+                        uploaded_mb,
+                        total_mb,
+                        speed_mbps,
+                        force=True,
                     )
         except Exception:
             pass
@@ -367,11 +375,15 @@ class P123Uploader:
                 # 发送 123FSLinkV2 格式到TG频道
                 if self.tg_bot_token and self.tg_channel_123fslink:
                     self.send_123fslinkv2_to_tg(
-                        file_path, target_filename, result, self.tg_channel_123fslink, folder_path
+                        file_path,
+                        target_filename,
+                        result,
+                        self.tg_channel_123fslink,
+                        folder_path,
                     )
 
                 # 将字幕信息也返回
-                result['subtitles'] = subtitles
+                result["subtitles"] = subtitles
                 return result
             else:
                 print(f"\n❌ 123云盘上传失败!")
@@ -382,7 +394,7 @@ class P123Uploader:
             import traceback
 
             traceback.print_exc()
-            
+
             # 报告上传失败
             _report_upload_progress(
                 file_path=file_path,
@@ -393,9 +405,9 @@ class P123Uploader:
                 total_bytes=0,
                 speed="",
                 status="failed",
-                error=str(e)
+                error=str(e),
             )
-            
+
             return None
 
     def upload_subtitles(
@@ -420,7 +432,7 @@ class P123Uploader:
         import re
         from pathlib import Path
 
-        subtitle_extensions = {'.srt', '.ass', '.ssa', '.sub', '.vtt'}
+        subtitle_extensions = {".srt", ".ass", ".ssa", ".sub", ".vtt"}
         uploaded_subtitles = []
 
         try:
@@ -431,7 +443,8 @@ class P123Uploader:
 
             # 扫描同目录下的所有字幕文件
             subtitle_files = [
-                f for f in video_dir.iterdir()
+                f
+                for f in video_dir.iterdir()
                 if f.is_file() and f.suffix.lower() in subtitle_extensions
             ]
 
@@ -469,13 +482,17 @@ class P123Uploader:
                 except Exception as e:
                     print(f"   ❌ 处理字幕文件时出错: {e}")
                     import traceback
+
                     traceback.print_exc()
 
-            print(f"\n📝 字幕上传完成: 成功 {len(uploaded_subtitles)}/{len(subtitle_files)} 个")
+            print(
+                f"\n📝 字幕上传完成: 成功 {len(uploaded_subtitles)}/{len(subtitle_files)} 个"
+            )
 
         except Exception as e:
             print(f"\n❌ 字幕上传过程异常: {e}")
             import traceback
+
             traceback.print_exc()
 
         return uploaded_subtitles
@@ -492,70 +509,128 @@ class P123Uploader:
         """
         # 字幕语言代码映射
         language_map = {
-            'en': 'English', 'eng': 'English', 'english': 'English',
-            'zh': 'Chinese', 'chs': 'Chinese', 'zhs': 'Chinese', 'sc': 'Chinese',
-            'cht': 'Chinese', 'tc': 'Chinese', 'zh-tw': 'Chinese',
-            'ja': 'Japanese', 'jpn': 'Japanese', 'japanese': 'Japanese',
-            'ko': 'Korean', 'kor': 'Korean', 'korean': 'Korean',
-            'fr': 'French', 'fra': 'French', 'french': 'French',
-            'de': 'German', 'deu': 'German', 'german': 'German',
-            'es': 'Spanish', 'spa': 'Spanish', 'spanish': 'Spanish',
-            'ru': 'Russian', 'rus': 'Russian', 'russian': 'Russian',
-            'pt': 'Portuguese', 'por': 'Portuguese', 'portuguese': 'Portuguese',
-            'it': 'Italian', 'ita': 'Italian', 'italian': 'Italian',
-            'ar': 'Arabic', 'ara': 'Arabic', 'arabic': 'Arabic',
-            'hi': 'Hindi', 'hin': 'Hindi', 'hindi': 'Hindi',
-            'th': 'Thai', 'tha': 'Thai', 'thai': 'Thai',
-            'vi': 'Vietnamese', 'vie': 'Vietnamese', 'vietnamese': 'Vietnamese',
-            'id': 'Indonesian', 'ind': 'Indonesian', 'indonesian': 'Indonesian',
-            'pl': 'Polish', 'pol': 'Polish', 'polish': 'Polish',
-            'nl': 'Dutch', 'nld': 'Dutch', 'dutch': 'Dutch',
-            'sv': 'Swedish', 'swe': 'Swedish', 'swedish': 'Swedish',
-            'no': 'Norwegian', 'nor': 'Norwegian', 'norwegian': 'Norwegian',
-            'da': 'Danish', 'dan': 'Danish', 'danish': 'Danish',
-            'fi': 'Finnish', 'fin': 'Finnish', 'finnish': 'Finnish',
-            'tr': 'Turkish', 'tur': 'Turkish', 'turkish': 'Turkish',
-            'cs': 'Czech', 'ces': 'Czech', 'cze': 'Czech', 'czech': 'Czech',
-            'hu': 'Hungarian', 'hun': 'Hungarian', 'hungarian': 'Hungarian',
-            'ro': 'Romanian', 'ron': 'Romanian', 'romanian': 'Romanian',
-            'uk': 'Ukrainian', 'ukr': 'Ukrainian', 'ukrainian': 'Ukrainian',
-            'bg': 'Bulgarian', 'bul': 'Bulgarian', 'bulgarian': 'Bulgarian',
-            'el': 'Greek', 'ell': 'Greek', 'gre': 'Greek', 'greek': 'Greek',
-            'he': 'Hebrew', 'heb': 'Hebrew', 'hebrew': 'Hebrew',
+            "en": "English",
+            "eng": "English",
+            "english": "English",
+            "zh": "Chinese",
+            "chs": "Chinese",
+            "zhs": "Chinese",
+            "sc": "Chinese",
+            "cht": "Chinese",
+            "tc": "Chinese",
+            "zh-tw": "Chinese",
+            "ja": "Japanese",
+            "jpn": "Japanese",
+            "japanese": "Japanese",
+            "ko": "Korean",
+            "kor": "Korean",
+            "korean": "Korean",
+            "fr": "French",
+            "fra": "French",
+            "french": "French",
+            "de": "German",
+            "deu": "German",
+            "german": "German",
+            "es": "Spanish",
+            "spa": "Spanish",
+            "spanish": "Spanish",
+            "ru": "Russian",
+            "rus": "Russian",
+            "russian": "Russian",
+            "pt": "Portuguese",
+            "por": "Portuguese",
+            "portuguese": "Portuguese",
+            "it": "Italian",
+            "ita": "Italian",
+            "italian": "Italian",
+            "ar": "Arabic",
+            "ara": "Arabic",
+            "arabic": "Arabic",
+            "hi": "Hindi",
+            "hin": "Hindi",
+            "hindi": "Hindi",
+            "th": "Thai",
+            "tha": "Thai",
+            "thai": "Thai",
+            "vi": "Vietnamese",
+            "vie": "Vietnamese",
+            "vietnamese": "Vietnamese",
+            "id": "Indonesian",
+            "ind": "Indonesian",
+            "indonesian": "Indonesian",
+            "pl": "Polish",
+            "pol": "Polish",
+            "polish": "Polish",
+            "nl": "Dutch",
+            "nld": "Dutch",
+            "dutch": "Dutch",
+            "sv": "Swedish",
+            "swe": "Swedish",
+            "swedish": "Swedish",
+            "no": "Norwegian",
+            "nor": "Norwegian",
+            "norwegian": "Norwegian",
+            "da": "Danish",
+            "dan": "Danish",
+            "danish": "Danish",
+            "fi": "Finnish",
+            "fin": "Finnish",
+            "finnish": "Finnish",
+            "tr": "Turkish",
+            "tur": "Turkish",
+            "turkish": "Turkish",
+            "cs": "Czech",
+            "ces": "Czech",
+            "cze": "Czech",
+            "czech": "Czech",
+            "hu": "Hungarian",
+            "hun": "Hungarian",
+            "hungarian": "Hungarian",
+            "ro": "Romanian",
+            "ron": "Romanian",
+            "romanian": "Romanian",
+            "uk": "Ukrainian",
+            "ukr": "Ukrainian",
+            "ukrainian": "Ukrainian",
+            "bg": "Bulgarian",
+            "bul": "Bulgarian",
+            "bulgarian": "Bulgarian",
+            "el": "Greek",
+            "ell": "Greek",
+            "gre": "Greek",
+            "greek": "Greek",
+            "he": "Hebrew",
+            "heb": "Hebrew",
+            "hebrew": "Hebrew",
         }
 
-        info = {
-            'language': None,
-            'type': 'Normal'
-        }
+        info = {"language": None, "type": "Normal"}
 
         filename_lower = filename.lower()
 
         # 检查是否为听障字幕 (SDH/HI)
-        if re.search(r'\.sdh\.|\.hi\.|\.sdh$|\.hi$', filename_lower):
-            info['type'] = 'SDH'
+        if re.search(r"\.sdh\.|\.hi\.|\.sdh$|\.hi$", filename_lower):
+            info["type"] = "SDH"
 
         # 检查是否为强制字幕
-        if re.search(r'\.forced\.|\.forced$', filename_lower):
-            info['type'] = 'Forced'
+        if re.search(r"\.forced\.|\.forced$", filename_lower):
+            info["type"] = "Forced"
 
         # 检查是否为闭路字幕
-        if re.search(r'\.cc\.|\.cc$', filename_lower):
-            info['type'] = 'CC'
+        if re.search(r"\.cc\.|\.cc$", filename_lower):
+            info["type"] = "CC"
 
         # 提取语言信息
         for code, lang in language_map.items():
-            pattern = rf'\.{code}\.|^{code}\.|\.{code}$'
+            pattern = rf"\.{code}\.|^{code}\.|\.{code}$"
             if re.search(pattern, filename_lower):
-                info['language'] = lang
+                info["language"] = lang
                 break
 
         return info
 
     def _generate_subtitle_name(
-        self,
-        video_filename: str,
-        subtitle_info: Dict[str, Optional[str]]
+        self, video_filename: str, subtitle_info: Dict[str, Optional[str]]
     ) -> str:
         """
         生成新的字幕文件名
@@ -574,19 +649,19 @@ class P123Uploader:
         video_stem = Path(video_filename).stem
 
         # 获取字幕扩展名（默认使用 .srt）
-        subtitle_ext = '.srt'
+        subtitle_ext = ".srt"
 
         # 构建新的字幕文件名
         new_name = video_stem
 
         # 添加语言标识
-        if subtitle_info.get('language'):
-            lang = subtitle_info['language']
+        if subtitle_info.get("language"):
+            lang = subtitle_info["language"]
             new_name = f"{new_name}.{lang}"
 
             # 如果不是标准字幕，添加类型标识
-            if subtitle_info.get('type') != 'Normal':
-                subtitle_type = subtitle_info['type']
+            if subtitle_info.get("type") != "Normal":
+                subtitle_type = subtitle_info["type"]
                 new_name = f"{new_name}.{subtitle_type}{subtitle_ext}"
             else:
                 new_name = f"{new_name}{subtitle_ext}"
@@ -626,7 +701,7 @@ class P123Uploader:
             uploaded_bytes=0,
             total_bytes=file_size,
             speed="",
-            status="uploading"
+            status="uploading",
         )
 
         # 定义进度回调函数
@@ -667,7 +742,7 @@ class P123Uploader:
                         uploaded_bytes=current_uploaded,
                         total_bytes=total_size,
                         speed=speed_str,
-                        status="completed" if is_complete else "uploading"
+                        status="completed" if is_complete else "uploading",
                     )
 
                     # 发送Telegram进度（如果是完成状态且尚未发送过，则发送）
@@ -777,7 +852,7 @@ class P123Uploader:
             return False
 
         # 格式化频道ID
-        if tg_channel and not tg_channel.startswith(('@', '-')):
+        if tg_channel and not tg_channel.startswith(("@", "-")):
             tg_channel = f"@{tg_channel}"
 
         link_v2 = self.generate_123fslinkv2(result)
@@ -806,7 +881,9 @@ class P123Uploader:
                     print(f"✓ 123FSLinkV2 通知已发送到 TG 频道: {tg_channel}")
                     return True
                 else:
-                    print(f"[WARNING] TG API 返回错误: {result_data.get('description')}")
+                    print(
+                        f"[WARNING] TG API 返回错误: {result_data.get('description')}"
+                    )
                     return False
             else:
                 print(f"[WARNING] TG API 请求失败: {response.status_code}")

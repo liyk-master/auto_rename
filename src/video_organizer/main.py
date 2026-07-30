@@ -211,7 +211,9 @@ def force_process_file(file_path: str, config: dict) -> bool:
         # DEBUG: 打印 TMDB 配置
         print(f"DEBUG: TMDB config: {tmdb_config}")
         if tmdb_config:
-            print(f"DEBUG: TMDB API key exists: {'Yes' if tmdb_config.get('api_key') else 'No'}")
+            print(
+                f"DEBUG: TMDB API key exists: {'Yes' if tmdb_config.get('api_key') else 'No'}"
+            )
 
         # 验证文件存在
         if not os.path.exists(file_path):
@@ -502,13 +504,15 @@ def main() -> None:
             p123_config = config.get("p123", {})
             tmdb_config = config.get("tmdb", {})
             token = p123_config.get("token", "")
+            username = p123_config.get("username", "")
+            password = p123_config.get("password", "")
             organize_source_id = int(p123_config.get("organize_source_id", 0))
             organize_target_id = int(p123_config.get("organize_target_id", 0))
             max_workers = int(p123_config.get("max_workers", 2))
             tmdb_api_key = tmdb_config.get("api_key", "")
 
-            if not token:
-                cli_output.print_error("123云盘 token 未配置")
+            if not token and not username:
+                cli_output.print_error("123云盘 token 或账号未配置")
                 sys.exit(1)
 
             if organize_source_id == 0 or organize_target_id == 0:
@@ -526,10 +530,14 @@ def main() -> None:
                 organize_target_id=organize_target_id,
                 max_workers=max_workers,
                 tmdb_api_key=tmdb_api_key,
+                username=username,
+                password=password,
             )
 
             if not organizer.is_available():
-                cli_output.print_error("123云盘整理功能不可用（p123client未安装）")
+                cli_output.print_error(
+                    "123云盘整理功能不可用（token 或账号未配置 / 登录失败）"
+                )
                 sys.exit(1)
 
             dry_run = args.organize_dry_run
@@ -592,6 +600,7 @@ def main() -> None:
             if yun139_auth:
                 try:
                     from .upload.yun139_uploader import Yun139Uploader
+
                     uploader = Yun139Uploader(
                         authorization=yun139_auth,
                         cloud_type=yun139_cfg.get("cloud_type", "personal_new"),
@@ -600,9 +609,11 @@ def main() -> None:
                         custom_part_size=int(yun139_cfg.get("custom_part_size", 0)),
                         app_mode=yun139_cfg.get("app_mode", False),
                     )
+
                     # 创建一个轻量 handler 容器，仅暴露 yun139_uploader
                     class _MinimalHandler:
                         pass
+
                     handler = _MinimalHandler()
                     handler.yun139_uploader = uploader
                     state.set_video_handler(handler)
@@ -616,7 +627,9 @@ def main() -> None:
                 import uvicorn
 
                 app = create_app()
-                cli_output.print_success(f"Web 管理后台启动于 http://{args.web_host}:{args.web_port}")
+                cli_output.print_success(
+                    f"Web 管理后台启动于 http://{args.web_host}:{args.web_port}"
+                )
                 cli_output.print_info("按 Ctrl+C 停止服务")
                 cli_output.print_separator()
 
@@ -627,7 +640,9 @@ def main() -> None:
                     reload=args.web_reload,
                 )
             except ImportError:
-                cli_output.print_error("Web 服务依赖缺失，请安装: pip install fastapi uvicorn")
+                cli_output.print_error(
+                    "Web 服务依赖缺失，请安装: pip install fastapi uvicorn"
+                )
                 sys.exit(1)
             sys.exit(0)
 
@@ -659,13 +674,22 @@ def main() -> None:
         if config.get("media_tracker", {}).get("enabled", False):
             try:
                 video_handler = getattr(monitor, "event_handler", None)
-                if video_handler and video_handler.renamer and video_handler.yun139_uploader:
+                if (
+                    video_handler
+                    and video_handler.renamer
+                    and video_handler.yun139_uploader
+                ):
                     from .core.media_tracker_client import MediaTrackerClient
+
                     mt_client = MediaTrackerClient(
                         config=config.get("media_tracker", {}),
                         renamer=video_handler.renamer,
                         yun139_uploader=video_handler.yun139_uploader,
-                        emya_controller=video_handler.emya_controller if video_handler.emya_enabled else None,
+                        emya_controller=(
+                            video_handler.emya_controller
+                            if video_handler.emya_enabled
+                            else None
+                        ),
                         emya_db_config=config.get("emya_db", {}),
                     )
                     mt_client.start()

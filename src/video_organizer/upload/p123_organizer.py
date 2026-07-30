@@ -7,16 +7,9 @@ import logging
 import re
 from typing import Dict, Optional, List
 
+from .pan123_client import Pan123Client
+
 logger = logging.getLogger(__name__)
-
-try:
-    from p123client import P123Client
-    from p123client.tool import iterdir
-
-    P123CLIENT_AVAILABLE = True
-except ImportError:
-    P123CLIENT_AVAILABLE = False
-    logger.warning("p123client 未安装，123云盘整理功能不可用")
 
 
 class P123Organizer:
@@ -24,11 +17,13 @@ class P123Organizer:
 
     def __init__(
         self,
-        token: str,
+        token: str = "",
         organize_source_id: int = 0,
         organize_target_id: int = 0,
         max_workers: int = 2,
         tmdb_api_key: str = None,
+        username: str = "",
+        password: str = "",
     ):
         """
         初始化123网盘整理器
@@ -39,32 +34,26 @@ class P123Organizer:
             organize_target_id: 整理到的目标目录ID
             max_workers: 最大并发工作线程数
             tmdb_api_key: TMDB API密钥（用于从文件名识别元数据）
+            username: 123云盘用户名（用于自动登录获取 token）
+            password: 123云盘密码
         """
         self.token = token
+        self.username = username
+        self.password = password
         self.organize_source_id = organize_source_id
         self.organize_target_id = organize_target_id
         self.max_workers = max_workers
         self.tmdb_api_key = tmdb_api_key
-        self.client = None
+        self.client = (
+            Pan123Client(token=token, username=username, password=password)
+            if (token or (username and password))
+            else None
+        )
         self._folder_cache = {}
-
-        if not P123CLIENT_AVAILABLE:
-            logger.error("p123client 未安装，无法使用123云盘整理功能")
-            return
-
-        if not token:
-            logger.error("123云盘 token 为空")
-            return
-
-        try:
-            self.client = P123Client(token=token)
-            logger.info("123云盘客户端初始化成功")
-        except Exception as e:
-            logger.error(f"初始化123云盘客户端失败: {e}")
 
     def is_available(self) -> bool:
         """检查整理功能是否可用"""
-        return P123CLIENT_AVAILABLE and self.client is not None
+        return self.client is not None and bool(self.client.token)
 
     def list_files(
         self, parent_id: int, page: int = 1, per_page: int = 100
@@ -150,75 +139,44 @@ class P123Organizer:
 
         return all_files
 
-    def get_all_video_files_recursive(self, parent_id: int, max_depth: int = 5) -> List[Dict]:
-        """
-        使用 p123client.tool.iterdir 递归获取目录下所有视频文件（批量模式）
-
-        Args:
-            parent_id: 目录ID
-            max_depth: 最大递归深度
-
-        Returns:
-            所有视频文件列表
-        """
+    def get_all_video_files_recursive(
+        self, parent_id: int, max_depth: int = 5
+    ) -> List[Dict]:
         if not self.is_available() or parent_id == 0:
             return []
 
         all_files = []
-
-        for item in iterdir(
-            self.client,
-            payload=parent_id,
-            min_depth=1,
-            max_depth=max_depth,
-            # predicate=lambda a: not a["is_dir"],
-            list_method="list_new",
+        for item in self.client.iterdir(
+            parent_id=parent_id, min_depth=1, max_depth=max_depth
         ):
-            # 后置过滤：只处理视频文件
             if item.get("is_dir", False):
-                continue  # 跳过文件夹
+                continue
             all_files.append(
                 {
                     "id": item.get("id"),
                     "name": item.get("name"),
-                    "type": 0 if not item.get("is_dir", False) else 1,
+                    "type": 0,
                     "size": item.get("size"),
                     "create_time": item.get("ctime"),
                     "update_time": item.get("mtime"),
                     "parent_path": item.get("parent_id"),
                 }
             )
-
         return all_files
 
     def yield_files_recursive(self, parent_id: int, max_depth: int = 5):
-        """
-        流式获取视频文件（生成器模式，逐个返回文件）
-
-        Args:
-            parent_id: 目录ID
-            max_depth: 最大递归深度
-
-        Yields:
-            视频文件字典
-        """
         if not self.is_available() or parent_id == 0:
             return
 
-        for item in iterdir(
-            self.client,
-            payload=parent_id,
-            min_depth=1,
-            max_depth=max_depth,
-            list_method="list_new",
+        for item in self.client.iterdir(
+            parent_id=parent_id, min_depth=1, max_depth=max_depth
         ):
-            # 后置过滤：只处理视频文件
             if item.get("is_dir", False):
-                continue  # 跳过文件夹
+                continue
             yield {
                 "id": item.get("id"),
                 "name": item.get("name"),
-                "type": 0 if not item.get("is_dir", False) else 1,
+                "type": 0,
                 "size": item.get("size"),
                 "create_time": item.get("ctime"),
                 "update_time": item.get("mtime"),
@@ -226,30 +184,15 @@ class P123Organizer:
             }
 
     def count_video_files(self, parent_id: int, max_depth: int = 5) -> int:
-        """
-        统计视频文件数量（用于进度显示）
-
-        Args:
-            parent_id: 目录ID
-            max_depth: 最大递归深度
-
-        Returns:
-            视频文件总数
-        """
         if not self.is_available() or parent_id == 0:
             return 0
 
         count = 0
-        for item in iterdir(
-            self.client,
-            payload=parent_id,
-            min_depth=1,
-            max_depth=max_depth,
-            list_method="list_new",
+        for item in self.client.iterdir(
+            parent_id=parent_id, min_depth=1, max_depth=max_depth
         ):
             if not item.get("is_dir", False):
                 count += 1
-
         return count
 
     def _get_content_type(self, media_type: str, origin_country: str) -> str:
@@ -322,7 +265,9 @@ class P123Organizer:
                 # 确保有 TMDB 丰富后的元数据（genres, origin_country 等）
                 # 如果 extracted 中缺少这些字段，需要额外获取
                 if not extracted.get("genres") or not extracted.get("origin_country"):
-                    logger.info(f"元数据不完整，尝试获取完整TMDB信息: {metadata['show_name']}")
+                    logger.info(
+                        f"元数据不完整，尝试获取完整TMDB信息: {metadata['show_name']}"
+                    )
                     try:
                         renamer_with_tmdb = VideoRenamer(tmdb_api_key=self.tmdb_api_key)
                         # 使用 show_name 和年份搜索获取完整信息
@@ -338,21 +283,32 @@ class P123Organizer:
                             tmdb_id = tmdb_results["results"][0].get("id")
                             if tmdb_id:
                                 # 获取详细信息
-                                details = renamer_with_tmdb.tmdb_client.get_tv_details(tmdb_id)
+                                details = renamer_with_tmdb.tmdb_client.get_tv_details(
+                                    tmdb_id
+                                )
                                 if details:
-                                    extracted["genres"] = [g["name"] for g in details.get("genres", [])]
-                                    extracted["genre_ids"] = [g["id"] for g in details.get("genres", [])]
-                                    extracted["origin_country"] = details.get("origin_country", [])
-                                    extracted["original_language"] = details.get("original_language", "")
-                                    logger.info(f"获取到TMDB信息: genres={extracted.get('genres')}, country={extracted.get('origin_country')}")
+                                    extracted["genres"] = [
+                                        g["name"] for g in details.get("genres", [])
+                                    ]
+                                    extracted["genre_ids"] = [
+                                        g["id"] for g in details.get("genres", [])
+                                    ]
+                                    extracted["origin_country"] = details.get(
+                                        "origin_country", []
+                                    )
+                                    extracted["original_language"] = details.get(
+                                        "original_language", ""
+                                    )
+                                    logger.info(
+                                        f"获取到TMDB信息: genres={extracted.get('genres')}, country={extracted.get('origin_country')}"
+                                    )
                     except Exception as e:
                         logger.warning(f"获取TMDB信息失败: {e}")
 
                 # 使用 VideoRenamer 的 _determine_category 统一分类
                 try:
                     renamer_with_config = VideoRenamer(
-                        tmdb_api_key=self.tmdb_api_key,
-                        config={}
+                        tmdb_api_key=self.tmdb_api_key, config={}
                     )
                     category_path = renamer_with_config._determine_category(extracted)
                     metadata["category_path"] = category_path
@@ -484,7 +440,7 @@ class P123Organizer:
         # 先查找是否已存在
         files = self.list_files(parent_id, page=1)
         for f in files:
-            if f.get("name") == name and f.get("type") == 0:  # 0表示文件夹
+            if f.get("name") == name and f.get("type") == 1:  # 1表示文件夹
                 logger.info(f"找到已存在的文件夹: {name} (id={f.get('id')})")
                 return f.get("id")
 
@@ -537,10 +493,15 @@ class P123Organizer:
 
         # 生成新文件名
         new_name = self._generate_name(
-            show_name, year, tmdb_id, season, episode, name_format,
+            show_name,
+            year,
+            tmdb_id,
+            season,
+            episode,
+            name_format,
             original_name=file_info.get("name", ""),
             quality_tags=file_info.get("quality_tags", ""),
-            release_group=file_info.get("release_group", "")
+            release_group=file_info.get("release_group", ""),
         )
 
         # 构建目标路径（包含分类子文件夹）
@@ -553,7 +514,9 @@ class P123Organizer:
         folder_name = target_path["folder_name"]
 
         # 先找到根目录（TV Shows 或 Movies）
-        root_folder_id = self.find_or_create_folder(target_parent_id, root_folder.split("/")[0])
+        root_folder_id = self.find_or_create_folder(
+            target_parent_id, root_folder.split("/")[0]
+        )
         if not root_folder_id:
             logger.error(f"创建根目录失败: {root_folder.split('/')[0]}")
             return False
@@ -577,7 +540,9 @@ class P123Organizer:
         # 如果是电视剧，创建 Season 子文件夹
         if media_type != "movie" and season:
             season_folder_name = f"Season {int(season):02d}"
-            target_folder_id = self.find_or_create_folder(show_folder_id, season_folder_name)
+            target_folder_id = self.find_or_create_folder(
+                show_folder_id, season_folder_name
+            )
             if not target_folder_id:
                 logger.error(f"创建Season文件夹失败: {season_folder_name}")
                 return False
@@ -744,7 +709,9 @@ class P123Organizer:
                         f["media_type"] = metadata.get("media_type", "tv")
                         f["quality_tags"] = metadata.get("quality_tags", "")
                         f["release_group"] = metadata.get("release_group", "")
-                        f["category_path"] = metadata.get("category_path", "TV Shows/电视剧")
+                        f["category_path"] = metadata.get(
+                            "category_path", "TV Shows/电视剧"
+                        )
                         logger.info(
                             f"通过文件名识别元数据: {f.get('name')} -> {metadata['show_name']} ({metadata['category_path']})"
                         )
@@ -870,6 +837,7 @@ class P123Organizer:
         if show_progress and total_count > 0:
             try:
                 from tqdm import tqdm
+
                 pbar = tqdm(
                     total=total_count,
                     desc="整理进度",
@@ -893,7 +861,9 @@ class P123Organizer:
 
             # 跳过非视频文件
             name = file_name.lower()
-            if not any(name.endswith(ext) for ext in [".mp4", ".mkv", ".avi", ".mov", ".wmv"]):
+            if not any(
+                name.endswith(ext) for ext in [".mp4", ".mkv", ".avi", ".mov", ".wmv"]
+            ):
                 if pbar:
                     pbar.update(1)
                 continue
@@ -912,25 +882,35 @@ class P123Organizer:
                             file_info["tmdb_id"] = metadata.get("tmdb_id", "")
                             file_info["media_type"] = metadata.get("media_type", "tv")
                             file_info["quality_tags"] = metadata.get("quality_tags", "")
-                            file_info["release_group"] = metadata.get("release_group", "")
-                            file_info["category_path"] = metadata.get("category_path", "TV Shows/电视剧")
+                            file_info["release_group"] = metadata.get(
+                                "release_group", ""
+                            )
+                            file_info["category_path"] = metadata.get(
+                                "category_path", "TV Shows/电视剧"
+                            )
                             logger.info(
                                 f"[{processed_count}/{total_count}] 识别成功: {file_name} -> {metadata['show_name']}"
                             )
                         else:
-                            logger.warning(f"[{processed_count}/{total_count}] 无法识别: {file_name}")
+                            logger.warning(
+                                f"[{processed_count}/{total_count}] 无法识别: {file_name}"
+                            )
                             skipped += 1
                             if pbar:
                                 pbar.update(1)
                             continue
                     except Exception as e:
-                        logger.warning(f"[{processed_count}/{total_count}] 识别异常: {file_name} - {e}")
+                        logger.warning(
+                            f"[{processed_count}/{total_count}] 识别异常: {file_name} - {e}"
+                        )
                         skipped += 1
                         if pbar:
                             pbar.update(1)
                         continue
                 else:
-                    logger.warning(f"[{processed_count}/{total_count}] TMDB API未配置，跳过: {file_name}")
+                    logger.warning(
+                        f"[{processed_count}/{total_count}] TMDB API未配置，跳过: {file_name}"
+                    )
                     skipped += 1
                     if pbar:
                         pbar.update(1)
@@ -952,15 +932,21 @@ class P123Organizer:
                         result = self.organize_file(file_info, target_id)
                         if result:
                             success += 1
-                            logger.info(f"[{processed_count}/{total_count}] ✓ 整理成功: {file_name}")
+                            logger.info(
+                                f"[{processed_count}/{total_count}] ✓ 整理成功: {file_name}"
+                            )
                         else:
                             failed += 1
                             errors.append(f"整理失败: {file_name}")
-                            logger.error(f"[{processed_count}/{total_count}] ✗ 整理失败: {file_name}")
+                            logger.error(
+                                f"[{processed_count}/{total_count}] ✗ 整理失败: {file_name}"
+                            )
                     except Exception as e:
                         failed += 1
                         errors.append(f"整理异常: {file_name} - {str(e)}")
-                        logger.error(f"[{processed_count}/{total_count}] ✗ 整理异常: {file_name}: {e}")
+                        logger.error(
+                            f"[{processed_count}/{total_count}] ✗ 整理异常: {file_name}: {e}"
+                        )
             else:
                 skipped += 1
 

@@ -23,7 +23,6 @@ from ...utils.logging_utils import get_logger, log_success, log_failure, log_exc
 from ...database.operations import record_task
 from ...database.session import init_db as init_task_db
 
-
 # 获取模块级别的 logger
 _logger = logging.getLogger(__name__)
 
@@ -31,19 +30,22 @@ _logger = logging.getLogger(__name__)
 def console_log(message: str):
     """
     统一的输出函数 - 同时输出到控制台和日志文件
-    
+
     替代直接 print() 调用，确保日志被记录到文件
     """
     # 输出到控制台
     print(message)
-    
+
     # 写入日志文件（移除 ANSI 颜色代码）
     import re
-    clean_message = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', message)
+
+    clean_message = re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", message)
     _logger.info(clean_message)
 
 
-def _upload_cas_file(cas_file: Path, cas_data: dict, url: str, api_key: str, path: str = "") -> None:
+def _upload_cas_file(
+    cas_file: Path, cas_data: dict, url: str, api_key: str, path: str = ""
+) -> None:
     """上传 .cas 文件到外部 API（自动重试 3 次）"""
     api_url = url.rstrip("/") + "/api/upload"
     max_retries = 3
@@ -75,11 +77,15 @@ def _upload_cas_file(cas_file: Path, cas_data: dict, url: str, api_key: str, pat
             console_log(f"📤 .cas 文件已上传到外部 API: {cas_file.name}")
             return
         except Exception as e:
-            console_log(f"⚠️ .cas 文件上传到外部 API 异常 (第 {attempt}/{max_retries} 次): {e}")
+            console_log(
+                f"⚠️ .cas 文件上传到外部 API 异常 (第 {attempt}/{max_retries} 次): {e}"
+            )
             if attempt < max_retries:
                 time.sleep(5)
             else:
-                console_log(f"❌ .cas 文件上传到外部 API 已达最大重试次数: {cas_file.name}")
+                console_log(
+                    f"❌ .cas 文件上传到外部 API 已达最大重试次数: {cas_file.name}"
+                )
 
 
 class VideoFileHandler:
@@ -131,7 +137,7 @@ class VideoFileHandler:
         # 清理配置值中的行内注释
         raw_targets = self.processing_config.get("upload_targets", "emos")
         raw_targets = str(raw_targets).split("#")[0].split(";")[0].strip()
-        
+
         # 解析上传目标：支持逗号分隔的多选，如 "emos,p123,cloud189"
         # 也兼容旧格式: emos, p123, both, all
         if raw_targets == "both":
@@ -140,7 +146,9 @@ class VideoFileHandler:
             self.upload_targets = ["emos", "p123", "cloud189", "yun139"]
         else:
             # 逗号分隔的多选
-            self.upload_targets = [t.strip() for t in raw_targets.split(",") if t.strip()]
+            self.upload_targets = [
+                t.strip() for t in raw_targets.split(",") if t.strip()
+            ]
 
         # 初始化Emos配置
         # 初始化Emos配置
@@ -165,6 +173,10 @@ class VideoFileHandler:
         self.p123_config = p123_config or {}
         raw_p123_token = self.p123_config.get("token", "")
         self.p123_token = str(raw_p123_token).split("#")[0].split(";")[0].strip()
+        raw_p123_username = self.p123_config.get("username", "")
+        self.p123_username = str(raw_p123_username).split("#")[0].split(";")[0].strip()
+        raw_p123_password = self.p123_config.get("password", "")
+        self.p123_password = str(raw_p123_password).split("#")[0].split(";")[0].strip()
         self.p123_parent_id = int(self.p123_config.get("parent_id", 0))
         self.p123_max_workers = int(
             self.p123_config.get("max_workers", 2)
@@ -173,22 +185,38 @@ class VideoFileHandler:
         # 初始化天翼云盘配置
         self.cloud189_config = cloud189_config or {}
         raw_cloud189_username = self.cloud189_config.get("username", "")
-        self.cloud189_username = str(raw_cloud189_username).split("#")[0].split(";")[0].strip()
+        self.cloud189_username = (
+            str(raw_cloud189_username).split("#")[0].split(";")[0].strip()
+        )
         raw_cloud189_password = self.cloud189_config.get("password", "")
-        self.cloud189_password = str(raw_cloud189_password).split("#")[0].split(";")[0].strip()
+        self.cloud189_password = (
+            str(raw_cloud189_password).split("#")[0].split(";")[0].strip()
+        )
         raw_cloud189_cookie = self.cloud189_config.get("cookie", "")
-        self.cloud189_cookie = str(raw_cloud189_cookie).split("#")[0].split(";")[0].strip()
+        self.cloud189_cookie = (
+            str(raw_cloud189_cookie).split("#")[0].split(";")[0].strip()
+        )
         raw_cloud189_parent_id = self.cloud189_config.get("parent_folder_id", "-11")
-        self.cloud189_parent_id = str(raw_cloud189_parent_id).split("#")[0].split(";")[0].strip()
+        self.cloud189_parent_id = (
+            str(raw_cloud189_parent_id).split("#")[0].split(";")[0].strip()
+        )
         raw_cloud189_family_id = self.cloud189_config.get("family_id", "")
-        self.cloud189_family_id = str(raw_cloud189_family_id).split("#")[0].split(";")[0].strip()
+        self.cloud189_family_id = (
+            str(raw_cloud189_family_id).split("#")[0].split(";")[0].strip()
+        )
         self.cloud189_max_workers = int(self.cloud189_config.get("max_workers", 5))
         raw_cloud189_strm_server = self.cloud189_config.get("strm_server", "")
-        self.cloud189_strm_server = str(raw_cloud189_strm_server).split("#")[0].split(";")[0].strip()
+        self.cloud189_strm_server = (
+            str(raw_cloud189_strm_server).split("#")[0].split(";")[0].strip()
+        )
         raw_cloud189_strm_output = self.cloud189_config.get("strm_output_dir", "")
-        self.cloud189_strm_output_dir = str(raw_cloud189_strm_output).split("#")[0].split(";")[0].strip()
+        self.cloud189_strm_output_dir = (
+            str(raw_cloud189_strm_output).split("#")[0].split(";")[0].strip()
+        )
         self.cloud189_delete_after = self.cloud189_config.get("delete_after", False)
-        self.cloud189_empty_recycle_bin = self.cloud189_config.get("empty_recycle_bin", False)
+        self.cloud189_empty_recycle_bin = self.cloud189_config.get(
+            "empty_recycle_bin", False
+        )
         self.cloud189_generate_cas = self.cloud189_config.get("generate_cas", False)
         raw_cas_dir = self.cloud189_config.get("cas_output_dir", "")
         self.cloud189_cas_output_dir = str(raw_cas_dir).strip()
@@ -200,18 +228,30 @@ class VideoFileHandler:
         # 初始化 139 云盘配置
         self.yun139_config = yun139_config or {}
         raw_yun139_auth = self.yun139_config.get("authorization", "")
-        self.yun139_authorization = str(raw_yun139_auth).split("#")[0].split(";")[0].strip()
+        self.yun139_authorization = (
+            str(raw_yun139_auth).split("#")[0].split(";")[0].strip()
+        )
         self.yun139_cloud_type = self.yun139_config.get("cloud_type", "personal_new")
         self.yun139_cloud_id = self.yun139_config.get("cloud_id", "")
         # parent_id: / 或空字符串表示根目录
         raw_yun139_parent_id = self.yun139_config.get("parent_id", "/")
-        self.yun139_parent_id = str(raw_yun139_parent_id).split("#")[0].split(";")[0].strip() or "/"
-        self.yun139_custom_part_size = int(self.yun139_config.get("custom_part_size", 0))
-        self.yun139_max_workers = int(self.yun139_config.get("max_workers", 3))  # 并行上传视频数
+        self.yun139_parent_id = (
+            str(raw_yun139_parent_id).split("#")[0].split(";")[0].strip() or "/"
+        )
+        self.yun139_custom_part_size = int(
+            self.yun139_config.get("custom_part_size", 0)
+        )
+        self.yun139_max_workers = int(
+            self.yun139_config.get("max_workers", 3)
+        )  # 并行上传视频数
         raw_yun139_strm_server = self.yun139_config.get("strm_server", "")
-        self.yun139_strm_server = str(raw_yun139_strm_server).split("#")[0].split(";")[0].strip()
+        self.yun139_strm_server = (
+            str(raw_yun139_strm_server).split("#")[0].split(";")[0].strip()
+        )
         raw_yun139_strm_output = self.yun139_config.get("strm_output_dir", "")
-        self.yun139_strm_output_dir = str(raw_yun139_strm_output).split("#")[0].split(";")[0].strip()
+        self.yun139_strm_output_dir = (
+            str(raw_yun139_strm_output).split("#")[0].split(";")[0].strip()
+        )
         self.yun139_delete_after = self.yun139_config.get("delete_after", False)
         self.yun139_app_mode = self.yun139_config.get("app_mode", False)
         self.yun139_generate_strm = self.yun139_config.get("generate_strm", True)
@@ -235,13 +275,15 @@ class VideoFileHandler:
 
         # 初始化 123 云盘上传器
         self.p123_uploader = None
-        if self.p123_token and self.p123_parent_id != 0:
+        if self.p123_token or (self.p123_username and self.p123_password):
             try:
                 from ...upload.p123_uploader import P123Uploader
 
                 self.p123_uploader = P123Uploader(
                     self.p123_token,
                     self.p123_parent_id,
+                    username=self.p123_username,
+                    password=self.p123_password,
                     telegram_config=self.telegram_config,
                     max_workers=self.p123_max_workers,
                 )
@@ -288,13 +330,17 @@ class VideoFileHandler:
                     strm_output_dir=self.yun139_strm_output_dir,
                     delete_after=self.yun139_delete_after,
                     app_mode=self.yun139_app_mode,
-                    media_tracker_config=config.get("media_tracker", {}) if config else {},
+                    media_tracker_config=(
+                        config.get("media_tracker", {}) if config else {}
+                    ),
                     generate_strm=self.yun139_generate_strm,
                 )
                 # 如果 yun139 配置了 max_workers，则覆盖全局设置
                 if self.yun139_max_workers > 0:
                     self.max_upload_workers = self.yun139_max_workers
-                    self.logger.info(f"139云盘使用自定义并发数: {self.yun139_max_workers}")
+                    self.logger.info(
+                        f"139云盘使用自定义并发数: {self.yun139_max_workers}"
+                    )
                 self.logger.info("139云盘上传器初始化成功")
             except Exception as e:
                 self.logger.error(f"初始化139云盘上传器失败: {e}")
@@ -496,10 +542,13 @@ class VideoFileHandler:
         Returns:
             是否为视频文件
         """
-        subtitle_extensions = {'.srt', '.ass', '.ssa', '.sub', '.vtt'}
+        subtitle_extensions = {".srt", ".ass", ".ssa", ".sub", ".vtt"}
         try:
             file_ext = os.path.splitext(file_path)[1].lower()
-            return file_ext in self.supported_extensions and file_ext not in subtitle_extensions
+            return (
+                file_ext in self.supported_extensions
+                and file_ext not in subtitle_extensions
+            )
         except Exception as e:
             self.logger.error(f"检查文件类型时出错: {file_path}, 错误: {e}")
             return False
@@ -644,7 +693,8 @@ class VideoFileHandler:
             console_log(f"项目ID: {matched_item_id}")
             console_log(f"{'='*80}\n")
             uploader = RobustEmosVideoUploader(
-                self.emos_auth_token, chunk_size_mb=int(self.emos_chunk_size_mb),
+                self.emos_auth_token,
+                chunk_size_mb=int(self.emos_chunk_size_mb),
                 max_workers=int(self.emos_max_workers),
             )
             upload_result = uploader.upload_video(
@@ -685,7 +735,9 @@ class VideoFileHandler:
                                     if os.path.exists(file_path):
                                         os.remove(file_path)
                                         delete_success = True
-                                        console_log(f"✅ 上传成功后已删除原文件: {file_path}")
+                                        console_log(
+                                            f"✅ 上传成功后已删除原文件: {file_path}"
+                                        )
                                         self.logger.info(
                                             f"上传成功后已删除原文件: {file_path}"
                                         )
@@ -693,7 +745,9 @@ class VideoFileHandler:
                                     else:
                                         # 文件已不存在，视为删除成功
                                         delete_success = True
-                                        console_log(f"⚠️ 上传成功后原文件已不存在: {file_path}")
+                                        console_log(
+                                            f"⚠️ 上传成功后原文件已不存在: {file_path}"
+                                        )
                                         self.logger.info(
                                             f"上传成功后原文件已不存在: {file_path}"
                                         )
@@ -714,7 +768,9 @@ class VideoFileHandler:
                                         self.logger.error(
                                             f"删除原文件失败，已从下载器清理，启动后台重试: {file_path}, 错误: {e}"
                                         )
-                                        self._delete_file_with_background_retry(file_path)
+                                        self._delete_file_with_background_retry(
+                                            file_path
+                                        )
                         else:
                             # 任务未删除（种子中还有其他视频），跳过文件删除
                             self.logger.info(
@@ -846,11 +902,20 @@ class VideoFileHandler:
                     and getattr(self.renamer.tmdb_client, "last_request_failed", False)
                 )
                 if tmdb_request_failed:
-                    error_msg = getattr(self.renamer.tmdb_client, "last_request_error", None)
-                    reason = f"TMDB请求失败: {error_msg}" if error_msg else "TMDB请求失败"
+                    error_msg = getattr(
+                        self.renamer.tmdb_client, "last_request_error", None
+                    )
+                    reason = (
+                        f"TMDB请求失败: {error_msg}" if error_msg else "TMDB请求失败"
+                    )
                     console_log(f"⚠️  TMDB 请求异常，文件将加入自动重试: {reason}")
                     self._failed_files[file_path] = reason
-                    record_task(file_path, "failed", error_message=reason, end_time=datetime.now())
+                    record_task(
+                        file_path,
+                        "failed",
+                        error_message=reason,
+                        end_time=datetime.now(),
+                    )
                     if self._parent_monitor:
                         self._parent_monitor._retry_files.add(file_path)
                 else:
@@ -858,7 +923,12 @@ class VideoFileHandler:
                     console_log(f"⚠️  文件将跳过上传，等待手动处理\n")
                     # 记录失败原因，但不标记为已上传（以便后续可以重试）
                     self._failed_files[file_path] = "未找到 TMDB 匹配结果"
-                    record_task(file_path, "failed", error_message="未找到 TMDB 匹配结果", end_time=datetime.now())
+                    record_task(
+                        file_path,
+                        "failed",
+                        error_message="未找到 TMDB 匹配结果",
+                        end_time=datetime.now(),
+                    )
                 self._uploading_files.discard(file_path)
                 return False
             media_type = metadata.get(
@@ -1027,10 +1097,14 @@ class VideoFileHandler:
                         #         f"[线程#{worker_id}] 使用顶层 item_id: {matched_item_id}"
                         #     )
 
-                    elif result2.get("video_type") == "movie" and result2.get("item_id"):
+                    elif result2.get("video_type") == "movie" and result2.get(
+                        "item_id"
+                    ):
                         matched_item_id = result2.get("item_id")
                         matched_item_type = result2.get("item_type")
-                        console_log(f"[线程#{worker_id}] 电影匹配成功！item_id: {matched_item_id}")
+                        console_log(
+                            f"[线程#{worker_id}] 电影匹配成功！item_id: {matched_item_id}"
+                        )
 
                 # if not matched_item_id:
                 #     console_log(f"✗ [线程#{worker_id}] 未找到匹配的item_id")
@@ -1039,7 +1113,9 @@ class VideoFileHandler:
             # 如果只上传到123云盘、天翼云盘或139云盘（不包含 emos），不需要 item_id，可以直接上传
             if "emos" not in self.upload_targets and len(self.upload_targets) > 0:
                 # 只上传到 p123、cloud189 或 yun139，不需要 Emos 的 item_id
-                console_log(f"✓ [线程#{worker_id}] 配置为上传到 {self.upload_targets}，跳过Emos匹配")
+                console_log(
+                    f"✓ [线程#{worker_id}] 配置为上传到 {self.upload_targets}，跳过Emos匹配"
+                )
                 self._execute_upload(
                     file_path,
                     media_type,
@@ -1052,7 +1128,9 @@ class VideoFileHandler:
                     metadata,
                 )
             elif matched_item_id:
-                console_log(f"✓ [线程#{worker_id}] 找到匹配的item_id: {matched_item_id}")
+                console_log(
+                    f"✓ [线程#{worker_id}] 找到匹配的item_id: {matched_item_id}"
+                )
                 # 需要上传到 Emos 或两者，必须有 item_id
                 self._execute_upload(
                     file_path,
@@ -1068,7 +1146,12 @@ class VideoFileHandler:
             else:
                 # 需要 Emos 但没有 item_id
                 self._failed_files[file_path] = "未找到匹配的item_id"
-                record_task(file_path, "failed", error_message="未找到匹配的item_id", end_time=datetime.now())
+                record_task(
+                    file_path,
+                    "failed",
+                    error_message="未找到匹配的item_id",
+                    end_time=datetime.now(),
+                )
                 log_success(
                     self.logger,
                     "文件元数据获取成功但未匹配到item_id",
@@ -1099,7 +1182,12 @@ class VideoFileHandler:
 
             # 记录失败原因
             self._failed_files[file_path] = f"API请求失败: {str(e)}"
-            record_task(file_path, "failed", error_message=f"API请求失败: {str(e)}", end_time=datetime.now())
+            record_task(
+                file_path,
+                "failed",
+                error_message=f"API请求失败: {str(e)}",
+                end_time=datetime.now(),
+            )
 
             # 如果有父监控器，可以将文件添加到重试队列
             if self._parent_monitor:
@@ -1153,7 +1241,9 @@ class VideoFileHandler:
                 print(f"{'='*60}\n")
 
                 if not self.emos_auth_token:
-                    console_log(f"✗ [线程#{worker_id}] 未配置Emos认证令牌，跳过Emos上传")
+                    console_log(
+                        f"✗ [线程#{worker_id}] 未配置Emos认证令牌，跳过Emos上传"
+                    )
                     upload_results["emos"] = None
                 else:
                     try:
@@ -1186,8 +1276,10 @@ class VideoFileHandler:
                 console_log(f"📤 [线程#{worker_id}] 上传到 123云盘")
                 print(f"{'='*60}\n")
 
-                if not self.p123_token:
-                    console_log(f"✗ [线程#{worker_id}] 未配置123云盘Token，跳过123上传")
+                if not self.p123_token and not self.p123_username:
+                    console_log(
+                        f"✗ [线程#{worker_id}] 未配置123云盘Token/账号，跳过123上传"
+                    )
                     upload_results["p123"] = None
                 else:
                     try:
@@ -1200,6 +1292,8 @@ class VideoFileHandler:
                             uploader = P123Uploader(
                                 self.p123_token,
                                 self.p123_parent_id,
+                                username=self.p123_username,
+                                password=self.p123_password,
                                 telegram_config=self.telegram_config,
                             )
 
@@ -1289,21 +1383,27 @@ class VideoFileHandler:
                         season = metadata.get("season")
                         episode = metadata.get("episode")
 
-                        upload_results["cloud189"] = self.cloud189_uploader.upload_video(
-                            file_path,
-                            show_name=show_name,
-                            season=season,
-                            episode=episode,
-                            media_type=media_type,
-                            folder_structure=folder_structure,
-                            rename_to=target_filename,
+                        upload_results["cloud189"] = (
+                            self.cloud189_uploader.upload_video(
+                                file_path,
+                                show_name=show_name,
+                                season=season,
+                                episode=episode,
+                                media_type=media_type,
+                                folder_structure=folder_structure,
+                                rename_to=target_filename,
+                            )
                         )
 
                         if upload_results["cloud189"]:
                             console_log(f"\n🎉 [线程#{worker_id}] 天翼云盘上传成功!")
 
                             # 生成 .cas 文件（用于 189 云盘秒传校验）
-                            if self.cloud189_generate_cas and folder_structure and target_filename:
+                            if (
+                                self.cloud189_generate_cas
+                                and folder_structure
+                                and target_filename
+                            ):
                                 try:
                                     result = upload_results["cloud189"]
                                     cas_data = {
@@ -1314,38 +1414,65 @@ class VideoFileHandler:
                                         "cloud": "189",
                                     }
                                     cas_content = base64.b64encode(
-                                        json.dumps(cas_data, ensure_ascii=False).encode("utf-8")
+                                        json.dumps(cas_data, ensure_ascii=False).encode(
+                                            "utf-8"
+                                        )
                                     ).decode("utf-8")
 
                                     if self.cloud189_cas_output_dir:
                                         cas_dir = Path(self.cloud189_cas_output_dir)
                                     else:
-                                        cas_dir = Path(sys.argv[0]).resolve().parent / "cas"
+                                        cas_dir = (
+                                            Path(sys.argv[0]).resolve().parent / "cas"
+                                        )
                                     cas_dir = cas_dir / renamed_relative_path.parent
                                     cas_dir.mkdir(parents=True, exist_ok=True)
                                     cas_file = cas_dir / f"{target_filename}.cas"
                                     cas_file.write_text(cas_content, encoding="utf-8")
-                                    console_log(f"📄 [线程#{worker_id}] 已生成 .cas 文件: {cas_file}")
+                                    console_log(
+                                        f"📄 [线程#{worker_id}] 已生成 .cas 文件: {cas_file}"
+                                    )
 
                                     # 上传 .cas 文件到外部 API
-                                    if self.cloud189_cas_upload_url and self.cloud189_cas_upload_api_key:
-                                        _upload_cas_file(cas_file, cas_data, self.cloud189_cas_upload_url, self.cloud189_cas_upload_api_key, str(renamed_relative_path.parent))
+                                    if (
+                                        self.cloud189_cas_upload_url
+                                        and self.cloud189_cas_upload_api_key
+                                    ):
+                                        _upload_cas_file(
+                                            cas_file,
+                                            cas_data,
+                                            self.cloud189_cas_upload_url,
+                                            self.cloud189_cas_upload_api_key,
+                                            str(renamed_relative_path.parent),
+                                        )
                                 except Exception as cas_e:
-                                    console_log(f"⚠️ [线程#{worker_id}] 生成 .cas 文件失败: {cas_e}")
+                                    console_log(
+                                        f"⚠️ [线程#{worker_id}] 生成 .cas 文件失败: {cas_e}"
+                                    )
 
                             # 上传成功后清空回收站
                             if self.cloud189_empty_recycle_bin:
                                 try:
-                                    console_log(f"🗑️ [线程#{worker_id}] 清空天翼云盘回收站...")
-                                    recycle_result = self.cloud189_uploader.client.empty_recycle(
-                                        familyId=self.cloud189_family_id
+                                    console_log(
+                                        f"🗑️ [线程#{worker_id}] 清空天翼云盘回收站..."
+                                    )
+                                    recycle_result = (
+                                        self.cloud189_uploader.client.empty_recycle(
+                                            familyId=self.cloud189_family_id
+                                        )
                                     )
                                     if recycle_result.get("res_code") == 0:
-                                        console_log(f"✓ [线程#{worker_id}] 回收站已清空")
+                                        console_log(
+                                            f"✓ [线程#{worker_id}] 回收站已清空"
+                                        )
                                     else:
-                                        console_log(f"⚠️ [线程#{worker_id}] 清空回收站失败: {recycle_result.get('res_message', 'Unknown')}")
+                                        console_log(
+                                            f"⚠️ [线程#{worker_id}] 清空回收站失败: {recycle_result.get('res_message', 'Unknown')}"
+                                        )
                                 except Exception as e:
-                                    console_log(f"⚠️ [线程#{worker_id}] 清空回收站异常: {e}")
+                                    console_log(
+                                        f"⚠️ [线程#{worker_id}] 清空回收站异常: {e}"
+                                    )
                         else:
                             console_log(f"\n❌ [线程#{worker_id}] 天翼云盘上传失败!")
                     except Exception as e:
@@ -1430,11 +1557,15 @@ class VideoFileHandler:
                         # 获取媒体 URL
                         media_url = None
                         if upload_results.get("emos"):
-                            media_url = upload_results["emos"].get("url") or upload_results["emos"].get("media_uuid")
+                            media_url = upload_results["emos"].get(
+                                "url"
+                            ) or upload_results["emos"].get("media_uuid")
                         elif upload_results.get("p123"):
-                            media_url = upload_results["p123"].get("url") or upload_results["p123"].get("fileid")
+                            media_url = upload_results["p123"].get("url")
                         elif upload_results.get("cloud189"):
-                            media_url = upload_results["cloud189"].get("url") or upload_results["cloud189"].get("file_id")
+                            media_url = upload_results["cloud189"].get(
+                                "url"
+                            ) or upload_results["cloud189"].get("file_id")
                         elif upload_results.get("yun139"):
                             media_url = (
                                 upload_results["yun139"].get("strm_url")
@@ -1443,7 +1574,9 @@ class VideoFileHandler:
                             )
 
                         # content_hash 暂只从移动云盘（yun139）提取
-                        content_hash = upload_results.get("yun139", {}).get("content_hash")
+                        content_hash = upload_results.get("yun139", {}).get(
+                            "content_hash"
+                        )
 
                         if media_url:
                             try:
@@ -1455,12 +1588,20 @@ class VideoFileHandler:
                                 folder_parts = None
 
                             if folder_parts:
-                                tmdb_client = getattr(self.renamer, 'tmdb_client', None) if hasattr(self, 'renamer') else None
+                                tmdb_client = (
+                                    getattr(self.renamer, "tmdb_client", None)
+                                    if hasattr(self, "renamer")
+                                    else None
+                                )
                                 result = self.emya_controller.import_by_path(
                                     folder_parts=folder_parts,
                                     media_url=str(media_url),
                                     quality_tags=metadata.get("quality_tags"),
-                                    file_size=os.path.getsize(file_path) if os.path.exists(file_path) else None,
+                                    file_size=(
+                                        os.path.getsize(file_path)
+                                        if os.path.exists(file_path)
+                                        else None
+                                    ),
                                     season=metadata.get("season"),
                                     episode=metadata.get("episode"),
                                     tmdb_client=tmdb_client,
@@ -1472,13 +1613,21 @@ class VideoFileHandler:
                                     print(f"   视频ID: {result.data.get('video_id')}")
                                     self.logger.info(f"emya 入库成功: {result.data}")
                                 else:
-                                    console_log(f"❌ [线程#{worker_id}] emya 入库失败: {result.message}")
-                                    self.logger.warning(f"emya 入库失败: {result.message}")
+                                    console_log(
+                                        f"❌ [线程#{worker_id}] emya 入库失败: {result.message}"
+                                    )
+                                    self.logger.warning(
+                                        f"emya 入库失败: {result.message}"
+                                    )
                             else:
-                                console_log(f"⚠️ [线程#{worker_id}] 无法生成路径结构，跳过 emya 入库")
+                                console_log(
+                                    f"⚠️ [线程#{worker_id}] 无法生成路径结构，跳过 emya 入库"
+                                )
                                 self.logger.warning("无法生成路径结构，跳过 emya 入库")
                         else:
-                            console_log(f"⚠️ [线程#{worker_id}] 未获取到媒体URL，跳过 emya 入库")
+                            console_log(
+                                f"⚠️ [线程#{worker_id}] 未获取到媒体URL，跳过 emya 入库"
+                            )
                             self.logger.warning("未获取到媒体URL，跳过 emya 入库")
 
                     except Exception as e:
@@ -1496,12 +1645,8 @@ class VideoFileHandler:
 
                         if task_removed:
                             deleted = True
-                            print(
-                                f"✅ [线程#{worker_id}] 下载任务已从下载器中删除"
-                            )
-                            self.logger.info(
-                                f"下载任务已从下载器中删除: {file_path}"
-                            )
+                            print(f"✅ [线程#{worker_id}] 下载任务已从下载器中删除")
+                            self.logger.info(f"下载任务已从下载器中删除: {file_path}")
 
                             # 兜底：某些下载器（如 aria2）只删任务记录不删文件
                             if os.path.exists(file_path):
@@ -1558,8 +1703,15 @@ class VideoFileHandler:
                 console_log(f"⚠️  [线程#{worker_id}] 保留本地文件，等待重试或手动处理")
                 self._uploading_files.discard(file_path)
                 # 记录失败原因，以便 Web UI 显示和重试
-                self._failed_files[file_path] = f"部分云盘上传失败: {', '.join(failed_targets)}"
-                record_task(file_path, "failed", error_message=f"部分云盘上传失败: {', '.join(failed_targets)}", end_time=datetime.now())
+                self._failed_files[file_path] = (
+                    f"部分云盘上传失败: {', '.join(failed_targets)}"
+                )
+                record_task(
+                    file_path,
+                    "failed",
+                    error_message=f"部分云盘上传失败: {', '.join(failed_targets)}",
+                    end_time=datetime.now(),
+                )
                 # 加入重试队列，自动重试
                 if self._parent_monitor:
                     self._parent_monitor._retry_files.add(file_path)
@@ -1582,7 +1734,12 @@ class VideoFileHandler:
             self._uploading_files.discard(file_path)
             # 记录失败原因，以便 Web UI 显示和重试
             self._failed_files[file_path] = f"上传异常: {str(e)}"
-            record_task(file_path, "failed", error_message=f"上传异常: {str(e)}", end_time=datetime.now())
+            record_task(
+                file_path,
+                "failed",
+                error_message=f"上传异常: {str(e)}",
+                end_time=datetime.now(),
+            )
             # 加入重试队列，自动重试
             if self._parent_monitor:
                 self._parent_monitor._retry_files.add(file_path)
@@ -1635,7 +1792,9 @@ class VideoFileHandler:
             # 检查文件是否已在队列中，避免重复添加
             if file_path in self._queued_files:
                 self.logger.info(f"强制处理: 文件已在队列中，跳过重复添加: {file_path}")
-                console_log(f"\n⚠️  文件已在队列中，跳过: {os.path.basename(file_path)}")
+                console_log(
+                    f"\n⚠️  文件已在队列中，跳过: {os.path.basename(file_path)}"
+                )
                 return True
 
             # 标记为处理中并添加到队列追踪集合
@@ -1726,7 +1885,7 @@ class VideoFileHandler:
         """
         # 反向映射路径，因为下载器使用的是它自己的路径系统
         downloader_file_path = self._reverse_apply_path_mapping(file_path)
-        
+
         # 解码路径用于查找 _file_downloader_map（因为 map 的 key 是解码形式）
         decoded_file_path = decode_file_path(file_path)
         decoded_downloader_path = decode_file_path(downloader_file_path)
@@ -1735,11 +1894,16 @@ class VideoFileHandler:
 
         # 1. 尝试从映射中查找下载器（同时尝试编码和解码路径）
         map_key = None
-        for key in [file_path, decoded_file_path, downloader_file_path, decoded_downloader_path]:
+        for key in [
+            file_path,
+            decoded_file_path,
+            downloader_file_path,
+            decoded_downloader_path,
+        ]:
             if key in self._file_downloader_map:
                 map_key = key
                 break
-        
+
         if map_key:
             try:
                 downloader = self._file_downloader_map[map_key]
@@ -1749,7 +1913,7 @@ class VideoFileHandler:
                         file_path,
                         decoded_file_path,
                         downloader_file_path,
-                        decoded_downloader_path
+                        decoded_downloader_path,
                     ]
                     for path in paths_to_try:
                         if path and downloader.remove_download(path):
@@ -1776,7 +1940,7 @@ class VideoFileHandler:
                             downloader_file_path,
                             decoded_downloader_path,
                             file_path,
-                            decoded_file_path
+                            decoded_file_path,
                         ]
                         for path in paths_to_try:
                             if path and downloader.remove_download(path):
@@ -1806,18 +1970,23 @@ class VideoFileHandler:
         """
         # 反向映射路径
         downloader_file_path = self._reverse_apply_path_mapping(file_path)
-        
+
         # 解码路径用于查找
         decoded_file_path = decode_file_path(file_path)
         decoded_downloader_path = decode_file_path(downloader_file_path)
 
         # 1. 首先尝试从映射中查找下载器（同时尝试编码和解码路径）
         map_key = None
-        for key in [file_path, decoded_file_path, downloader_file_path, decoded_downloader_path]:
+        for key in [
+            file_path,
+            decoded_file_path,
+            downloader_file_path,
+            decoded_downloader_path,
+        ]:
             if key in self._file_downloader_map:
                 map_key = key
                 break
-        
+
         if map_key:
             try:
                 downloader = self._file_downloader_map[map_key]
@@ -1827,7 +1996,7 @@ class VideoFileHandler:
                         file_path,
                         decoded_file_path,
                         downloader_file_path,
-                        decoded_downloader_path
+                        decoded_downloader_path,
                     ]
                     for path in paths_to_try:
                         if path and downloader.force_remove_download(path):
@@ -1847,11 +2016,13 @@ class VideoFileHandler:
                             downloader_file_path,
                             decoded_downloader_path,
                             file_path,
-                            decoded_file_path
+                            decoded_file_path,
                         ]
                         for path in paths_to_try:
                             if path and downloader.force_remove_download(path):
-                                console_log(f"✅ 已强制从下载器中删除任务及文件 (遍历查找)")
+                                console_log(
+                                    f"✅ 已强制从下载器中删除任务及文件 (遍历查找)"
+                                )
                                 self.logger.info(
                                     f"已强制从下载器中删除任务及文件 (遍历查找): {path}"
                                 )
@@ -1880,16 +2051,20 @@ class VideoFileHandler:
             print(f"\n🎬 发现字幕文件: {os.path.basename(subtitle_path)}")
 
             # 解析字幕文件信息
-            subtitle_info = self.subtitle_handler.parse_subtitle_filename(os.path.basename(subtitle_path))
-            language = subtitle_info.get('language', 'Unknown')
-            subtitle_type = subtitle_info.get('type', 'Normal')
+            subtitle_info = self.subtitle_handler.parse_subtitle_filename(
+                os.path.basename(subtitle_path)
+            )
+            language = subtitle_info.get("language", "Unknown")
+            subtitle_type = subtitle_info.get("type", "Normal")
 
             print(f"   语言: {language}")
             print(f"   类型: {subtitle_type}")
 
             # 查找匹配的视频文件
-            video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv')
-            video_path = self.subtitle_handler.find_matching_video(Path(subtitle_path), video_extensions)
+            video_extensions = (".mp4", ".mkv", ".avi", ".mov", ".wmv")
+            video_path = self.subtitle_handler.find_matching_video(
+                Path(subtitle_path), video_extensions
+            )
 
             if not video_path:
                 console_log(f"   ⚠️  未找到匹配的视频文件，跳过处理")
@@ -1918,13 +2093,18 @@ class VideoFileHandler:
             # 移动字幕文件
             try:
                 import shutil
+
                 shutil.move(subtitle_path, new_subtitle_path)
                 console_log(f"   ✅ 字幕文件已移动并重命名")
-                self.logger.info(f"字幕文件已处理: {subtitle_path} -> {new_subtitle_path}")
+                self.logger.info(
+                    f"字幕文件已处理: {subtitle_path} -> {new_subtitle_path}"
+                )
                 return True
             except Exception as e:
                 console_log(f"   ❌ 移动字幕文件失败: {e}")
-                self.logger.error(f"移动字幕文件失败: {subtitle_path} -> {new_subtitle_path}, 错误: {e}")
+                self.logger.error(
+                    f"移动字幕文件失败: {subtitle_path} -> {new_subtitle_path}, 错误: {e}"
+                )
                 return False
 
         except Exception as e:
@@ -1990,8 +2170,8 @@ class VideoFileHandler:
         try:
             ps_script = (
                 f'$path = "{file_path}"; '
-                f'$maxRetries = {max_retries}; '
-                f'$delay = {retry_interval}; '
+                f"$maxRetries = {max_retries}; "
+                f"$delay = {retry_interval}; "
                 "Start-Sleep -Seconds 3; "
                 "for($i=0; $i -lt $maxRetries; $i++) { "
                 "    if(Test-Path $path) { "
@@ -2009,7 +2189,7 @@ class VideoFileHandler:
             )
             subprocess.Popen(
                 ["powershell", "-NoProfile", "-Command", ps_script],
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             self.logger.info(f"已启动 PowerShell 后台重试删除文件: {file_path}")
             return True

@@ -488,6 +488,8 @@ class EmyaService:
         Returns:
             VideoMedia 实例（可能是已存在的记录）
         """
+        if content_hash and not content_hash.startswith(("sha256:", "md5:", "sha1:")):
+            content_hash = f"sha256:{content_hash}"
         media = VideoMedia(
             uuid=str(uuid.uuid4()),
             video_list_id=video_list_id,
@@ -528,6 +530,8 @@ class EmyaService:
         """通过 content_hash 精确查找媒体记录。"""
         if not sha256:
             return None
+        if not sha256.startswith(("sha256:", "md5:", "sha1:")):
+            sha256 = f"sha256:{sha256}"
         return session.query(VideoMedia).filter(
             VideoMedia.content_hash == sha256.lower(),
         ).first()

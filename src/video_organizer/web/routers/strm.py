@@ -1,7 +1,7 @@
 """
 STRM 302 代理路由
 
-提供 Cloud189 和 Yun139 的秒传直链代理服务（302 重定向）。
+提供 Cloud189、Yun139 和 123 云盘的秒传直链代理服务（302 重定向）。
 兼容现有 STRM 文件的 URL 格式。
 """
 
@@ -86,15 +86,15 @@ def _make_302(url: str, ttl: Optional[int] = None) -> RedirectResponse:
 def _make_139_302(url: str) -> Response:
     """用于 Yun139 反代的 302 响应（带 HTML body + 完整 headers）"""
     html_content = f'<a href="{url}">Found</a>.\n'
-    content_length = len(html_content.encode('utf-8'))
-    now = datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')
+    content_length = len(html_content.encode("utf-8"))
+    now = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
     headers = {
-        'Location': url,
-        'Cache-Control': 'max-age=0, no-cache, no-store, must-revalidate',
-        'Content-Type': 'text/html; charset=utf-8',
-        'Referrer-Policy': 'no-referrer',
-        'Date': now,
-        'Content-Length': str(content_length),
+        "Location": url,
+        "Cache-Control": "max-age=0, no-cache, no-store, must-revalidate",
+        "Content-Type": "text/html; charset=utf-8",
+        "Referrer-Policy": "no-referrer",
+        "Date": now,
+        "Content-Length": str(content_length),
     }
     return Response(html_content, status_code=302, headers=headers)
 
@@ -108,7 +108,7 @@ def _cloud189_get_download_url(
     family_id: Optional[str] = None,
 ) -> Optional[str]:
     """通过 Cloud189 PC API 获取文件下载直链
-    
+
     模仿 cloud189_pc.py 的 get_download_url / get_family_download_url 方法：
     - 个人云: API_URL/getFileDownloadUrl.action + HMAC-SHA1 签名
     - 家庭云: API_URL/family/file/getFileDownloadUrl.action + HMAC-SHA1 签名
@@ -157,7 +157,9 @@ def _cloud189_get_download_url(
         redirect_resp = client.session.get(
             download_url,
             allow_redirects=False,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"},
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            },
             timeout=30,
         )
         if redirect_resp.status_code in (302, 301):
@@ -226,7 +228,9 @@ async def cloud189_second_upload(
 
     # 获取直链
     try:
-        download_url = _cloud189_get_download_url(client, result.user_file_id, family_id)
+        download_url = _cloud189_get_download_url(
+            client, result.user_file_id, family_id
+        )
     except Exception as e:
         logger.error(f"获取直链异常: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": f"获取直链异常: {e}"})
@@ -243,7 +247,9 @@ async def cloud189_second_upload(
         )
         task_id = delete_result.get("taskId")
         if task_id:
-            check_result = client.check_batch_task(task_id, family_id=str(family_id or 0))
+            check_result = client.check_batch_task(
+                task_id, family_id=str(family_id or 0)
+            )
             if check_result.get("successedCount", 0) > 0:
                 logger.info(f"Cloud189 临时文件已删除: {decoded_name}")
             else:
@@ -307,7 +313,7 @@ async def yun139_download_url(
         is_app_mode = client.app_mode
     else:
         is_app_mode = app_mode.lower() in ("true", "1", "yes")
-    
+
     # PC 客户端秒传格式默认开启
     if pc_client is None:
         is_pc_client = True
@@ -356,24 +362,37 @@ async def yun139_download_url(
 
     if not download_url:
         return JSONResponse(status_code=500, content={"error": "获取直链失败"})
-    
+
     logger.info(f"Yun139 秒传成功，文件ID: {file_id}, 直链: {download_url[:100]}...")
 
     # 删除临时文件（移入回收站）
     if upload_data.get("rapidUpload"):
         try:
             delete_data = {"fileIds": [file_id]}
-            delete_result = client._request("/hcy/recyclebin/batchTrash", delete_data, is_personal=True)
+            delete_result = client._request(
+                "/hcy/recyclebin/batchTrash", delete_data, is_personal=True
+            )
             task_id = delete_result.get("data", {}).get("taskId", "")
             if task_id:
                 check_result = client.check_task(task_id, is_personal=True)
-                task_status = check_result.get("data", {}).get("taskInfo", {}).get("status", "")
+                task_status = (
+                    check_result.get("data", {}).get("taskInfo", {}).get("status", "")
+                )
                 if task_status == "Succeed":
-                    err_codes = [r.get("errCode", "") for r in check_result.get("data", {}).get("batchFileResults", [])]
+                    err_codes = [
+                        r.get("errCode", "")
+                        for r in check_result.get("data", {}).get(
+                            "batchFileResults", []
+                        )
+                    ]
                     all_ok = all(c == "0000" for c in err_codes)
-                    logger.info(f"Yun139 删除任务 {task_id} 完成: status={task_status}, errCodes={err_codes}")
+                    logger.info(
+                        f"Yun139 删除任务 {task_id} 完成: status={task_status}, errCodes={err_codes}"
+                    )
                 else:
-                    logger.warning(f"Yun139 删除任务 {task_id} 未成功: status={task_status}")
+                    logger.warning(
+                        f"Yun139 删除任务 {task_id} 未成功: status={task_status}"
+                    )
         except Exception as e:
             logger.warning(f"删除 Yun139 临时文件失败: {e}")
 
@@ -420,7 +439,117 @@ async def yun139_create_get_download_url(
     if not download_url:
         return JSONResponse(status_code=500, content={"error": "获取直链失败"})
 
-    logger.info(f"Yun139 获取直链成功，文件ID: {fileId}, 文件名: {decoded_name}, 直链: {download_url[:100]}...")
+    logger.info(
+        f"Yun139 获取直链成功，文件ID: {fileId}, 文件名: {decoded_name}, 直链: {download_url[:100]}..."
+    )
 
     _cache_set(key, download_url)
     return _make_139_302(download_url)
+
+
+# ==================== 123 云盘秒传代理 ====================
+
+
+@router.get("/redirect/{file_size}/{etag}/{s3keyflag}/{file_name}")
+async def p123_get_download_url(
+    file_size: int,
+    etag: str,
+    s3keyflag: str,
+    file_name: str,
+    request: Request,
+):
+    """
+    123 云盘秒传代理
+    通过 etag(MD5) + s3keyflag 创建文件并返回视频直链（302 重定向）。
+
+    专用于 123 STRM 文件播放流程:
+    /redirect/{file_size}/{etag}/{s3keyflag}/{file_name}
+    """
+    client_ip = _get_client_ip(request)
+    key = _cache_key("123", client_ip, etag)
+
+    cached = _cache_get(key)
+    if cached:
+        return _make_302(cached)
+
+    state = get_state_manager()
+    handler = state.get_video_handler()
+    if not handler or not handler.p123_uploader:
+        return JSONResponse(status_code=503, content={"error": "123 云盘客户端不可用"})
+
+    client = handler.p123_uploader.client
+    config = state.get_config()
+    p123_cfg = config.get("p123", {})
+    parent_id = int(p123_cfg.get("parent_id", 0))
+
+    decoded_name = unquote(file_name)
+
+    # 秒传
+    logger.info(
+        f"123 秒传请求: etag={etag}, size={file_size}, parent_id={parent_id}, "
+        f"filename={decoded_name}"
+    )
+    try:
+        upload_resp = client.upload_request(
+            etag=etag,
+            file_name=decoded_name,
+            size=file_size,
+            parent_file_id=parent_id,
+            duplicate=2,
+        )
+    except Exception as e:
+        logger.error(f"123 秒传请求异常: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": f"秒传请求异常: {e}"})
+
+    if upload_resp.get("code") != 0:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "秒传失败", "message": upload_resp.get("message")},
+        )
+
+    data = upload_resp.get("data", {})
+    if not data.get("Reuse"):
+        return JSONResponse(
+            status_code=500,
+            content={"error": "秒传失败", "message": "文件未命中秒传"},
+        )
+
+    file_id = data.get("FileId") or data.get("Info", {}).get("FileId")
+    logger.info(f"123 秒传 data: Reuse={data.get('Reuse')}, FileId={file_id}, Key={data.get('Key')}")
+    if not file_id:
+        return JSONResponse(status_code=500, content={"error": "秒传响应中无 FileId"})
+
+    # 获取直链
+    file_info = {
+        "FileId": file_id,
+        "Etag": etag,
+        "FileName": decoded_name,
+        "S3KeyFlag": s3keyflag,
+        "Size": file_size,
+        "Type": 0,
+    }
+    logger.info(
+        f"123 获取下载链接: FileId={file_id}, etag={etag}, s3keyflag={s3keyflag}"
+    )
+    try:
+        download_url = client.get_download_info(file_info)
+    except Exception as e:
+        logger.error(f"获取直链异常: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": f"获取直链异常: {e}"})
+
+    if not download_url:
+        return JSONResponse(status_code=500, content={"error": "获取直链失败"})
+
+    logger.info(
+        f"123 秒传成功，文件: {decoded_name}, FileID: {file_id}, 直链: {download_url[:100]}..."
+    )
+
+    # 删除临时文件
+    try:
+        client.fs_trash(int(file_id))
+    except Exception as e:
+        logger.warning(f"删除 123 临时文件失败: {e}")
+
+    # 缓存 1 小时 + 302
+    _cache_set(key, download_url, 3600)
+    return _make_302(download_url, 3600)

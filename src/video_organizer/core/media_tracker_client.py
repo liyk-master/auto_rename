@@ -222,6 +222,7 @@ class MediaTrackerClient:
                 )
                 self._total_failed += 1
         elif msg_type == "media_deleted":
+            self._total_received += 1
             try:
                 await asyncio.wait_for(
                     self._processing_queue.put(("delete", payload)),

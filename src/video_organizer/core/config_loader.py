@@ -30,10 +30,12 @@ DEFAULT_CONFIG = {
     "emos": {"auth_token": "", "base_url": "https://emos.lol"},
     "p123": {
         "token": "",
+        "username": "",
+        "password": "",
         "parent_id": 0,
         "max_workers": 2,
-        "organize_source_id": 0,  # 需要整理的源目录ID
-        "organize_target_id": 0,  # 整理到的目标目录ID
+        "organize_source_id": 0,
+        "organize_target_id": 0,
     },
     "cloud189": {
         "username": "",
@@ -96,9 +98,36 @@ DEFAULT_CONFIG = {
     },
     "telegram": {"bot_token": "", "chat_id": ""},
     "llm_fallback": {"enabled": False, "max_concurrent": 2},
-    "llm_provider_1": {"name": "", "api_url": "", "api_key": "", "model": "", "enabled": False, "weight": 1, "timeout": 30, "max_retries": 2},
-    "llm_provider_2": {"name": "", "api_url": "", "api_key": "", "model": "", "enabled": False, "weight": 1, "timeout": 30, "max_retries": 2},
-    "llm_provider_3": {"name": "", "api_url": "", "api_key": "", "model": "", "enabled": False, "weight": 1, "timeout": 30, "max_retries": 2},
+    "llm_provider_1": {
+        "name": "",
+        "api_url": "",
+        "api_key": "",
+        "model": "",
+        "enabled": False,
+        "weight": 1,
+        "timeout": 30,
+        "max_retries": 2,
+    },
+    "llm_provider_2": {
+        "name": "",
+        "api_url": "",
+        "api_key": "",
+        "model": "",
+        "enabled": False,
+        "weight": 1,
+        "timeout": 30,
+        "max_retries": 2,
+    },
+    "llm_provider_3": {
+        "name": "",
+        "api_url": "",
+        "api_key": "",
+        "model": "",
+        "enabled": False,
+        "weight": 1,
+        "timeout": 30,
+        "max_retries": 2,
+    },
     "guessit": {
         "enabled": True,  # 是否启用 GuessIt 增强识别
         "prefer_guessit": False,  # 是否优先使用 GuessIt 结果
@@ -146,16 +175,17 @@ DEFAULT_CONFIG = {
     },
 }
 
+
 def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     """
     加载并验证配置文件
-    
+
     Args:
         config_path: 配置文件路径，如果不提供则使用默认路径
-    
+
     Returns:
         配置字典
-    
+
     Raises:
         FileNotFoundError: 如果配置文件不存在
         ValueError: 如果配置无效
@@ -171,7 +201,7 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
             config_path = os.path.join(
                 os.path.dirname(os.path.dirname(__file__)), "config.ini"
             )
-    
+
     # 检查配置文件是否存在
     if not os.path.exists(config_path):
         logger.warning(f"配置文件不存在: {config_path}")
@@ -180,43 +210,43 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         # 保存默认配置
         save_default_config(config_path)
         logger.info(f"已创建默认配置文件: {config_path}")
-    
+
     config = configparser.ConfigParser()
     # 使用UTF-8编码读取配置文件，避免编码错误
     config.read(config_path, encoding="utf-8")
-    
+
     # 转换为字典并验证
     config_dict = _config_to_dict(config)
-    
+
     # 验证必要的配置项
     if not _validate_config(config_dict):
         raise ValueError("配置验证失败，请检查配置文件")
-    
+
     return config_dict
 
 
 def save_default_config(config_path: str) -> None:
     """
     保存默认配置到文件
-    
+
     Args:
         config_path: 配置文件路径
     """
     config = configparser.ConfigParser()
-    
+
     # 设置默认配置
     for section, options in DEFAULT_CONFIG.items():
         # 跳过列表类型的配置（如下载器），它们不能直接作为INI的一个节
         if not isinstance(options, dict):
             continue
-        
+
         config[section] = {}
         for key, value in options.items():
             if isinstance(value, list):
                 config[section][key] = ",".join(value)
             else:
                 config[section][key] = str(value)
-    
+
     # 写入配置文件
     with open(config_path, "w", encoding="utf-8") as f:
         config.write(f)
@@ -225,19 +255,19 @@ def save_default_config(config_path: str) -> None:
 def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
     """
     将配置对象转换为字典，同时合并默认配置
-    
+
     Args:
         config: 配置对象
-    
+
     Returns:
         配置字典
     """
     config_dict = {}
-    
+
     # 合并默认配置和用户配置
     for section, default_options in DEFAULT_CONFIG.items():
         config_dict[section] = default_options.copy()
-        
+
         # 如果配置中有该节
         if section in config:
             for key, value in config[section].items():
@@ -269,7 +299,9 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
                                     if mapping:
                                         parts = mapping.split(":", 1)
                                         if len(parts) == 2:
-                                            mappings[parts[0].strip()] = parts[1].strip()
+                                            mappings[parts[0].strip()] = parts[
+                                                1
+                                            ].strip()
                             config_dict[section][key] = mappings
                         else:
                             config_dict[section][key] = config[section].get(key)
@@ -279,19 +311,19 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
                 else:
                     # 对于未知配置项，保留为字符串
                     config_dict[section][key] = value
-    
+
     # 保留不在 DEFAULT_CONFIG 中的自定义节（如 downloader.xxx）
     for section in config.sections():
         if section not in DEFAULT_CONFIG:
             config_dict[section] = {}
             for key, value in config[section].items():
                 config_dict[section][key] = value
-    
+
     # 特殊处理 manual_rules 节中的规则配置
     if "manual_rules" in config_dict and "manual_rules" in config:
         rules_list = []
         manual_section = config["manual_rules"]
-        
+
         # 方式1：如果配置了 rules 键（用 | 分隔的规则字符串）
         if "rules" in manual_section:
             rules_str = manual_section.get("rules", "")
@@ -300,19 +332,19 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
                     rule_str = rule_str.strip()
                     if rule_str:
                         rules_list.append({"rule": rule_str, "enabled": True})
-        
+
         # 方式2：收集所有 rule 开头的键（rule1, rule2, ...）
         for k, v in manual_section.items():
             if k.startswith("rule") and k != "rules" and k != "enabled":
                 rule_str = v.strip()
                 if rule_str:
                     rules_list.append({"rule": rule_str, "enabled": True})
-        
+
         # 更新 rules 列表
         config_dict["manual_rules"]["rules"] = rules_list
         if rules_list:
             logger.info(f"从配置文件加载了 {len(rules_list)} 条手动规则")
-    
+
     # 特殊处理命名规则
     if "naming" in config_dict:
         config_dict["naming_rules"] = {
@@ -321,7 +353,7 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
             "anime": config_dict["naming"].pop("anime_format"),
             "simple": config_dict["naming"].pop("simple_format"),
         }
-    
+
     # 特殊处理下载器配置
     config_dict["downloaders"] = []
     for section in config.sections():
@@ -333,22 +365,22 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
             for key, value in config[section].items():
                 downloader_config[key] = value
             config_dict["downloaders"].append(downloader_config)
-    
+
     return config_dict
 
 
 def _validate_config(config: Dict[str, Any]) -> bool:
     """
     验证配置有效性
-    
+
     Args:
         config: 配置字典
-    
+
     Returns:
         配置是否有效
     """
     is_valid = True
-    
+
     # 验证监控配置
     if "monitoring" in config:
         # 对于输出目录，不再强制验证，因为我们现在使用下载器监控模式
@@ -362,27 +394,27 @@ def _validate_config(config: Dict[str, Any]) -> bool:
                 logger.info(f"已创建输出目录: {output_dir}")
             except Exception as e:
                 logger.info(f"创建输出目录失败: {e}，当前使用下载器监控模式")
-        
+
         # 对于监控目录，不再强制验证，因为我们现在使用下载器监控
         watch_dir = config["monitoring"].get("watch_dir", "")
         if not watch_dir:
             logger.info("监控目录未配置，当前使用下载器监控模式")
         elif not os.path.exists(watch_dir):
             logger.info(f"监控目录不存在: {watch_dir}，当前使用下载器监控模式")
-    
+
     # 验证TMDB API密钥
     if "tmdb" in config:
         api_key = config["tmdb"].get("api_key", "")
         if not api_key:
             logger.warning("TMDB API密钥未配置，元数据刮削功能将不可用")
-    
+
     # 验证命名规则
     if "naming_rules" in config:
         for rule_type, rule in config["naming_rules"].items():
             if not rule:
                 logger.error(f"命名规则 {rule_type} 不能为空")
                 is_valid = False
-    
+
     return is_valid
 
 
@@ -391,7 +423,7 @@ def update_config(
 ) -> None:
     """
     更新配置文件
-    
+
     Args:
         config_dict: 配置字典
         config_path: 配置文件路径
@@ -406,9 +438,9 @@ def update_config(
             config_path = os.path.join(
                 os.path.dirname(os.path.dirname(__file__)), "config.ini"
             )
-    
+
     config = configparser.ConfigParser()
-    
+
     # 转换字典为配置对象
     for section, options in config_dict.items():
         if not isinstance(options, dict):
@@ -446,7 +478,7 @@ def update_config(
                 if rule_text:
                     config["manual_rules"][f"rule{rule_idx}"] = rule_text
                     rule_idx += 1
-    
+
     # 写回 downloader.xxx 节（从 config_dict 中的 dict 键直接写入）
     for section_name in list(config_dict.keys()):
         if section_name.startswith("downloader."):
@@ -456,7 +488,7 @@ def update_config(
             config[section_name] = {}
             for key, value in options.items():
                 config[section_name][key] = str(value)
-    
+
     # 保存配置文件
     parent_dir = os.path.dirname(config_path)
     if parent_dir:
