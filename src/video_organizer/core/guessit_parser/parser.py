@@ -674,10 +674,7 @@ class GuessItParser:
                     if year_match:
                         year = int(year_match.group(1))
                     else:
-                        # 尝试末尾 4 位数字作为年份
-                        trailing_year = re.search(r'\s*(\d{4})\s*$', part_str)
-                        if trailing_year:
-                            year = int(trailing_year.group(1))
+                        pass  # 没有括号年份就不猜测，避免误匹配非年份数字
 
                 # 清理父目录名中的年份和其他干扰信息
                 clean_name = re.sub(r'[（\(]\d{4}[）\)]', '', part_str)
