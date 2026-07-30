@@ -534,7 +534,7 @@ class EmyaApiController:
         """
         try:
             # 延迟导入避免循环依赖
-            from .renamer import VideoRenamer
+            from ..renamer import VideoRenamer
 
             # 初始化 renamer（如果需要）
             if self._renamer is None:
@@ -699,7 +699,6 @@ class EmyaApiController:
                         date_air=video.date_air,
                         runtime=video.runtime,
                         tmdb_id=video.tmdb_id,
-                        vote_average=video.vote_average,
                     ),
                 )
         except Exception as e:
@@ -732,7 +731,6 @@ class EmyaApiController:
                         video_type=v.video_type,
                         date_air=v.date_air,
                         tmdb_id=v.tmdb_id,
-                        vote_average=v.vote_average,
                     )
                     for v in videos
                 ]
@@ -823,7 +821,6 @@ class EmyaApiController:
                         file_size=file_size,
                         file_second=file_second,
                         file_container=file_container,
-                        quality_tags=quality_tags,
                     )
                 except IntegrityError:
                     logger.info(f"媒体已存在（content_hash 去重），跳过: {path_url[:80]}")
@@ -843,7 +840,6 @@ class EmyaApiController:
                         file_size=media.file_size,
                         file_second=media.file_second,
                         file_container=media.file_container,
-                        quality_tags=media.quality_tags,
                     ),
                 )
         except Exception as e:

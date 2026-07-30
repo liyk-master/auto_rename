@@ -1412,7 +1412,6 @@ class EmyaService:
             "backdrop_path": metadata.get("backdrop_path"),
             "genres": metadata.get("genres"),
             "origin_country": metadata.get("origin_country"),
-            "vote_average": metadata.get("vote_average"),
             "peoples": metadata.get("peoples"),
             "tagline": metadata.get("tagline"),
         }
@@ -1745,7 +1744,6 @@ class EmyaService:
             "date_air": video_list.date_air,
             "runtime": video_list.runtime,
             "tmdb_id": video_list.tmdb_id,
-            "vote_average": video_list.vote_average,
             "genres": video_list.genres,
         }
 

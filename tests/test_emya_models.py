@@ -13,7 +13,7 @@ class TestEmyaModels:
 
     def test_relation_type_constants(self):
         """测试关系类型常量"""
-        from video_organizer.core.emya_models import RelationType
+        from video_organizer.core.emya.models import RelationType
 
         assert RelationType.VIDEO_LIBRARY == "vb"
         assert RelationType.VIDEO_LIST == "vl"
@@ -22,7 +22,7 @@ class TestEmyaModels:
 
     def test_image_type_constants(self):
         """测试图片类型常量"""
-        from video_organizer.core.emya_models import ImageType
+        from video_organizer.core.emya.models import ImageType
 
         assert ImageType.PRIMARY == "Primary"
         assert ImageType.BACKDROP == "Backdrop"
@@ -31,7 +31,7 @@ class TestEmyaModels:
 
     def test_path_type_constants(self):
         """测试路径类型常量"""
-        from video_organizer.core.emya_models import PathType
+        from video_organizer.core.emya.models import PathType
 
         assert PathType.TMDB == "tmdb"
         assert PathType.DOUBAN == "douban"
@@ -40,7 +40,7 @@ class TestEmyaModels:
 
     def test_video_type_constants(self):
         """测试视频类型常量"""
-        from video_organizer.core.emya_models import VideoType
+        from video_organizer.core.emya.models import VideoType
 
         assert VideoType.TV == "tv"
         assert VideoType.MOVIE == "movie"
@@ -78,10 +78,10 @@ class TestDatabaseManager:
 class TestEmyaService:
     """测试 emya 入库服务"""
 
-    @patch("video_organizer.core.emya_service.get_db")
+    @patch("video_organizer.core.emya.service.get_db")
     def test_service_init(self, mock_get_db):
         """测试服务初始化"""
-        from video_organizer.core.emya_service import EmyaService
+        from video_organizer.core.emya.service import EmyaService
 
         mock_db = MagicMock()
         mock_get_db.return_value = mock_db
@@ -90,11 +90,11 @@ class TestEmyaService:
 
         assert service.default_user_id == 1
 
-    @patch("video_organizer.core.emya_service.get_db")
+    @patch("video_organizer.core.emya.service.get_db")
     def test_get_or_create_library(self, mock_get_db):
         """测试获取或创建媒体库"""
-        from video_organizer.core.emya_service import EmyaService
-        from video_organizer.core.emya_models import Library
+        from video_organizer.core.emya.service import EmyaService
+        from video_organizer.core.emya.models import Library
 
         mock_db = MagicMock()
         mock_get_db.return_value = mock_db
@@ -111,10 +111,10 @@ class TestEmyaService:
         # 由于需要实际数据库操作，这里只测试方法存在
         assert hasattr(service, "get_or_create_library")
 
-    @patch("video_organizer.core.emya_service.get_db")
+    @patch("video_organizer.core.emya.service.get_db")
     def test_import_tv_show_structure(self, mock_get_db):
         """测试电视剧导入方法存在"""
-        from video_organizer.core.emya_service import EmyaService
+        from video_organizer.core.emya.service import EmyaService
 
         mock_db = MagicMock()
         mock_get_db.return_value = mock_db
@@ -126,10 +126,10 @@ class TestEmyaService:
         assert hasattr(service, "import_movie")
         assert hasattr(service, "import_from_metadata")
 
-    @patch("video_organizer.core.emya_service.get_db")
+    @patch("video_organizer.core.emya.service.get_db")
     def test_search_video(self, mock_get_db):
         """测试搜索视频方法"""
-        from video_organizer.core.emya_service import EmyaService
+        from video_organizer.core.emya.service import EmyaService
 
         mock_db = MagicMock()
         mock_get_db.return_value = mock_db
@@ -146,32 +146,32 @@ class TestEmyaApiController:
 
     def test_controller_class_exists(self):
         """测试控制器类存在"""
-        from video_organizer.core.emya_api import EmyaApiController
+        from video_organizer.core.emya.api import EmyaApiController
 
         assert EmyaApiController is not None
 
     def test_init_controller_function_exists(self):
         """测试 init_controller 函数存在"""
-        from video_organizer.core.emya_api import init_controller
+        from video_organizer.core.emya.api import init_controller
 
         assert callable(init_controller)
 
     def test_get_controller_function_exists(self):
         """测试 get_controller 函数存在"""
-        from video_organizer.core.emya_api import get_controller
+        from video_organizer.core.emya.api import get_controller
 
         assert callable(get_controller)
 
     def test_quick_import_functions_exist(self):
         """测试快捷导入函数存在"""
-        from video_organizer.core.emya_api import quick_import_tv, quick_import_movie
+        from video_organizer.core.emya.api import quick_import_tv, quick_import_movie
 
         assert callable(quick_import_tv)
         assert callable(quick_import_movie)
 
     def test_api_response_dataclass(self):
         """测试 API 响应数据类"""
-        from src.video_organizer.core.emya_api import ApiResponse
+        from video_organizer.core.emya.api import ApiResponse
 
         response = ApiResponse(
             success=True,
@@ -186,7 +186,7 @@ class TestEmyaApiController:
 
     def test_import_tv_request_dataclass(self):
         """测试导入电视剧请求数据类"""
-        from src.video_organizer.core.emya_api import ImportTVRequest
+        from video_organizer.core.emya.api import ImportTVRequest
 
         request = ImportTVRequest(
             tmdb_id=12345,
@@ -201,7 +201,7 @@ class TestEmyaApiController:
 
     def test_import_movie_request_dataclass(self):
         """测试导入电影请求数据类"""
-        from src.video_organizer.core.emya_api import ImportMovieRequest
+        from video_organizer.core.emya.api import ImportMovieRequest
 
         request = ImportMovieRequest(
             tmdb_id=67890,
