@@ -930,8 +930,24 @@ class VideoRenamer:
                         if tmdb_meta is None:
                             tmdb_meta = {}
                         # 以 TMDB 结果的 media_type 为准更新 metadata，避免 _merge_metadata 的类型一致性检查拦截
-                        if "media_type" in tmdb_meta and "media_type" not in locked_fields:
-                            metadata["media_type"] = tmdb_meta["media_type"]
+                        # 强 TV 信号保护：存在 season+episode 时拒绝被 movie 结果反向覆盖
+                        if (
+                            "media_type" in tmdb_meta
+                            and "media_type" not in locked_fields
+                        ):
+                            strong_tv_signal = (
+                                metadata.get("season") is not None
+                                and metadata.get("episode") is not None
+                            )
+                            if strong_tv_signal and tmdb_meta.get("media_type") == "movie":
+                                logger.warning(
+                                    f"TMDB 结果 media_type=movie 但存在强 TV 信号 "
+                                    f"(season={metadata.get('season')}, "
+                                    f"episode={metadata.get('episode')})，"
+                                    f"拒绝覆盖为 movie，保持原判定"
+                                )
+                            else:
+                                metadata["media_type"] = tmdb_meta["media_type"]
                         # 合并未锁定的字段
                         metadata = self._merge_metadata(metadata, tmdb_meta, locked_fields)
                         # 恢复锁定字段为原始值（规则设置的值）
@@ -3568,6 +3584,9 @@ class VideoRenamer:
             # 根据置信度决定类型过滤的严格程度
             confidence = metadata.get("_media_type_confidence", 0.0)
 
+            # 强 TV 信号保护标志：严格类型过滤无匹配且存在强 TV 信号时禁止降级混入其他类型
+            type_degraded = False
+
             if media_type_hint and confidence >= 0.5:
                 # 中高置信度：严格过滤类型
                 type_matched_results = [
@@ -3584,6 +3603,13 @@ class VideoRenamer:
                 else:
                     # 没有匹配的类型结果，尝试用英文标题重试搜索
                     # 依次尝试: title(GuessIt) > en_title(regex)，清洗后用于TMDB搜索
+                    # 强 TV 信号保护：高置信度 tv 判定且带 season+episode 时，
+                    # 禁止降级混入 movie 结果反向覆盖类型
+                    strong_tv_signal = (
+                        media_type_hint == "tv"
+                        and metadata.get("season") is not None
+                        and metadata.get("episode") is not None
+                    )
                     en_title = (
                         metadata.get("title") or metadata.get("en_title", "")
                     )
@@ -3632,18 +3658,42 @@ class VideoRenamer:
                                     f"英文标题搜索也无 {media_type_hint} 类型结果，"
                                     f"使用原结果"
                                 )
-                                target_results = results
+                                if strong_tv_signal:
+                                    logger.warning(
+                                        f"存在强 TV 信号 (season={metadata.get('season')}, "
+                                        f"episode={metadata.get('episode')})，"
+                                        f"拒绝降级混入 movie 结果，保持 tv 判定"
+                                    )
+                                    type_degraded = True
+                                else:
+                                    target_results = results
                         else:
                             logger.warning(
                                 f"英文标题搜索无结果"
                             )
-                            target_results = results
+                            if strong_tv_signal:
+                                logger.warning(
+                                    f"存在强 TV 信号 (season={metadata.get('season')}, "
+                                    f"episode={metadata.get('episode')})，"
+                                    f"拒绝降级混入 movie 结果，保持 tv 判定"
+                                )
+                                type_degraded = True
+                            else:
+                                target_results = results
                     else:
                         logger.warning(
                             f"TMDB 搜索无 {media_type_hint} 类型结果 "
                             f"(confidence={confidence:.2f})，使用所有结果"
                         )
-                        target_results = results
+                        if strong_tv_signal:
+                            logger.warning(
+                                f"存在强 TV 信号 (season={metadata.get('season')}, "
+                                f"episode={metadata.get('episode')})，"
+                                f"拒绝降级混入 movie 结果，保持 tv 判定"
+                            )
+                            type_degraded = True
+                        else:
+                            target_results = results
             else:
                 # 低置信度或无类型提示：不过滤
                 target_results = results
@@ -3652,6 +3702,18 @@ class VideoRenamer:
                         f"低置信度 (confidence={confidence:.2f})，不过滤类型，"
                         f"使用所有 {len(results)} 个结果"
                     )
+
+            # 强 TV 信号保护：严格类型过滤找不到匹配的 tv 结果时，
+            # 禁止降级混入 movie 结果，保持已判定的 tv 类型直接返回
+            if type_degraded:
+                logger.warning(
+                    f"强 TV 信号保护生效，TMDB 搜索无 tv 类型结果，"
+                    f"保持 media_type=tv 判定 (season={metadata.get('season')}, "
+                    f"episode={metadata.get('episode')})"
+                )
+                metadata["quality_tags"] = original_quality_tags
+                metadata["release_group"] = original_release_group
+                return metadata
 
             # 计算标题相似度并按相似度和流行度排序
             search_term_lower = search_term.lower()
@@ -4056,7 +4118,18 @@ class VideoRenamer:
                 metadata["backdrop_path"] = details.get("backdrop_path", "")
 
             # 设置媒体类型 - 以TMDB结果为准（调用方通过 _merge_metadata + locked_fields 保护已锁定字段）
-            metadata["media_type"] = media_type
+            # 强 TV 信号保护：存在 season+episode 时拒绝被 movie 结果反向覆盖
+            if media_type == "movie" and (
+                metadata.get("season") is not None
+                and metadata.get("episode") is not None
+            ):
+                logger.warning(
+                    f"best_match 类型为 movie 但存在强 TV 信号 "
+                    f"(season={metadata.get('season')}, "
+                    f"episode={metadata.get('episode')})，保持 tv 判定"
+                )
+            else:
+                metadata["media_type"] = media_type
             # 恢复原始的quality_tags和release_group
             metadata["quality_tags"] = original_quality_tags
             metadata["release_group"] = original_release_group

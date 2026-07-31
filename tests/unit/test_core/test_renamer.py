@@ -191,6 +191,67 @@ class TestVideoRenamer:
         assert result is None
 
     @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_enrich_with_tmdb_strong_tv_signal_keeps_tv(self, mock_tmdb_client):
+        """强 TV 信号保护：TMDB 只返回 movie 结果时，保持 tv 判定不被覆盖"""
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+
+        movie_result = {
+            "id": 1646282,
+            "name": "Adventure Time: Fun with Finn and Jake",
+            "title": "Adventure Time: Fun with Finn and Jake",
+            "media_type": "movie",
+            "release_date": "2012-10-14",
+            "popularity": 50,
+            "genre_ids": [],
+        }
+
+        def search_side_effect(method_name, query, *args, **kwargs):
+            if method_name == "search_tv":
+                return []
+            if method_name == "search_video_show":
+                return [movie_result]
+            return []
+
+        mock_client_instance.search_all_pages.side_effect = search_side_effect
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {
+            "show_name": "Adventure Time With Finn And Jake",
+            "season": "10",
+            "episode": "13",
+            "media_type": "tv",
+            "_media_type_confidence": 0.9,
+        }
+        result = renamer._enrich_with_tmdb(metadata)
+
+        assert result["media_type"] == "tv"
+        assert result["season"] == "10"
+        assert result["episode"] == "13"
+        assert result.get("tmdb_id") != 1646282
+
+    @patch(
+        "video_organizer.core.renamer.renamer.VideoRenamer._enrich_with_tmdb"
+    )
+    def test_extract_metadata_refuses_movie_override(self, mock_enrich):
+        """extract_metadata 覆盖保护：TMDB movie 结果不能覆盖强 TV 信号"""
+        mock_enrich.return_value = {
+            "media_type": "movie",
+            "tmdb_id": 1646282,
+            "show_name": "Adventure Time: Fun with Finn and Jake",
+        }
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        result = renamer.extract_metadata(
+            Path("E:/alipan备份/TV_欧美亚/探险活宝 (2010)/Season 10/"
+                 "Adventure.Time.With.Finn.And.Jake.S10E13.mkv")
+        )
+
+        assert result.get("media_type") == "tv"
+        assert result.get("season") == "10"
+        assert result.get("episode") == "13"
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
     def test_resolve_ambiguous_requires_year(self, mock_tmdb_client):
         """模糊类型判定：无年份时直接返回 None，不发起请求"""
         mock_client_instance = MagicMock()
