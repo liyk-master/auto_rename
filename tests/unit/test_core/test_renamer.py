@@ -115,3 +115,90 @@ class TestVideoRenamer:
         assert result["show_name"] == "Game of Thrones"
         assert result["year"] == "2011"
         assert isinstance(result["tmdb_id"], int)
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_resolve_ambiguous_type_tv_by_year(self, mock_tmdb_client):
+        """模糊类型判定：只有电视剧匹配年份时判定为 tv"""
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+
+        # multi 搜索同时返回电影和电视剧，但只有电视剧年份匹配 2019
+        mock_client_instance.search_all_pages.return_value = [
+            {
+                "id": 1001, "name": "少年派", "media_type": "tv",
+                "first_air_date": "2019-05-31", "popularity": 50,
+            },
+            {
+                "id": 1002, "title": "少年派的奇幻漂流", "media_type": "movie",
+                "release_date": "2012-11-22", "popularity": 60,
+            },
+        ]
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {"show_name": "少年派", "season": "01"}
+        result = renamer._resolve_ambiguous_media_type_via_tmdb(metadata, 2019)
+
+        assert result == "tv"
+        # 确认 multi 搜索未传年份（年份在本地筛选）
+        call_kwargs = mock_client_instance.search_all_pages.call_args.kwargs
+        assert call_kwargs.get("year") is None
+        assert call_kwargs.get("max_pages") == 1
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_resolve_ambiguous_type_movie_by_year(self, mock_tmdb_client):
+        """模糊类型判定：只有电影匹配年份时判定为 movie"""
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+
+        mock_client_instance.search_all_pages.return_value = [
+            {
+                "id": 2001, "name": "少年派", "media_type": "tv",
+                "first_air_date": "2016-03-01", "popularity": 50,
+            },
+            {
+                "id": 2002, "title": "少年派的奇幻漂流", "media_type": "movie",
+                "release_date": "2012-11-22", "popularity": 60,
+            },
+        ]
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {"show_name": "少年派"}
+        result = renamer._resolve_ambiguous_media_type_via_tmdb(metadata, 2012)
+
+        assert result == "movie"
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_resolve_ambiguous_both_match_none(self, mock_tmdb_client):
+        """模糊类型判定：电影和电视剧都匹配年份时返回 None，保持原判断"""
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+
+        mock_client_instance.search_all_pages.return_value = [
+            {
+                "id": 3001, "name": "同名", "media_type": "tv",
+                "first_air_date": "2019-01-01", "popularity": 50,
+            },
+            {
+                "id": 3002, "title": "同名", "media_type": "movie",
+                "release_date": "2019-05-05", "popularity": 60,
+            },
+        ]
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {"show_name": "同名"}
+        result = renamer._resolve_ambiguous_media_type_via_tmdb(metadata, 2019)
+
+        assert result is None
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_resolve_ambiguous_requires_year(self, mock_tmdb_client):
+        """模糊类型判定：无年份时直接返回 None，不发起请求"""
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {"show_name": "少年派"}
+        result = renamer._resolve_ambiguous_media_type_via_tmdb(metadata, None)
+
+        assert result is None
+        mock_client_instance.search_all_pages.assert_not_called()

@@ -418,6 +418,8 @@ class VideoRenamer:
         self._search_cache: Dict[str, List] = {}
         # 季后验年份匹配缓存：避免同一剧集重复请求
         self._season_year_boost_cache: Dict[tuple, int] = {}
+        # 模糊类型判定缓存：避免批量处理时重复请求
+        self._type_resolve_cache: Dict[tuple, Optional[str]] = {}
         logger.info("VideoRenamer: TMDB 缓存已初始化")
 
         # 手动规则引擎初始化
@@ -897,6 +899,30 @@ class VideoRenamer:
                     metadata["show_name"] = show_name
 
                     if self.tmdb_client:
+                        # 模糊类型判定：低置信度且无强季集信号时，
+                        # 用 TMDB multi 搜索（不传年份）+ 年份本地筛选判定类型
+                        type_conf = metadata.get("_media_type_confidence", 0.0)
+                        if (
+                            "media_type" not in locked_fields
+                            and metadata.get("year")
+                            and type_conf < 0.7
+                            and not (
+                                metadata.get("season")
+                                and metadata.get("episode")
+                            )
+                        ):
+                            ambiguous_type = (
+                                self._resolve_ambiguous_media_type_via_tmdb(
+                                    metadata, metadata.get("year")
+                                )
+                            )
+                            if ambiguous_type:
+                                metadata["media_type"] = ambiguous_type
+                                metadata["_media_type_confidence"] = 0.7
+                                logger.info(
+                                    f"模糊类型判定成功: media_type={ambiguous_type}, "
+                                    f"confidence=0.7 (由 TMDB multi 搜索+年份筛选确定)"
+                                )
                         logger.info(f"[DEBUG]  before _enrich_with_tmdb: release_group='{metadata.get('release_group')}', show_name='{metadata.get('show_name')}'")
                         tmdb_meta = self._enrich_with_tmdb(dict(metadata))
                         # 确保 tmdb_meta 是字典
@@ -2375,6 +2401,123 @@ class VideoRenamer:
             logger.error(f"语言搜索失败: {e}")
 
         return results
+
+    def _resolve_ambiguous_media_type_via_tmdb(
+        self, metadata: Dict, year: Optional[Union[int, str]]
+    ) -> Optional[str]:
+        """
+        当媒体类型置信度较低（模糊）时，使用 TMDB multi 搜索（不传年份）判定类型：
+        在搜索结果中按年份本地筛选，判断该名称对应的是电影还是电视剧。
+
+        Args:
+            metadata: 元数据（需包含 show_name）
+            year: 目标年份（用于本地筛选，可能是 str 或 int）
+
+        Returns:
+            'tv' | 'movie' | None（无法判定时返回 None，保持原判断）
+        """
+        if not self.tmdb_client:
+            return None
+        show_name = metadata.get("show_name", "")
+        if not show_name or not year:
+            return None
+
+        # 年份转 int，便于比较
+        try:
+            target_year = int(str(year)[:4])
+        except (ValueError, TypeError):
+            logger.debug(f"模糊类型判定: 无效年份 '{year}'，跳过")
+            return None
+
+        search_term = self._prepare_search_term(show_name)
+        if not search_term:
+            return None
+
+        # 缓存 key，避免批量处理时重复请求
+        cache_key = ("_type_resolve", search_term, target_year)
+        if cache_key in self._type_resolve_cache:
+            cached = self._type_resolve_cache[cache_key]
+            logger.info(f"模糊类型判定缓存命中: '{search_term}' -> {cached}")
+            return cached
+
+        try:
+            # 不传年份，multi 搜索同时返回电影和电视剧结果
+            multi_results = self.tmdb_client.search_all_pages(
+                "search_multi",
+                search_term,
+                max_pages=1,
+                year=None,
+                language="zh-CN",
+            )
+        except Exception as e:
+            logger.error(f"模糊类型判定 multi 搜索失败: {e}")
+            return None
+
+        if not multi_results:
+            self._type_resolve_cache[cache_key] = None
+            return None
+
+        # 按年份本地筛选，分离匹配的电影和电视剧
+        tv_matched = []
+        movie_matched = []
+        for result in multi_results:
+            mtype = result.get("media_type")
+            if mtype == "tv" and self._result_matches_year(
+                result, target_year, is_tv=True, metadata=metadata
+            ):
+                tv_matched.append(result)
+            elif mtype == "movie" and self._result_matches_year(
+                result, target_year, is_tv=False, metadata=metadata
+            ):
+                movie_matched.append(result)
+
+        # 只有单一类型匹配才判定，否则保持原判断
+        if tv_matched and not movie_matched:
+            resolved = "tv"
+        elif movie_matched and not tv_matched:
+            resolved = "movie"
+        else:
+            resolved = None
+
+        self._type_resolve_cache[cache_key] = resolved
+        logger.info(
+            f"模糊类型判定: '{search_term}' ({target_year}) "
+            f"-> {resolved or '无法判定'} "
+            f"(tv匹配{len(tv_matched)}个, movie匹配{len(movie_matched)}个)"
+        )
+        return resolved
+
+    def _result_matches_year(
+        self, result: Dict, target_year: int, is_tv: bool, metadata: Dict
+    ) -> bool:
+        """检查 TMDB 搜索结果是否匹配目标年份"""
+        if is_tv:
+            # 电视剧：优先匹配首播年份
+            first_air = result.get("first_air_date", "")
+            if first_air:
+                try:
+                    if int(first_air.split("-")[0]) == target_year:
+                        return True
+                except (ValueError, TypeError):
+                    pass
+            # 其次匹配季播出年份（目录年份可能是某季播出年份而非首播年份）
+            try:
+                if self._get_season_year_boost(
+                    int(result["id"]), target_year, metadata.get("season")
+                ) > 0:
+                    return True
+            except (ValueError, TypeError, KeyError):
+                pass
+            return False
+        else:
+            # 电影：匹配上映年份
+            release_date = result.get("release_date", "")
+            if release_date:
+                try:
+                    return int(release_date.split("-")[0]) == target_year
+                except (ValueError, TypeError):
+                    pass
+            return False
 
     def _get_season_year_boost(self, tmdb_id: int, target_year: int, target_season: Optional[int] = None) -> int:
         """检查TMDB剧集的各季播出年份是否匹配目标年份，返回加分值（0或500）
