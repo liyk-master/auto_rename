@@ -251,6 +251,90 @@ class TestVideoRenamer:
         assert result.get("season") == "10"
         assert result.get("episode") == "13"
 
+    @patch(
+        "video_organizer.core.renamer.renamer.VideoRenamer._enrich_with_tmdb"
+    )
+    def test_extract_metadata_keeps_parent_show_name(self, mock_enrich):
+        """extract_metadata 保留父目录名到 parent_show_name，即使文件名已有 show_name"""
+        mock_enrich.return_value = {}
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        result = renamer.extract_metadata(
+            Path("E:/alipan备份/TV_欧美亚/面朝上游 (2026)/Season 1/"
+                 "Swimming.Upstream.S01E02.2026.2160p.WEB-DL.H265.AAC.mkv")
+        )
+
+        assert result.get("show_name") == "Swimming Upstream"
+        assert result.get("parent_show_name") == "面朝上游"
+        assert result.get("season") == "01"
+        assert result.get("episode") == "02"
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_enrich_with_tmdb_uses_parent_show_name_fallback(self, mock_tmdb_client):
+        """TMDB 备选搜索：文件名搜不到时降级用父目录名搜索"""
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+
+        tv_result = {
+            "id": 9001,
+            "name": "面朝上游",
+            "media_type": "tv",
+            "first_air_date": "2026-05-01",
+            "popularity": 50,
+            "genre_ids": [],
+        }
+
+        # 文件名搜索无结果，父目录名搜索有结果
+        def search_side_effect(method_name, query, *args, **kwargs):
+            if query in ("Swimming Upstream", "Swimming Upstream S01E02"):
+                return []
+            if query == "面朝上游":
+                return [tv_result]
+            return []
+
+        mock_client_instance.search_all_pages.side_effect = search_side_effect
+        mock_client_instance.get_tv_details.return_value = {
+            "name": "面朝上游",
+            "first_air_date": "2026-05-01",
+            "genres": [],
+            "origin_country": [],
+            "original_language": "zh",
+            "poster_path": "",
+            "backdrop_path": "",
+            "vote_average": 0,
+            "vote_count": 0,
+            "popularity": 0,
+            "number_of_seasons": 1,
+            "number_of_episodes": 20,
+            "status": "Returning Series",
+            "overview": "",
+            "networks": [],
+        }
+        mock_client_instance.get_tv_episode_details.return_value = {
+            "name": "",
+            "still_path": "",
+            "overview": "",
+            "vote_average": 0,
+        }
+        mock_client_instance.get_tv_credits.return_value = {"cast": [], "crew": []}
+        mock_client_instance.get_external_ids.return_value = {}
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {
+            "show_name": "Swimming Upstream S01E02",
+            "parent_show_name": "面朝上游",
+            "season": "01",
+            "episode": "02",
+            "media_type": "tv",
+            "_media_type_confidence": 0.9,
+        }
+        result = renamer._enrich_with_tmdb(metadata)
+
+        assert result.get("tmdb_id") == 9001
+        assert result.get("show_name") == "面朝上游"
+        # 搜索过后 parent_show_name 不应残留在结果中
+        assert "parent_show_name" not in result
+
     @patch("video_organizer.core.renamer.renamer.TMDBClient")
     def test_resolve_ambiguous_requires_year(self, mock_tmdb_client):
         """模糊类型判定：无年份时直接返回 None，不发起请求"""
