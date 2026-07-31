@@ -324,6 +324,7 @@ class VideoRenamer:
         self.tmdb_client = TMDBClient(
             tmdb_api_key,
             base_url=tmdb_config.get("base_url"),
+            rate_limit_per_sec=tmdb_config.get("rate_limit_per_sec"),
         ) if tmdb_api_key else None
         self.max_search_pages = tmdb_config.get("max_search_pages", 5) if tmdb_config else 5
         self.ai_service_url = ai_service_url

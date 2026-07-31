@@ -6,6 +6,8 @@
 
 import asyncio
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional
 
@@ -18,7 +20,61 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_validate_semaphore = asyncio.Semaphore(5)
+DEFAULT_VALIDATE_CONCURRENCY = 10
+
+# 信号量与专用线程池：按配置懒创建，随 validate_concurrency 变化重建
+_validate_semaphore: Optional[asyncio.Semaphore] = None
+_validate_semaphore_concurrency: Optional[int] = None
+_validate_executor: Optional[ThreadPoolExecutor] = None
+_validate_executor_concurrency: Optional[int] = None
+_executor_lock = threading.Lock()
+
+
+def _get_validate_concurrency() -> int:
+    """读取配置中的识别接口并发数"""
+    try:
+        config = get_state_manager().get_config()
+        return int(
+            config.get("tmdb", {}).get(
+                "validate_concurrency", DEFAULT_VALIDATE_CONCURRENCY
+            )
+        )
+    except Exception:
+        return DEFAULT_VALIDATE_CONCURRENCY
+
+
+def _get_validate_semaphore() -> asyncio.Semaphore:
+    """获取识别接口信号量（按配置创建）"""
+    global _validate_semaphore, _validate_semaphore_concurrency
+    concurrency = _get_validate_concurrency()
+    if (
+        _validate_semaphore is None
+        or _validate_semaphore_concurrency != concurrency
+    ):
+        _validate_semaphore = asyncio.Semaphore(concurrency)
+        _validate_semaphore_concurrency = concurrency
+        logger.info(f"识别接口并发信号量已创建: {concurrency}")
+    return _validate_semaphore
+
+
+def _get_validate_executor() -> ThreadPoolExecutor:
+    """获取识别接口专用线程池（避免阻塞 FastAPI 全局默认池）"""
+    global _validate_executor, _validate_executor_concurrency
+    concurrency = _get_validate_concurrency()
+    with _executor_lock:
+        if (
+            _validate_executor is None
+            or _validate_executor_concurrency != concurrency
+        ):
+            if _validate_executor is not None:
+                _validate_executor.shutdown(wait=False)
+            _validate_executor = ThreadPoolExecutor(
+                max_workers=concurrency,
+                thread_name_prefix="manual_validate",
+            )
+            _validate_executor_concurrency = concurrency
+            logger.info(f"识别接口专用线程池已创建: {concurrency} workers")
+        return _validate_executor
 
 
 class ProcessFileRequest(BaseModel):
@@ -272,16 +328,8 @@ def _do_preview(raw_path: str, config: dict) -> PreviewResponse:
     tmdb_config = config.get("tmdb", {})
 
     from ...core.renamer import VideoRenamer
-    from ...core.tmdb_client import TMDBClient
 
-    tmdb_client = None
-    if tmdb_config.get("api_key"):
-        tmdb_client = TMDBClient(
-            api_key=tmdb_config.get("api_key", ""),
-            retry_count=tmdb_config.get("retry_count", 3),
-            timeout=tmdb_config.get("timeout", 30),
-            base_url=tmdb_config.get("base_url"),
-        )
+    tmdb_client = get_state_manager().get_tmdb_client()
 
     renamer = VideoRenamer(
         tmdb_api_key=tmdb_config.get("api_key", ""),
@@ -343,10 +391,12 @@ async def preview_rename(request: PreviewRequest):
     state = get_state_manager()
     config = state.get_config()
 
-    async with _validate_semaphore:
+    async with _get_validate_semaphore():
         try:
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, _do_preview, raw_path, config)
+            result = await loop.run_in_executor(
+                _get_validate_executor(), _do_preview, raw_path, config
+            )
             return result
         except HTTPException:
             raise
@@ -369,16 +419,8 @@ def _do_validate(raw_path: str, config: dict, media_type: Optional[str] = None) 
     tmdb_config = config.get("tmdb", {})
 
     from ...core.renamer import VideoRenamer
-    from ...core.tmdb_client import TMDBClient
 
-    tmdb_client = None
-    if tmdb_config.get("api_key"):
-        tmdb_client = TMDBClient(
-            api_key=tmdb_config.get("api_key", ""),
-            retry_count=tmdb_config.get("retry_count", 3),
-            timeout=tmdb_config.get("timeout", 30),
-            base_url=tmdb_config.get("base_url"),
-        )
+    tmdb_client = get_state_manager().get_tmdb_client()
 
     renamer = VideoRenamer(
         tmdb_api_key=tmdb_config.get("api_key", ""),
@@ -459,10 +501,12 @@ async def validate_scrape(request: ValidateRequest):
     state = get_state_manager()
     config = state.get_config()
 
-    async with _validate_semaphore:
+    async with _get_validate_semaphore():
         try:
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, _do_validate, raw_path, config, media_type)
+            result = await loop.run_in_executor(
+                _get_validate_executor(), _do_validate, raw_path, config, media_type
+            )
             return result
         except HTTPException:
             raise
