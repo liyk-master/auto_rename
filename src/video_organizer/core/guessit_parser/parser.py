@@ -1253,6 +1253,18 @@ class GuessItParser:
         guessit_media_type = guessit_metadata.get('media_type')
         if guessit_media_type and regex_media_type is None:
             merged['media_type'] = guessit_media_type
+        elif guessit_media_type == 'tv' and regex_media_type == 'movie':
+            # 正则判定为 movie 可能是兜底默认（无任何模式匹配），并非真实电影判定
+            # 若 GuessIt 识别为 tv 且带 season/episode 强信号，优先使用 GuessIt
+            has_season = guessit_metadata.get('season') is not None
+            has_episode = guessit_metadata.get('episode') is not None
+            if has_season or has_episode:
+                merged['media_type'] = 'tv'
+                logger.debug(
+                    "正则 media_type 为默认 'movie'，GuessIt 识别为 tv 且带季集信息"
+                    f"(season={guessit_metadata.get('season')}, "
+                    f"episode={guessit_metadata.get('episode')})，优先使用 GuessIt"
+                )
         elif guessit_media_type and regex_media_type == 'tv' and guessit_media_type != 'tv':
             has_strong_tv_marker = bool(re.search(
                 r'(?i)S\d+E\d+|第\d+[集季话]|EP\d+|Episode\s*\d+', filename

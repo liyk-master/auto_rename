@@ -74,6 +74,19 @@ class MediaTypeResolver:
                 guessit_type = 'movie'  # 修正为 movie
                 # 保持 guessit_reliable = True，因为我们做了合理的修正
 
+        # 1.8 双来源一致判为 movie 但存在强 TV 信号时，不信任该判定
+        # 当 season 和 episode 同时存在时，几乎不可能是电影，拒绝 0.9 高分
+        if (
+            regex_type == 'movie' and guessit_type == 'movie'
+            and metadata.get('season') is not None
+            and metadata.get('episode') is not None
+        ):
+            logger.warning(
+                f"正则与 GuessIt 均判定 movie 但存在 season={metadata.get('season')}, "
+                f"episode={metadata.get('episode')}，拒绝 movie 判定，按智能判断处理"
+            )
+            return "tv", self.CONFIDENCE_SMART
+
         # 2. 正则 + GuessIt 都判定且一致（置信度 0.9）
         if regex_type and guessit_type and regex_type == guessit_type and guessit_reliable:
             logger.debug(f"media_type 正则与 GuessIt 一致: {regex_type}, confidence=0.9")
