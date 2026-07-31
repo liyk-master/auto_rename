@@ -3219,6 +3219,60 @@ class VideoRenamer:
                     primary_results = general_results
                     logger.info(f"通用搜索返回 {len(primary_results)} 个结果")
 
+                # 通用搜索结果全是非首选类型且父目录名可用时，用父目录名搜索
+                if primary_results and media_type_hint and confidence >= 0.5:
+                    has_preferred_type = any(
+                        r.get("media_type") == media_type_hint
+                        for r in primary_results[:5]
+                    )
+                    if not has_preferred_type:
+                        parent_fallback = metadata.get("parent_show_name", "")
+                        if (
+                            parent_fallback
+                            and parent_fallback != prepared_search_term
+                        ):
+                            logger.info(
+                                f"通用搜索无{media_type_hint}类型结果，"
+                                f"尝试用父目录名: '{parent_fallback}'"
+                            )
+                            parent_results = self._search_with_language(
+                                parent_fallback, media_type_hint,
+                                search_year, primary_language
+                            ) or self._search_with_language(
+                                parent_fallback, media_type_hint,
+                                search_year, secondary_language
+                            )
+                            if parent_results:
+                                parent_prepared = self._prepare_search_term(
+                                    parent_fallback
+                                )
+                                (
+                                    parent_exact_found,
+                                    parent_exact,
+                                ) = has_exact_match(
+                                    parent_results,
+                                    parent_prepared,
+                                    search_year,
+                                )
+                                if parent_exact_found:
+                                    parent_match_name = parent_exact.get(
+                                        "name", parent_exact.get("title")
+                                    )
+                                    logger.info(
+                                        f"父目录名搜索找到完全匹配: {parent_match_name}"
+                                    )
+                                    primary_results = [parent_exact]
+                                    search_term = parent_fallback
+                                    prepared_search_term = parent_prepared
+                                else:
+                                    primary_results = parent_results[:5]
+                                    search_term = parent_fallback
+                                    prepared_search_term = parent_prepared
+                                    logger.info(
+                                        f"父目录名搜索返回 {len(primary_results)} 个结果，"
+                                        "使用前5个"
+                                    )
+
             # 检查是否有完全匹配
             if primary_results:
                 exact_match_found, exact_matches = has_exact_match(
