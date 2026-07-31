@@ -163,7 +163,7 @@ class MediaTypeResolver:
 
         # 检查是否有强 TV 标记（包含"第X话"）
         has_strong_tv_marker = bool(re.search(
-            r'(?i)S\d+E\d+|第\d+[集季话]|EP\d+|Episode\s*\d+', filename
+            r'(?i)S\d+E\d+|第\d+[集季话]|EP\d+|E\d{1,4}(?=[.\s\-\[\(\)]|$)|Episode\s*\d+', filename
         ))
 
         return has_strong_tv_marker

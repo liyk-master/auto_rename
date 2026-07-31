@@ -739,8 +739,8 @@ class VideoRenamer:
                         parent_metadata = self._extract_with_regex(decoded_parent_name)
                         # 如果父目录能提取到剧名
                         if parent_metadata and parent_metadata.get("show_name"):
-                            # 补全缺失字段（只补全 show_name 和 year，不覆盖 season 和 episode）
-                            for key in ["show_name", "year", "tmdb_id"]:
+                            # 补全缺失字段（不覆盖已有值）
+                            for key in ["show_name", "year", "season", "tmdb_id"]:
                                 # 如果字段已锁定，跳过
                                 if key in locked_fields:
                                     continue
@@ -762,6 +762,18 @@ class VideoRenamer:
                             )
                             if metadata.get("show_name"):
                                 break
+
+                        # 如果父目录没有剧名但有季号（如 Season01 目录），补全季号
+                        elif (
+                            parent_metadata
+                            and parent_metadata.get("season")
+                            and not metadata.get("season")
+                            and "season" not in locked_fields
+                        ):
+                            metadata["season"] = parent_metadata["season"]
+                            logger.info(
+                                f"从父目录 '{p_dir.name}' 中补全了季号: {metadata['season']}"
+                            )
 
                     if not metadata.get("show_name") and "show_name" not in locked_fields and len(file_path.parts) > 1:
                         # 最后的尝试：直接拿父目录名并清洗
@@ -1175,6 +1187,11 @@ class VideoRenamer:
             # 如：刘老根1.Liu.Lao.Gen.S01E11.2002.2160p.WEB-DL.H265.AAC-HHWEB
             # 如：乡村爱情9.Love.of.Village.S03E08.2021.1080p.WEB-DL...
             r"(?:^|[\\/])(?P<show_name_cn>[\u4e00-\u9fff]+?)(?P<cns_season>\d+)[._](?P<en_title>[A-Za-z0-9._]+?)[._]S(?P<season>\d+)E(?P<episode>\d+)",
+            # 0.8.5 匹配独立 E## 剧集标记格式（无 S## 前缀）
+            # 如：The.Untold.Story.of.Tibet.2013.E32.1080p-WEB-DL...
+            # 如：Show.Name.E01.1080p.BluRay.x264-GROUP
+            # 要求 E 前后是点/空格/分隔符，避免误匹配单词中的 E
+            r"^(?P<show_name>.+?)[.\s][Ee](?P<episode>\d{1,4})(?=[.\s\-\[\(]|$)",
             # 0. Special pattern for dot-and-hyphen separated movie titles with quality tags
             r"^(?P<show_name>[\w\s\.\-]+?)\s*[\(\[]?\d{4}[\)\]]?\s*(?:\.[\w\-]+)+(?:\-[\w\.\[\]]+)?$",
             # Movie-specific patterns - 电影专用匹配模式
@@ -1714,6 +1731,11 @@ class VideoRenamer:
             r"(?i)(^|[^a-zA-Z])(第\d+季|第\d+集|EP\d+|\d+话|OVA\d+|SP\d+)", base_name
         ):
             is_tv = True
+        # 检查独立 E## 剧集标记（如 .E01.、.E32.、 E32 等），E 前面必须是分隔符
+        elif re.search(
+            r"(?i)(^|[.\s])E(?P<episode>\d{1,4})(?=[.\s\-\[\(\)]|$)", base_name
+        ):
+            is_tv = True
         # 检查 "- 集号" 格式（如 "Show Name - 19"）
         # 避免将年份误识别为集号（如 "Show Name 2025 - 19" 中，2025是年份，19是集号）
         elif re.search(
@@ -1834,7 +1856,7 @@ class VideoRenamer:
             # 如果文件名中包含年份，且没有明确的剧集格式，需要进一步判断
             # 不要立即默认为电影，而是标记为不确定，让TMDB查询来决定
             elif not re.search(
-                r"(?i)(^|[^a-zA-Z])S\d+E\d+($|[^a-zA-Z])|第\d+季|第\d+集|EP\d+",
+                r"(?i)(^|[^a-zA-Z])S\d+E\d+($|[^a-zA-Z])|第\d+季|第\d+集|EP\d+|(^|[.\s])E\d{1,4}(?=[.\s\-\[\(\)]|$)",
                 base_name,
             ):
                 # 有年份但无集信息，暂时不确定类型，设置为None让后续TMDB查询决定
