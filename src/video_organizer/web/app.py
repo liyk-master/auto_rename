@@ -23,6 +23,7 @@ from .routers import (
     manual_router,
     downloaders_router,
     auth_router,
+    apikeys_router,
     strm_router,
 )
 from .auth import auth_middleware
@@ -93,6 +94,7 @@ def create_app(
     
     # 注册路由（认证路由需要先注册，不受认证中间件影响）
     app.include_router(auth_router, prefix="/api/auth", tags=["认证管理"])
+    app.include_router(apikeys_router, prefix="/api/apikeys", tags=["API Key 管理"])
     app.include_router(config_router, prefix="/api/config", tags=["配置管理"])
     app.include_router(tasks_router, prefix="/api/tasks", tags=["任务监控"])
     app.include_router(logs_router, prefix="/api/logs", tags=["日志查看"])

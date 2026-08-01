@@ -10,6 +10,7 @@ import json
 import time
 import secrets
 import logging
+from datetime import datetime
 from typing import Optional, Dict, Any
 
 from fastapi import Request
@@ -90,6 +91,38 @@ def verify_token(token: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+# API Key 哈希算法标识
+_APIKEY_ALGO = "sha256"
+
+
+def hash_api_key(api_key: str) -> str:
+    """返回 API Key 的哈希（sha256$<hex>），数据库中不存明文"""
+    digest = hashlib.sha256(api_key.encode()).hexdigest()
+    return f"{_APIKEY_ALGO}${digest}"
+
+
+def verify_api_key(api_key: str) -> bool:
+    """验证 API Key 是否存在于数据库中（enabled=True）"""
+    if not api_key:
+        return False
+    try:
+        from ..database.models import AuthApiKey
+        from ..database.session import get_session_local
+        with get_session_local()() as db:
+            stored = db.query(AuthApiKey).filter(
+                AuthApiKey.enabled == True,  # noqa: E712
+            ).all()
+            target = hash_api_key(api_key)
+            for item in stored:
+                if hmac.compare_digest(item.api_key_hash, target):
+                    item.last_used_at = datetime.now()
+                    db.commit()
+                    return True
+    except Exception as e:
+        logger.debug(f"API Key 校验失败: {e}")
+    return False
+
+
 def is_public_path(path: str) -> bool:
     """判断路径是否需要认证"""
     for prefix in PUBLIC_PATHS:
@@ -102,6 +135,10 @@ async def auth_middleware(request: Request, call_next):
     """
     FastAPI 中间件：对 API 请求进行认证检查
     跳过公开路径和静态文件。
+
+    支持两种认证方式：
+      1. Authorization: Bearer <token>（登录令牌）
+      2. X-API-Key: <api_key>（API Key，Bearer 令牌验证失败时也回退尝试）
     """
     path = request.url.path
 
@@ -109,22 +146,31 @@ async def auth_middleware(request: Request, call_next):
     if not path.startswith("/api/") or is_public_path(path):
         return await call_next(request)
 
-    # 获取 Authorization header
+    # 方式一：X-API-Key 请求头
+    api_key = request.headers.get("X-API-Key", "")
+    if api_key and verify_api_key(api_key):
+        request.state.user = "apikey"
+        request.state.auth_method = "apikey"
+        return await call_next(request)
+
+    # 方式二：Authorization: Bearer <token>
     auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "未授权，请先登录"},
-        )
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]  # 去掉 "Bearer "
+        payload = verify_token(token)
+        if payload is not None:
+            # 将用户信息存入 request.state
+            request.state.user = payload["username"]
+            request.state.auth_method = "token"
+            return await call_next(request)
 
-    token = auth_header[7:]  # 去掉 "Bearer "
-    payload = verify_token(token)
-    if payload is None:
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "令牌无效或已过期，请重新登录"},
-        )
+        # Bearer 令牌无效时，回退尝试当作 API Key
+        if verify_api_key(token):
+            request.state.user = "apikey"
+            request.state.auth_method = "apikey"
+            return await call_next(request)
 
-    # 将用户信息存入 request.state
-    request.state.user = payload["username"]
-    return await call_next(request)
+    return JSONResponse(
+        status_code=401,
+        content={"detail": "未授权，请提供有效的登录令牌或 API Key"},
+    )

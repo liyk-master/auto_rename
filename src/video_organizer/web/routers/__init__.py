@@ -6,6 +6,7 @@ from .logs import router as logs_router
 from .manual import router as manual_router
 from .downloaders import router as downloaders_router
 from .auth import router as auth_router
+from .apikeys import router as apikeys_router
 from .strm import router as strm_router
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "manual_router",
     "downloaders_router",
     "auth_router",
+    "apikeys_router",
     "strm_router",
 ]
