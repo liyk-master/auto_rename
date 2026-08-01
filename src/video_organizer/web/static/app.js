@@ -98,6 +98,8 @@ function cacheElements() {
     el.addDownloaderConfigBtn = document.getElementById('addDownloaderConfigBtn');
     el.userList = document.getElementById('user-list');
     el.addUserBtn = document.getElementById('addUserBtn');
+    el.apiKeyList = document.getElementById('api-key-list');
+    el.addApiKeyBtn = document.getElementById('addApiKeyBtn');
     el.uploadProgressList = document.getElementById('upload-progress-list');
     el.uploadStatusDot = document.getElementById('uploadStatusDot');
     el.modalOverlay = document.getElementById('modalOverlay');
@@ -105,6 +107,7 @@ function cacheElements() {
     el.modalBody = document.getElementById('modalBody');
     el.modalClose = document.getElementById('modalClose');
     el.modalCancelBtn = document.getElementById('modalCancelBtn');
+    el.modalFooter = document.getElementById('modalFooter');
     el.modalConfirmBtn = document.getElementById('modalConfirmBtn');
     el.toastContainer = document.getElementById('toastContainer');
     el.recentSearchInput = document.getElementById('recentSearchInput');
@@ -155,6 +158,7 @@ function bindEvents() {
     el.refreshDownloadersBtn.addEventListener('click', loadDownloaders);
     if (el.addDownloaderConfigBtn) el.addDownloaderConfigBtn.addEventListener('click', showAddDownloaderModal);
     if (el.addUserBtn) el.addUserBtn.addEventListener('click', showAddUserModal);
+    if (el.addApiKeyBtn) el.addApiKeyBtn.addEventListener('click', showAddApiKeyModal);
     el.modalClose.addEventListener('click', hideModal);
     el.modalCancelBtn.addEventListener('click', hideModal);
     el.modalOverlay.addEventListener('click', (e) => {
@@ -218,7 +222,7 @@ function initMobileMenu() {
 }
 
 async function loadInitialData() {
-    await Promise.all([loadStatus(), loadConfig(), loadLogFiles(), loadDownloaders(), loadDownloaderConfigs(), loadUsers()]);
+    await Promise.all([loadStatus(), loadConfig(), loadLogFiles(), loadDownloaders(), loadDownloaderConfigs(), loadUsers(), loadApiKeys()]);
     loadTasks();
 }
 
@@ -247,7 +251,7 @@ function switchPage(pageName) {
     const sidebar = document.querySelector('.sidebar');
     if (sidebar) sidebar.classList.remove('show');
     if (pageName === 'downloaders') loadDownloaderConfigs();
-    if (pageName === 'users') loadUsers();
+    if (pageName === 'users') { loadUsers(); loadApiKeys(); }
 }
 
 function switchTaskTab(tabName) {
@@ -1753,3 +1757,108 @@ async function deleteUser(userId) {
     } catch (e) { showToast('删除失败: ' + e.message, 'error'); }
 }
 window.deleteUser = deleteUser;
+
+// ===== API Key 管理 =====
+
+let _apiKeys = [];
+
+async function loadApiKeys() {
+    try {
+        _apiKeys = await loadApiKeysFromApi();
+        renderApiKeys();
+    } catch (e) { if (!e.message.includes('登录已过期')) console.error('加载 API Key 失败:', e); }
+}
+
+function renderApiKeys() {
+    if (!_apiKeys.length) {
+        el.apiKeyList.innerHTML = `<tr><td colspan="6"><div class="empty-state"><p>暂无 API Key</p></div></td></tr>`;
+        return;
+    }
+    el.apiKeyList.innerHTML = _apiKeys.map(k => `<tr>
+        <td>${k.id}</td>
+        <td><strong>${escapeHtml(k.name || '(未命名)')}</strong></td>
+        <td><span class="badge ${k.enabled ? 'badge-success' : 'badge-danger'}">${k.enabled ? '启用' : '禁用'}</span></td>
+        <td style="font-size:0.8125rem;color:var(--text-muted)">${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : '从未使用'}</td>
+        <td style="font-size:0.8125rem;color:var(--text-muted)">${k.created_at ? new Date(k.created_at).toLocaleString() : '-'}</td>
+        <td><div class="btn-cell">
+            <button class="save-btn" onclick="toggleApiKey(${k.id})">${k.enabled ? '禁用' : '启用'}</button>
+            <button class="del-btn" onclick="deleteApiKey(${k.id})">删除</button>
+        </div></td>
+    </tr>`).join('');
+}
+
+function showAddApiKeyModal() {
+    el.modalTitle.textContent = '添加 API Key';
+    el.modalBody.innerHTML = `
+        <form id="apiKeyForm" onsubmit="return false">
+            <div class="form-group">
+                <label class="form-label">名称</label>
+                <input type="text" id="akName" class="form-input" placeholder="用于备注，如：emya 入库、脚本调用">
+            </div>
+            <div class="form-group" style="color:var(--text-muted);font-size:0.8125rem">
+                创建后将只展示一次明文 Key，请立即复制保存。
+            </div>
+        </form>
+    `;
+    el.modalConfirmBtn.textContent = '创建';
+    el.modalConfirmBtn.onclick = async () => {
+        const name = document.getElementById('akName').value.trim();
+        try {
+            const result = await createApiKeyViaApi({ name });
+            hideModal();
+            showCreatedApiKeyModal(result.api_key);
+            await loadApiKeys();
+        } catch (e) { showToast('创建失败: ' + e.message, 'error'); }
+    };
+    showModal();
+}
+window.showAddApiKeyModal = showAddApiKeyModal;
+
+function showCreatedApiKeyModal(apiKey) {
+    el.modalTitle.textContent = 'API Key 已创建';
+    el.modalBody.innerHTML = `
+        <div class="form-group">
+            <label class="form-label">请立即复制保存（仅展示一次）</label>
+            <div style="display:flex;gap:8px;align-items:center">
+                <input type="text" id="newAkValue" class="form-input" value="${escapeHtml(apiKey)}" readonly style="font-family:var(--font-mono)" onclick="this.select()">
+                <button class="btn btn-primary btn-sm" id="copyAkBtn">复制</button>
+            </div>
+        </div>
+    `;
+    document.getElementById('copyAkBtn').addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(apiKey);
+            showToast('已复制到剪贴板', 'success');
+        } catch (e) {
+            const input = document.getElementById('newAkValue');
+            input.select();
+            document.execCommand('copy');
+            showToast('已复制', 'success');
+        }
+    });
+    el.modalFooter.style.display = 'flex';
+    el.modalConfirmBtn.textContent = '关闭';
+    el.modalConfirmBtn.onclick = hideModal;
+    showModal();
+}
+
+async function toggleApiKey(keyId) {
+    const k = _apiKeys.find(x => x.id == keyId);
+    if (!k) return;
+    try {
+        await updateApiKeyViaApi(keyId, { enabled: !k.enabled });
+        showToast(k.enabled ? '已禁用' : '已启用', 'success');
+        await loadApiKeys();
+    } catch (e) { showToast('操作失败: ' + e.message, 'error'); }
+}
+window.toggleApiKey = toggleApiKey;
+
+async function deleteApiKey(keyId) {
+    if (!confirm('确定删除此 API Key？删除后立即失效。')) return;
+    try {
+        await deleteApiKeyViaApi(keyId);
+        showToast('API Key 已删除', 'success');
+        await loadApiKeys();
+    } catch (e) { showToast('删除失败: ' + e.message, 'error'); }
+}
+window.deleteApiKey = deleteApiKey;

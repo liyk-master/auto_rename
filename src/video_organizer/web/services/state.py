@@ -90,6 +90,9 @@ class StateManager:
         # 下载器监控器列表
         self._downloader_monitors: List[Any] = []
         
+        # TMDB 共享客户端（懒初始化，进程内复用限速预算与缓存）
+        self._tmdb_client: Any = None
+        
         # 系统运行状态
         self._system_running: bool = False
         
@@ -130,6 +133,38 @@ class StateManager:
     def get_config_path(self) -> Optional[Path]:
         """获取配置文件路径"""
         return self._config_path
+    
+    def get_tmdb_client(self):
+        """
+        获取共享 TMDB 客户端（懒初始化单例）。
+        
+        复用限速预算与请求缓存，避免每个请求新建客户端导致限速计数互不共享。
+        无 api_key 或初始化失败时返回 None。
+        """
+        if self._tmdb_client is not None:
+            return self._tmdb_client
+        from ...core.tmdb_client import TMDBClient
+        
+        with self._state_lock:
+            if self._tmdb_client is not None:
+                return self._tmdb_client
+            tmdb_config = self._config.get("tmdb", {})
+            if not tmdb_config.get("api_key"):
+                self._logger.debug("未配置 TMDB api_key，跳过共享客户端初始化")
+                return None
+            try:
+                self._tmdb_client = TMDBClient(
+                    api_key=tmdb_config["api_key"],
+                    retry_count=tmdb_config.get("retry_count", 3),
+                    timeout=tmdb_config.get("timeout", 30),
+                    base_url=tmdb_config.get("base_url"),
+                    rate_limit_per_sec=tmdb_config.get("rate_limit_per_sec"),
+                )
+                self._logger.info("共享 TMDB 客户端初始化成功")
+            except Exception as e:
+                self._logger.error(f"初始化共享 TMDB 客户端失败: {e}")
+                self._tmdb_client = None
+            return self._tmdb_client
     
     def set_downloader_monitors(self, monitors: List[Any]) -> None:
         """设置下载器监控器列表"""

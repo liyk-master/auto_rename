@@ -3,11 +3,114 @@ TMDB API client for fetching TV show information.
 """
 
 import logging
+import threading
+import time
 from typing import List, Dict, Optional, Callable
-from collections import deque
+from collections import OrderedDict, deque
 import requests
 
 logger = logging.getLogger(__name__)
+
+# 默认限速配置（请求/秒），TMDB 官方限速约 40 req/s，留 12.5% 余量
+DEFAULT_RATE_LIMIT_PER_SEC = 35
+# 收到 429 后临时降速（请求/秒）
+DEGRADED_RATE_LIMIT_PER_SEC = 20
+# 降速持续时间（秒）
+DEGRADE_DURATION = 30.0
+# 请求缓存默认容量（条）
+DEFAULT_CACHE_SIZE = 512
+
+
+class _GlobalRateLimiter:
+    """
+    进程级全局 TMDB 限速器（滑动窗口按秒计数）。
+
+    所有 TMDBClient 实例共享同一预算，避免多实例叠加打爆 TMDB 限速。
+    支持收到 429 后临时降速，超时后自动恢复。
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._timestamps: deque = deque()
+        self._rate_limit_per_sec = DEFAULT_RATE_LIMIT_PER_SEC
+        self._degraded_rate: Optional[int] = None
+        self._degraded_until = 0.0
+
+    def set_rate_limit_per_sec(self, rate: int) -> None:
+        """设置基础限速（取所有调用方中的最大值，避免互相降速）"""
+        with self._lock:
+            if rate and rate > self._rate_limit_per_sec:
+                self._rate_limit_per_sec = rate
+
+    def degrade(self, rate: int = DEGRADED_RATE_LIMIT_PER_SEC, duration: float = DEGRADE_DURATION) -> None:
+        """临时降速：rate 请求/秒，持续 duration 秒后恢复"""
+        with self._lock:
+            self._degraded_rate = rate
+            self._degraded_until = time.time() + duration
+
+    def _current_rate(self) -> int:
+        """获取当前生效的限速值"""
+        now = time.time()
+        with self._lock:
+            if self._degraded_rate is not None and now < self._degraded_until:
+                return self._degraded_rate
+            return self._rate_limit_per_sec
+
+    def acquire(self) -> None:
+        """获取一次发送许可，超限时阻塞等待窗口滑出"""
+        while True:
+            rate = self._current_rate()
+            now = time.time()
+            with self._lock:
+                # 清理窗口外的时间戳（1 秒滑动窗口）
+                while self._timestamps and now - self._timestamps[0] >= 1.0:
+                    self._timestamps.popleft()
+                if len(self._timestamps) < rate:
+                    self._timestamps.append(now)
+                    return
+                # 计算需要等待的时间（最早时间戳滑出窗口）
+                wait_time = 1.0 - (now - self._timestamps[0])
+                if wait_time <= 0:
+                    continue
+            time.sleep(wait_time)
+
+
+class _RequestCache:
+    """线程安全的 LRU 请求缓存，仅缓存成功的搜索请求"""
+
+    def __init__(self, maxsize: int = DEFAULT_CACHE_SIZE):
+        self._lock = threading.Lock()
+        self._maxsize = maxsize
+        self._cache: "OrderedDict[tuple, Dict]" = OrderedDict()
+
+    def get(self, key: tuple) -> Optional[Dict]:
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                return self._cache[key]
+            return None
+
+    def put(self, key: tuple, value: Dict) -> None:
+        with self._lock:
+            self._cache[key] = value
+            self._cache.move_to_end(key)
+            while len(self._cache) > self._maxsize:
+                self._cache.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._cache.clear()
+
+
+# 进程级共享限速器单例
+_global_rate_limiter = _GlobalRateLimiter()
+
+
+def make_request_cache_key(url: str, params: Optional[Dict]) -> tuple:
+    """构造请求缓存键：(url, 排序后的 params)"""
+    if params:
+        return (url, tuple(sorted((str(k), str(v)) for k, v in params.items())))
+    return (url, ())
 
 
 class TMDBClient:
@@ -15,7 +118,16 @@ class TMDBClient:
 
     BASE_URL = "https://api.themoviedb.org/3"
 
-    def __init__(self, api_key: str, retry_count=3, timeout=30, rate_limit=40, base_url=None):
+    def __init__(
+        self,
+        api_key: str,
+        retry_count=3,
+        timeout=30,
+        rate_limit=40,
+        base_url=None,
+        rate_limit_per_sec: Optional[int] = None,
+        cache_size: int = DEFAULT_CACHE_SIZE,
+    ):
         self.api_key = api_key
         self.retry_count = retry_count
         self.timeout = timeout
@@ -25,6 +137,9 @@ class TMDBClient:
         self.session = requests.Session()
         self.last_request_failed = False
         self.last_request_error = None
+        self._cache = _RequestCache(maxsize=cache_size)
+        if rate_limit_per_sec:
+            _global_rate_limiter.set_rate_limit_per_sec(rate_limit_per_sec)
         # Check if it's a JWT token (Bearer token) or regular API key
         if api_key and api_key.startswith("eyJ"):
             # JWT token - use Bearer authentication
@@ -62,7 +177,7 @@ class TMDBClient:
             params["year"] = year
             params["first_air_date_year"] = year
 
-        data = self._request_with_retry(url, params)
+        data = self._request_with_retry(url, params, cacheable=True)
 
         # 与 search_movie 相同的降级逻辑
         if language is not None and (data is None or not data.get("results")):
@@ -71,7 +186,7 @@ class TMDBClient:
                 f"尝试不带语言参数重新搜索"
             )
             params.pop("language", None)
-            data = self._request_with_retry(url, params)
+            data = self._request_with_retry(url, params, cacheable=True)
 
         # 调试日志：打印返回数据的结构
         logger.debug(f"search_video_show 返回的数据类型: {type(data)}")
@@ -212,23 +327,20 @@ class TMDBClient:
         return self._request_with_retry(url, params)
 
     def _request_with_retry(
-        self, url: str, params: Optional[Dict] = None
+        self, url: str, params: Optional[Dict] = None, cacheable: bool = False
     ) -> Optional[Dict]:
-        """发送API请求并处理响应，包含重试机制"""
-        import time
-        import socket
+        """发送API请求并处理响应，包含重试机制和进程级限速"""
+        # 请求缓存：仅对可缓存的搜索请求生效，命中则直接返回（不消耗限速预算）
+        cache_key = None
+        if cacheable:
+            cache_key = make_request_cache_key(url, params)
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                logger.debug(f"TMDB 请求缓存命中: {url}")
+                return cached
 
-        # 速率限制：检查是否超过每分钟请求上限
-        now = time.time()
-        while self._request_timestamps and now - self._request_timestamps[0] >= 60:
-            self._request_timestamps.popleft()
-        if len(self._request_timestamps) >= self.rate_limit:
-            sleep_time = 60 - (now - self._request_timestamps[0])
-            if sleep_time > 0:
-                logger.debug(f"TMDB 速率限制已达上限 ({self.rate_limit}/min)，等待 {sleep_time:.1f} 秒")
-                time.sleep(sleep_time)
-            self._request_timestamps.popleft()
-        self._request_timestamps.append(time.time())
+        # 进程级全局速率限制（所有实例共享预算，按秒滑动窗口）
+        _global_rate_limiter.acquire()
 
         retry_count = self.retry_count
         last_error = None
@@ -256,6 +368,24 @@ class TMDBClient:
                     logger.warning(f"TMDB API returned 404 Not Found for URL: {url}")
                     return None
 
+                # 429 限速：临时降速并按 Retry-After/指数退避等待后重试
+                if response.status_code == 429:
+                    _global_rate_limiter.degrade()
+                    retry_count -= 1
+                    if retry_count >= 0:
+                        retry_after = response.headers.get("Retry-After")
+                        if retry_after and str(retry_after).isdigit():
+                            wait_time = float(retry_after)
+                        else:
+                            wait_time = 2 ** (self.retry_count - retry_count)
+                        logger.warning(
+                            f"TMDB API rate limited (429), retrying in {wait_time} seconds... "
+                            f"(remaining: {retry_count})"
+                        )
+                        time.sleep(wait_time)
+                        continue
+                    return None
+
                 # 检查其他客户端错误（4xx）
                 if 400 <= response.status_code < 500:
                     logger.error(
@@ -280,7 +410,11 @@ class TMDBClient:
                 response.raise_for_status()
                 self.last_request_failed = False
                 self.last_request_error = None
-                return response.json()
+                data = response.json()
+                # 仅缓存成功的搜索请求
+                if cacheable and cache_key is not None and data is not None:
+                    self._cache.put(cache_key, data)
+                return data
 
             except requests.exceptions.Timeout as e:
                 last_error = f"请求超时: {e}"
@@ -424,7 +558,7 @@ class TMDBClient:
             params["language"] = language
         if year:
             params["first_air_date_year"] = year
-        result = self._request_with_retry(url, params)
+        result = self._request_with_retry(url, params, cacheable=True)
 
         # 与 search_movie 相同的降级逻辑
         if language is not None and (result is None or not result.get("results")):
@@ -433,7 +567,7 @@ class TMDBClient:
                 f"尝试不带语言参数重新搜索"
             )
             params.pop("language", None)
-            result = self._request_with_retry(url, params)
+            result = self._request_with_retry(url, params, cacheable=True)
 
         # 为搜索结果添加media_type字段
         if result and "results" in result:
@@ -461,7 +595,7 @@ class TMDBClient:
             params["language"] = language
         if year:
             params["year"] = year
-        result = self._request_with_retry(url, params)
+        result = self._request_with_retry(url, params, cacheable=True)
 
         # 如果带了 language 参数但无结果，去掉 language 再试一次
         # TMDB 的 language 参数会限制搜索结果只匹配对应语言的标题变体，
@@ -472,7 +606,7 @@ class TMDBClient:
                 f"尝试不带语言参数重新搜索"
             )
             params.pop("language", None)
-            result = self._request_with_retry(url, params)
+            result = self._request_with_retry(url, params, cacheable=True)
 
         # 为搜索结果添加media_type字段
         if result and "results" in result:
@@ -539,7 +673,7 @@ class TMDBClient:
             params["year"] = year
             params["first_air_date_year"] = year
 
-        result = self._request_with_retry(url, params)
+        result = self._request_with_retry(url, params, cacheable=True)
 
         # 与 search_movie 相同的降级逻辑
         if language is not None and (result is None or not result.get("results")):
@@ -548,7 +682,7 @@ class TMDBClient:
                 f"尝试不带语言参数重新搜索"
             )
             params.pop("language", None)
-            result = self._request_with_retry(url, params)
+            result = self._request_with_retry(url, params, cacheable=True)
 
         if result and "results" in result:
             # 返回结果列表

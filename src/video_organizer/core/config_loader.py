@@ -79,6 +79,8 @@ DEFAULT_CONFIG = {
         "retry_count": 3,
         "timeout": 30,
         "max_search_pages": 5,
+        "rate_limit_per_sec": 35,
+        "validate_concurrency": 10,
     },
     "processing": {
         "rename_only": False,

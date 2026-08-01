@@ -115,3 +115,235 @@ class TestVideoRenamer:
         assert result["show_name"] == "Game of Thrones"
         assert result["year"] == "2011"
         assert isinstance(result["tmdb_id"], int)
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_resolve_ambiguous_type_tv_by_year(self, mock_tmdb_client):
+        """模糊类型判定：只有电视剧匹配年份时判定为 tv"""
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+
+        # multi 搜索同时返回电影和电视剧，但只有电视剧年份匹配 2019
+        mock_client_instance.search_all_pages.return_value = [
+            {
+                "id": 1001, "name": "少年派", "media_type": "tv",
+                "first_air_date": "2019-05-31", "popularity": 50,
+            },
+            {
+                "id": 1002, "title": "少年派的奇幻漂流", "media_type": "movie",
+                "release_date": "2012-11-22", "popularity": 60,
+            },
+        ]
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {"show_name": "少年派", "season": "01"}
+        result = renamer._resolve_ambiguous_media_type_via_tmdb(metadata, 2019)
+
+        assert result == "tv"
+        # 确认 multi 搜索未传年份（年份在本地筛选）
+        call_kwargs = mock_client_instance.search_all_pages.call_args.kwargs
+        assert call_kwargs.get("year") is None
+        assert call_kwargs.get("max_pages") == 1
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_resolve_ambiguous_type_movie_by_year(self, mock_tmdb_client):
+        """模糊类型判定：只有电影匹配年份时判定为 movie"""
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+
+        mock_client_instance.search_all_pages.return_value = [
+            {
+                "id": 2001, "name": "少年派", "media_type": "tv",
+                "first_air_date": "2016-03-01", "popularity": 50,
+            },
+            {
+                "id": 2002, "title": "少年派的奇幻漂流", "media_type": "movie",
+                "release_date": "2012-11-22", "popularity": 60,
+            },
+        ]
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {"show_name": "少年派"}
+        result = renamer._resolve_ambiguous_media_type_via_tmdb(metadata, 2012)
+
+        assert result == "movie"
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_resolve_ambiguous_both_match_none(self, mock_tmdb_client):
+        """模糊类型判定：电影和电视剧都匹配年份时返回 None，保持原判断"""
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+
+        mock_client_instance.search_all_pages.return_value = [
+            {
+                "id": 3001, "name": "同名", "media_type": "tv",
+                "first_air_date": "2019-01-01", "popularity": 50,
+            },
+            {
+                "id": 3002, "title": "同名", "media_type": "movie",
+                "release_date": "2019-05-05", "popularity": 60,
+            },
+        ]
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {"show_name": "同名"}
+        result = renamer._resolve_ambiguous_media_type_via_tmdb(metadata, 2019)
+
+        assert result is None
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_enrich_with_tmdb_strong_tv_signal_keeps_tv(self, mock_tmdb_client):
+        """强 TV 信号保护：TMDB 只返回 movie 结果时，保持 tv 判定不被覆盖"""
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+
+        movie_result = {
+            "id": 1646282,
+            "name": "Adventure Time: Fun with Finn and Jake",
+            "title": "Adventure Time: Fun with Finn and Jake",
+            "media_type": "movie",
+            "release_date": "2012-10-14",
+            "popularity": 50,
+            "genre_ids": [],
+        }
+
+        def search_side_effect(method_name, query, *args, **kwargs):
+            if method_name == "search_tv":
+                return []
+            if method_name == "search_video_show":
+                return [movie_result]
+            return []
+
+        mock_client_instance.search_all_pages.side_effect = search_side_effect
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {
+            "show_name": "Adventure Time With Finn And Jake",
+            "season": "10",
+            "episode": "13",
+            "media_type": "tv",
+            "_media_type_confidence": 0.9,
+        }
+        result = renamer._enrich_with_tmdb(metadata)
+
+        assert result["media_type"] == "tv"
+        assert result["season"] == "10"
+        assert result["episode"] == "13"
+        assert result.get("tmdb_id") != 1646282
+
+    @patch(
+        "video_organizer.core.renamer.renamer.VideoRenamer._enrich_with_tmdb"
+    )
+    def test_extract_metadata_refuses_movie_override(self, mock_enrich):
+        """extract_metadata 覆盖保护：TMDB movie 结果不能覆盖强 TV 信号"""
+        mock_enrich.return_value = {
+            "media_type": "movie",
+            "tmdb_id": 1646282,
+            "show_name": "Adventure Time: Fun with Finn and Jake",
+        }
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        result = renamer.extract_metadata(
+            Path("E:/alipan备份/TV_欧美亚/探险活宝 (2010)/Season 10/"
+                 "Adventure.Time.With.Finn.And.Jake.S10E13.mkv")
+        )
+
+        assert result.get("media_type") == "tv"
+        assert result.get("season") == "10"
+        assert result.get("episode") == "13"
+
+    @patch(
+        "video_organizer.core.renamer.renamer.VideoRenamer._enrich_with_tmdb"
+    )
+    def test_extract_metadata_keeps_parent_show_name(self, mock_enrich):
+        """extract_metadata 保留父目录名到 parent_show_name，即使文件名已有 show_name"""
+        mock_enrich.return_value = {}
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        result = renamer.extract_metadata(
+            Path("E:/alipan备份/TV_欧美亚/面朝上游 (2026)/Season 1/"
+                 "Swimming.Upstream.S01E02.2026.2160p.WEB-DL.H265.AAC.mkv")
+        )
+
+        assert result.get("show_name") == "Swimming Upstream"
+        assert result.get("parent_show_name") == "面朝上游"
+        assert result.get("season") == "01"
+        assert result.get("episode") == "02"
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_enrich_with_tmdb_uses_parent_show_name_fallback(self, mock_tmdb_client):
+        """TMDB 备选搜索：文件名搜不到时降级用父目录名搜索"""
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+
+        tv_result = {
+            "id": 9001,
+            "name": "面朝上游",
+            "media_type": "tv",
+            "first_air_date": "2026-05-01",
+            "popularity": 50,
+            "genre_ids": [],
+        }
+
+        # 文件名搜索无结果，父目录名搜索有结果
+        def search_side_effect(method_name, query, *args, **kwargs):
+            if query in ("Swimming Upstream", "Swimming Upstream S01E02"):
+                return []
+            if query == "面朝上游":
+                return [tv_result]
+            return []
+
+        mock_client_instance.search_all_pages.side_effect = search_side_effect
+        mock_client_instance.get_tv_details.return_value = {
+            "name": "面朝上游",
+            "first_air_date": "2026-05-01",
+            "genres": [],
+            "origin_country": [],
+            "original_language": "zh",
+            "poster_path": "",
+            "backdrop_path": "",
+            "vote_average": 0,
+            "vote_count": 0,
+            "popularity": 0,
+            "number_of_seasons": 1,
+            "number_of_episodes": 20,
+            "status": "Returning Series",
+            "overview": "",
+            "networks": [],
+        }
+        mock_client_instance.get_tv_episode_details.return_value = {
+            "name": "",
+            "still_path": "",
+            "overview": "",
+            "vote_average": 0,
+        }
+        mock_client_instance.get_tv_credits.return_value = {"cast": [], "crew": []}
+        mock_client_instance.get_external_ids.return_value = {}
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {
+            "show_name": "Swimming Upstream S01E02",
+            "parent_show_name": "面朝上游",
+            "season": "01",
+            "episode": "02",
+            "media_type": "tv",
+            "_media_type_confidence": 0.9,
+        }
+        result = renamer._enrich_with_tmdb(metadata)
+
+        assert result.get("tmdb_id") == 9001
+        assert result.get("show_name") == "面朝上游"
+        # 搜索过后 parent_show_name 不应残留在结果中
+        assert "parent_show_name" not in result
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_resolve_ambiguous_requires_year(self, mock_tmdb_client):
+        """模糊类型判定：无年份时直接返回 None，不发起请求"""
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {"show_name": "少年派"}
+        result = renamer._resolve_ambiguous_media_type_via_tmdb(metadata, None)
+
+        assert result is None
+        mock_client_instance.search_all_pages.assert_not_called()

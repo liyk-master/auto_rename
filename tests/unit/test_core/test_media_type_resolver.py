@@ -50,6 +50,36 @@ class TestMediaTypeResolver:
         assert media_type == 'tv'
         assert confidence == 0.9
 
+    def test_both_movie_with_season_episode_rejected(self):
+        """测试双来源一致 movie 但有 season+episode 时拒绝 movie 判定"""
+        sources = {
+            'manual_rule': None,
+            'regex': 'movie',
+            'guessit': 'movie',
+            'locked': False
+        }
+        metadata = {'season': 1, 'episode': 8}
+
+        media_type, confidence = self.resolver.resolve(metadata, sources)
+
+        assert media_type == 'tv'
+        assert confidence == 0.5
+
+    def test_both_movie_without_season_episode_ok(self):
+        """测试双来源一致 movie 且无 season/episode 时维持 0.9"""
+        sources = {
+            'manual_rule': None,
+            'regex': 'movie',
+            'guessit': 'movie',
+            'locked': False
+        }
+        metadata = {}
+
+        media_type, confidence = self.resolver.resolve(metadata, sources)
+
+        assert media_type == 'movie'
+        assert confidence == 0.9
+
     def test_guessit_only(self):
         """测试仅 GuessIt 判定时置信度为 0.7"""
         sources = {

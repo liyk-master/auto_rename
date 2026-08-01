@@ -274,3 +274,19 @@ async function updateUserViaApi(id, data) {
 async function deleteUserViaApi(id) {
     return await apiRequest(`/auth/users/${id}`, { method: 'DELETE' });
 }
+
+// ===== API Key 管理 API =====
+
+async function loadApiKeysFromApi() {
+    const r = await apiRequest('/apikeys');
+    return r.api_keys || [];
+}
+async function createApiKeyViaApi(data) {
+    return await apiRequest('/apikeys', { method: 'POST', body: JSON.stringify(data) });
+}
+async function updateApiKeyViaApi(id, data) {
+    return await apiRequest(`/apikeys/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+async function deleteApiKeyViaApi(id) {
+    return await apiRequest(`/apikeys/${id}`, { method: 'DELETE' });
+}

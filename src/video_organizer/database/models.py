@@ -70,6 +70,18 @@ class AuthUser(Base):
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class AuthApiKey(Base):
+    __tablename__ = "config_auth_api_key"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    api_key_hash: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_used_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class RuntimeConfig(Base):
     __tablename__ = "config_runtime"
 
