@@ -128,6 +128,12 @@
                 </svg>
                 <span>下载器</span>
             </a>
+            <a class="nav-item" data-page="organize">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
+                </svg>
+                <span>网盘整理</span>
+            </a>
             <a class="nav-item" data-page="users">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/>
@@ -507,6 +513,65 @@
                             <tbody id="downloader-config-list"><tr><td colspan="7"><div class="empty-state"><p>暂无配置</p></div></td></tr></tbody>
                         </table>
                     </div>
+                </div>
+            </div>
+
+            <!-- 网盘整理 -->
+            <div id="page-organize" class="page">
+                <div class="page-header">
+                    <h1 class="page-title">网盘整理</h1>
+                    <p class="page-subtitle">自动识别网盘中的视频文件并整理到目标目录</p>
+                </div>
+                <div class="tabs" id="organizeProviderTabs">
+                    <div class="tab active" data-provider="p123">123云盘</div>
+                    <div class="tab" data-provider="yun139">139云盘</div>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title" id="organizeTitle">123云盘整理</h3>
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                            <span class="badge" id="organizeAvailableBadge">未配置</span>
+                            <button class="btn btn-secondary btn-sm" id="organizeRefreshBtn">刷新状态</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">源目录ID</label>
+                        <input type="text" class="form-input" id="organizeSourceInput" placeholder="默认使用配置中的 organize_source_id">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">目标目录ID</label>
+                        <input type="text" class="form-input" id="organizeTargetInput" placeholder="默认使用配置中的 organize_target_id">
+                    </div>
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px">
+                        <button class="btn btn-secondary" id="organizeCountBtn">统计文件数</button>
+                        <button class="btn btn-secondary" id="organizePreviewBtn">试运行（预览）</button>
+                        <button class="btn btn-primary" id="organizeStartBtn">开始整理</button>
+                        <button class="btn btn-danger" id="organizeCancelBtn" disabled>取消</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">整理进度</h3>
+                        <span class="badge" id="organizeStatusBadge">空闲</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+                        <span style="font-size:0.8125rem;color:var(--text-muted)">处理进度</span>
+                        <span id="organizeCountText" style="font-size:0.8125rem;color:var(--text-muted)">0 / 0</span>
+                    </div>
+                    <div class="progress-bar-container"><div class="progress-bar-fill" id="organizeProgressBar" style="width:0%"></div></div>
+                    <div class="progress-text" id="organizeProgressText">等待开始...</div>
+                    <div class="table-container" style="margin-top:16px">
+                        <table>
+                            <thead><tr><th>成功</th><th>失败</th><th>跳过</th><th>总计</th></tr></thead>
+                            <tbody><tr>
+                                <td id="organizeResultSuccess">0</td>
+                                <td id="organizeResultFailed">0</td>
+                                <td id="organizeResultSkipped">0</td>
+                                <td id="organizeResultTotal">0</td>
+                            </tr></tbody>
+                        </table>
+                    </div>
+                    <div id="organizeErrors" style="margin-top:12px;font-size:0.8125rem;color:var(--red)"></div>
                 </div>
             </div>
 

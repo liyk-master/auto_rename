@@ -572,6 +572,85 @@ def main() -> None:
 
             sys.exit(0)
 
+        # 139（移动）网盘整理模式
+        if args.organize_yun139:
+            from .upload.yun139_organizer import Yun139Organizer
+
+            cli_output.print_header("139（移动）网盘整理模式")
+
+            yun139_config = config.get("yun139", {})
+            tmdb_config = config.get("tmdb", {})
+            authorization = yun139_config.get("authorization", "")
+            cloud_type = yun139_config.get("cloud_type", "personal_new")
+            cloud_id = yun139_config.get("cloud_id", "")
+            app_mode = bool(yun139_config.get("app_mode", False))
+            organize_source_id = str(yun139_config.get("organize_source_id", ""))
+            organize_target_id = str(yun139_config.get("organize_target_id", ""))
+            max_workers = int(yun139_config.get("max_workers", 2))
+            tmdb_api_key = tmdb_config.get("api_key", "")
+
+            if not authorization:
+                cli_output.print_error("139云盘 authorization 未配置")
+                sys.exit(1)
+
+            if not organize_source_id or not organize_target_id:
+                cli_output.print_error(
+                    "请先配置 organize_source_id 和 organize_target_id"
+                )
+                cli_output.print_info("在 config.ini 的 [yun139] 段落中添加:")
+                cli_output.print_info("  organize_source_id = 源目录ID")
+                cli_output.print_info("  organize_target_id = 目标目录ID")
+                sys.exit(1)
+
+            organizer = Yun139Organizer(
+                authorization=authorization,
+                cloud_type=cloud_type,
+                cloud_id=cloud_id,
+                organize_source_id=organize_source_id,
+                organize_target_id=organize_target_id,
+                max_workers=max_workers,
+                tmdb_api_key=tmdb_api_key,
+                app_mode=app_mode,
+            )
+
+            if not organizer.is_available():
+                cli_output.print_error(
+                    "139云盘整理功能不可用（authorization 未配置 / 客户端初始化失败）"
+                )
+                sys.exit(1)
+
+            dry_run = args.organize_dry_run
+            if dry_run:
+                cli_output.print_warning("试运行模式：只显示，不实际执行")
+
+            cli_output.print_info(f"源目录ID: {organize_source_id}")
+            cli_output.print_info(f"目标目录ID: {organize_target_id}")
+
+            # 使用流式处理（适用于大量文件）
+            cli_output.print_info("使用流式处理模式（适用于大量文件）")
+            result = organizer.organize_streaming(
+                source_id=organize_source_id,
+                target_id=organize_target_id,
+                dry_run=dry_run,
+                show_progress=True,
+            )
+
+            cli_output.print_separator()
+            cli_output.print_info("整理完成!")
+            cli_output.print_info(f"  成功: {result['success']}")
+            cli_output.print_info(f"  失败: {result['failed']}")
+            cli_output.print_info(f"  跳过: {result['skipped']}")
+            cli_output.print_info(f"  总计: {result['total']}")
+
+            if result["errors"]:
+                cli_output.print_warning("错误列表:")
+                for error in result["errors"][:10]:  # 只显示前10个
+                    cli_output.print_error(f"  - {error}")
+                if len(result["errors"]) > 10:
+                    cli_output.print_info(f"  ... 共 {len(result['errors'])} 个错误")
+
+            sys.exit(0)
+
         # 强制处理文件模式
         if args.process:
             cli_output.print_header("强制处理模式")

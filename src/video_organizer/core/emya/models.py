@@ -426,6 +426,9 @@ class VideoMedia(Base, TimestampMixin):
     content_hash: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True, comment="文件内容 SHA256 hash（去重用）"
     )
+    source: Mapped[Optional[str]] = mapped_column(
+        String(30), nullable=True, comment="来源: 139/189/pikpak"
+    )
 
     # 关系
     video_list: Mapped[Optional["VideoList"]] = relationship(

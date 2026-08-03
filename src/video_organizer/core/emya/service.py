@@ -474,6 +474,7 @@ class EmyaService:
         file_chapters: Optional[dict] = None,
         number_view: Optional[int] = 0,
         content_hash: Optional[str] = None,
+        source: str = "139",
     ) -> VideoMedia:
         """
         创建媒体资源（直接写入 + content_hash 唯一约束去重）。
@@ -508,6 +509,7 @@ class EmyaService:
             path_url=path_url,
             number_view=number_view,
             content_hash=content_hash,
+            source=source,
         )
         savepoint = session.begin_nested()
         try:

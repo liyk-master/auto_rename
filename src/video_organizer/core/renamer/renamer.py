@@ -1471,15 +1471,19 @@ class VideoRenamer:
             if "show_name" in metadata:
                 # 1. 优先处理罗马数字转换
                 if "roman_season" in metadata and metadata["roman_season"]:
-                    digit = self._roman_to_digit(metadata["roman_season"])
-                    if digit:
-                        metadata["season"] = str(digit)
-                        # 从剧名中剔除罗马数字后缀
-                        metadata["show_name"] = re.sub(
-                            rf"\s*{metadata['roman_season']}\s*$",
-                            "",
-                            metadata["show_name"],
-                        ).strip()
+                    # 如果 season 和 episode 已通过 SxxExx 模式正确提取，跳过罗马数字处理
+                    if metadata.get("season") and metadata.get("episode"):
+                        pass
+                    else:
+                        digit = self._roman_to_digit(metadata["roman_season"])
+                        if digit:
+                            metadata["season"] = str(digit)
+                            # 从剧名中剔除罗马数字后缀
+                            metadata["show_name"] = re.sub(
+                                rf"\s*{metadata['roman_season']}\s*$",
+                                "",
+                                metadata["show_name"],
+                            ).strip()
 
                 # 接下来执行常规清理
                 show_name = metadata["show_name"]

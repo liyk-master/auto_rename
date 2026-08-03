@@ -33,7 +33,7 @@ DEFAULT_CONFIG = {
         "username": "",
         "password": "",
         "parent_id": 0,
-        "max_workers": 2,
+        "max_workers": 4,
         "organize_source_id": 0,
         "organize_target_id": 0,
     },
@@ -59,7 +59,9 @@ DEFAULT_CONFIG = {
         "cloud_id": "",  # 家庭云/群组云ID
         "parent_id": "/",  # 根目录文件夹ID，空字符串表示根目录
         "custom_part_size": 0,  # 自定义分片大小，0为自动
-        "max_workers": 3,  # 并行上传视频数量（每个视频内分片串行上传）
+        "max_workers": 4,  # 并行上传/整理并发数
+        "organize_source_id": "",  # 整理源目录ID
+        "organize_target_id": "",  # 整理目标目录ID
         "strm_server": "",  # STRM 服务器地址，如 http://192.0.2.0:5010
         "strm_output_dir": "",  # STRM 文件输出目录
         "delete_after": False,  # 上传完成后删除云端文件

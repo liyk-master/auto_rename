@@ -16,8 +16,9 @@ def get_cli_parser():
 示例用法:
   python -m src.video_organizer.main --config config.json
   python -m src.video_organizer.main --monitor-dir "D:\\Downloads"
-  python -m src.video_organizer.main --process "D:\\videos\\sample.mp4"  # 强制处理文件
+   python -m src.video_organizer.main --process "D:\\videos\\sample.mp4"  # 强制处理文件
   python -m src.video_organizer.main --organize-p123  # 整理123网盘文件
+  python -m src.video_organizer.main --organize-yun139  # 整理139（移动）网盘文件
   python -m src.video_organizer.main --web  # 启动 Web 管理后台
   python -m src.video_organizer.main --web --web-port 9000  # 指定端口启动 Web 后台
         """,
@@ -40,6 +41,13 @@ def get_cli_parser():
         "--organize-p123",
         action="store_true",
         help="整理123网盘中的文件（需要配置organize_source_id和organize_target_id）",
+    )
+
+    # 139（移动）网盘整理参数
+    parser.add_argument(
+        "--organize-yun139",
+        action="store_true",
+        help="整理139（移动）网盘中的文件（需要配置organize_source_id和organize_target_id）",
     )
 
     # 123网盘整理试运行参数

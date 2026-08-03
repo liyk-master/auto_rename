@@ -290,3 +290,30 @@ async function updateApiKeyViaApi(id, data) {
 async function deleteApiKeyViaApi(id) {
     return await apiRequest(`/apikeys/${id}`, { method: 'DELETE' });
 }
+
+// ===== 网盘整理 API =====
+
+async function loadOrganizeStatusFromApi(provider) {
+    return await apiRequest(`/organize/${provider}/status`);
+}
+
+async function loadOrganizeCountFromApi(provider, sourceId, maxDepth = 5) {
+    const params = new URLSearchParams({ max_depth: maxDepth });
+    if (sourceId) params.set('source_id', sourceId);
+    return await apiRequest(`/organize/${provider}/count?${params.toString()}`);
+}
+
+async function runOrganizeViaApi(provider, dryRun, sourceId, targetId) {
+    return await apiRequest(`/organize/${provider}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ dry_run: dryRun, source_id: sourceId, target_id: targetId })
+    });
+}
+
+async function cancelOrganizeViaApi(provider) {
+    return await apiRequest(`/organize/${provider}/cancel`, { method: 'POST' });
+}
+
+async function loadOrganizeProgressFromApi(provider) {
+    return await apiRequest(`/organize/${provider}/progress`);
+}

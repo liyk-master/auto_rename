@@ -14,7 +14,10 @@ const state = {
     taskSearch: '',
     taskTotal: 0,
     taskPageSize: 20,
-    selectedFiles: []
+    selectedFiles: [],
+    organizeProvider: 'p123',
+    organizePollTimer: null,
+    organizeIdsByProvider: {}
 };
 
 const el = {};
@@ -128,6 +131,25 @@ function cacheElements() {
     el.taskTotal = document.getElementById('taskTotal');
     el.taskPagination = document.getElementById('taskPagination');
     el.taskPageSize = document.getElementById('taskPageSize');
+    el.organizeProviderTabs = document.querySelectorAll('#organizeProviderTabs .tab');
+    el.organizeTitle = document.getElementById('organizeTitle');
+    el.organizeAvailableBadge = document.getElementById('organizeAvailableBadge');
+    el.organizeRefreshBtn = document.getElementById('organizeRefreshBtn');
+    el.organizeSourceInput = document.getElementById('organizeSourceInput');
+    el.organizeTargetInput = document.getElementById('organizeTargetInput');
+    el.organizeCountBtn = document.getElementById('organizeCountBtn');
+    el.organizePreviewBtn = document.getElementById('organizePreviewBtn');
+    el.organizeStartBtn = document.getElementById('organizeStartBtn');
+    el.organizeCancelBtn = document.getElementById('organizeCancelBtn');
+    el.organizeStatusBadge = document.getElementById('organizeStatusBadge');
+    el.organizeCountText = document.getElementById('organizeCountText');
+    el.organizeProgressBar = document.getElementById('organizeProgressBar');
+    el.organizeProgressText = document.getElementById('organizeProgressText');
+    el.organizeResultSuccess = document.getElementById('organizeResultSuccess');
+    el.organizeResultFailed = document.getElementById('organizeResultFailed');
+    el.organizeResultSkipped = document.getElementById('organizeResultSkipped');
+    el.organizeResultTotal = document.getElementById('organizeResultTotal');
+    el.organizeErrors = document.getElementById('organizeErrors');
 }
 
 function bindEvents() {
@@ -159,6 +181,14 @@ function bindEvents() {
     if (el.addDownloaderConfigBtn) el.addDownloaderConfigBtn.addEventListener('click', showAddDownloaderModal);
     if (el.addUserBtn) el.addUserBtn.addEventListener('click', showAddUserModal);
     if (el.addApiKeyBtn) el.addApiKeyBtn.addEventListener('click', showAddApiKeyModal);
+    el.organizeProviderTabs.forEach(tab => {
+        tab.addEventListener('click', () => switchOrganizeProvider(tab.dataset.provider));
+    });
+    el.organizeRefreshBtn.addEventListener('click', loadOrganizeStatus);
+    el.organizeCountBtn.addEventListener('click', countOrganizeFiles);
+    el.organizePreviewBtn.addEventListener('click', () => runOrganize(true));
+    el.organizeStartBtn.addEventListener('click', () => runOrganize(false));
+    el.organizeCancelBtn.addEventListener('click', cancelOrganize);
     el.modalClose.addEventListener('click', hideModal);
     el.modalCancelBtn.addEventListener('click', hideModal);
     el.modalOverlay.addEventListener('click', (e) => {
@@ -252,6 +282,7 @@ function switchPage(pageName) {
     if (sidebar) sidebar.classList.remove('show');
     if (pageName === 'downloaders') loadDownloaderConfigs();
     if (pageName === 'users') { loadUsers(); loadApiKeys(); }
+    if (pageName === 'organize') loadOrganizeStatus();
 }
 
 function switchTaskTab(tabName) {
@@ -1862,3 +1893,198 @@ async function deleteApiKey(keyId) {
     } catch (e) { showToast('删除失败: ' + e.message, 'error'); }
 }
 window.deleteApiKey = deleteApiKey;
+
+// ===== 网盘整理 =====
+
+const ORGANIZE_PROVIDER_TITLES = { p123: '123云盘整理', yun139: '139云盘整理' };
+
+function switchOrganizeProvider(provider) {
+    if (state.organizeProvider === provider) {
+        loadOrganizeStatus();
+        return;
+    }
+    state.organizeIdsByProvider[state.organizeProvider] = {
+        sourceId: el.organizeSourceInput.value.trim(),
+        targetId: el.organizeTargetInput.value.trim()
+    };
+    state.organizeProvider = provider;
+    el.organizeProviderTabs.forEach(tab => tab.classList.toggle('active', tab.dataset.provider === provider));
+    el.organizeTitle.textContent = ORGANIZE_PROVIDER_TITLES[provider] || provider;
+    const saved = state.organizeIdsByProvider[provider] || { sourceId: '', targetId: '' };
+    el.organizeSourceInput.value = saved.sourceId;
+    el.organizeTargetInput.value = saved.targetId;
+    el.organizeSourceInput.placeholder = '默认使用配置中的 organize_source_id';
+    el.organizeTargetInput.placeholder = '默认使用配置中的 organize_target_id';
+    el.organizeAvailableBadge.textContent = '未配置';
+    el.organizeAvailableBadge.className = 'badge';
+    loadOrganizeStatus();
+    stopOrganizePolling();
+}
+
+function organizeProviderName() {
+    return state.organizeProvider === 'yun139' ? '139云盘' : '123云盘';
+}
+
+function getOrganizeIds() {
+    const sourceId = el.organizeSourceInput.value.trim();
+    const targetId = el.organizeTargetInput.value.trim();
+    return { sourceId: sourceId || null, targetId: targetId || null };
+}
+
+async function loadOrganizeStatus() {
+    try {
+        const s = await loadOrganizeStatusFromApi(state.organizeProvider);
+        el.organizeAvailableBadge.textContent = s.available ? '可用' : '未配置';
+        el.organizeAvailableBadge.className = s.available ? 'badge badge-success' : 'badge badge-warning';
+        el.organizeSourceInput.placeholder = s.organize_source_id ? `默认: ${s.organize_source_id}` : '默认使用配置中的 organize_source_id';
+        el.organizeTargetInput.placeholder = s.organize_target_id ? `默认: ${s.organize_target_id}` : '默认使用配置中的 organize_target_id';
+        const running = !!s.running;
+        el.organizeStartBtn.disabled = running;
+        el.organizePreviewBtn.disabled = running;
+        el.organizeCountBtn.disabled = running;
+        el.organizeCancelBtn.disabled = !running;
+        if (running) {
+            setOrganizeStatusBadge('运行中', 'badge-info');
+            startOrganizePolling();
+        }
+    } catch (e) { showToast('获取整理状态失败: ' + e.message, 'error'); }
+}
+
+function setOrganizeStatusBadge(text, cls) {
+    el.organizeStatusBadge.textContent = text;
+    el.organizeStatusBadge.className = 'badge ' + (cls || '');
+}
+
+async function countOrganizeFiles() {
+    const { sourceId } = getOrganizeIds();
+    try {
+        el.organizeCountBtn.disabled = true;
+        setButtonLoading(el.organizeCountBtn, true);
+        const r = await loadOrganizeCountFromApi(state.organizeProvider, sourceId);
+        setButtonLoading(el.organizeCountBtn, false);
+        el.organizeCountBtn.disabled = false;
+        showToast(`${organizeProviderName()} 共发现 ${r.count} 个视频文件`, 'success');
+    } catch (e) {
+        setButtonLoading(el.organizeCountBtn, false);
+        el.organizeCountBtn.disabled = false;
+        showToast('统计失败: ' + e.message, 'error');
+    }
+}
+
+async function runOrganize(dryRun) {
+    const { sourceId, targetId } = getOrganizeIds();
+    if (!sourceId && !targetId) {
+        showConfirm(
+            '确认整理',
+            `未指定源目录/目标目录，将使用配置中的 organize_source_id / organize_target_id 执行${dryRun ? '试运行' : '整理'}，是否继续？`,
+            () => doRunOrganize(dryRun, sourceId, targetId),
+            '继续'
+        );
+        return;
+    }
+    await doRunOrganize(dryRun, sourceId, targetId);
+}
+
+async function doRunOrganize(dryRun, sourceId, targetId) {
+    try {
+        el.organizeStartBtn.disabled = true;
+        el.organizePreviewBtn.disabled = true;
+        el.organizeCountBtn.disabled = true;
+        el.organizeCancelBtn.disabled = false;
+        setOrganizeStatusBadge('运行中', 'badge-info');
+        el.organizeErrors.textContent = '';
+        el.organizeResultSuccess.textContent = '0';
+        el.organizeResultFailed.textContent = '0';
+        el.organizeResultSkipped.textContent = '0';
+        el.organizeResultTotal.textContent = '0';
+        const r = await runOrganizeViaApi(state.organizeProvider, dryRun, sourceId, targetId);
+        showToast(`${dryRun ? '试运行' : '整理'}已开始`, 'success');
+        startOrganizePolling();
+    } catch (e) {
+        el.organizeStartBtn.disabled = false;
+        el.organizePreviewBtn.disabled = false;
+        el.organizeCountBtn.disabled = false;
+        el.organizeCancelBtn.disabled = true;
+        setOrganizeStatusBadge('空闲', '');
+        showToast('启动失败: ' + e.message, 'error');
+    }
+}
+
+async function cancelOrganize() {
+    try {
+        await cancelOrganizeViaApi(state.organizeProvider);
+        showToast('已发送取消请求', 'info');
+    } catch (e) { showToast('取消失败: ' + e.message, 'error'); }
+}
+
+function startOrganizePolling() {
+    stopOrganizePolling();
+    state.organizePollTimer = setInterval(pollOrganizeProgress, 1000);
+    pollOrganizeProgress();
+}
+
+function stopOrganizePolling() {
+    if (state.organizePollTimer) {
+        clearInterval(state.organizePollTimer);
+        state.organizePollTimer = null;
+    }
+}
+
+async function pollOrganizeProgress() {
+    let p;
+    try {
+        p = await loadOrganizeProgressFromApi(state.organizeProvider);
+    } catch (e) {
+        stopOrganizePolling();
+        setOrganizeStatusBadge('错误', 'badge-danger');
+        return;
+    }
+    const total = p.total || 0;
+    const processed = p.processed || 0;
+    el.organizeCountText.textContent = `${processed} / ${total}`;
+    const pct = total > 0 ? Math.min(100, Math.round(processed / total * 100)) : (processed > 0 ? 100 : 0);
+    el.organizeProgressBar.style.width = pct + '%';
+
+    const currentName = p.current_name || '';
+    switch (p.action) {
+        case 'recognized': el.organizeProgressText.textContent = `识别中: ${currentName}`; break;
+        case 'skipped': el.organizeProgressText.textContent = `跳过: ${currentName}`; break;
+        case 'preview': el.organizeProgressText.textContent = `预览: ${currentName} ${p.detail || ''}`; break;
+        case 'organized': el.organizeProgressText.textContent = `已整理: ${currentName} ${p.detail || ''}`; break;
+        case 'failed': el.organizeProgressText.textContent = `失败: ${currentName}`; break;
+        case 'completed': el.organizeProgressText.textContent = '整理完成'; break;
+        case 'cancelled': el.organizeProgressText.textContent = '已取消'; break;
+        default: el.organizeProgressText.textContent = currentName || '等待开始...';
+    }
+
+    // 实时成败统计（后端每处理一个文件即更新）
+    if (typeof p.success === 'number') {
+        el.organizeResultSuccess.textContent = p.success;
+        el.organizeResultFailed.textContent = p.failed;
+        el.organizeResultSkipped.textContent = p.skipped;
+        el.organizeResultTotal.textContent = processed;
+    } else if (p.result) {
+        el.organizeResultSuccess.textContent = p.result.success || 0;
+        el.organizeResultFailed.textContent = p.result.failed || 0;
+        el.organizeResultSkipped.textContent = p.result.skipped || 0;
+        el.organizeResultTotal.textContent = p.result.total || 0;
+    }
+
+    if (p.result && (p.result.errors || []).length > 0) {
+        el.organizeErrors.innerHTML = '<strong>错误:</strong><br>' + p.result.errors.slice(0, 20).map(e => escapeHtml(String(e))).join('<br>');
+    }
+
+    if (p.status === 'done') {
+        stopOrganizePolling();
+        setOrganizeStatusBadge(p.action === 'failed' ? '失败' : '完成', p.action === 'failed' ? 'badge-danger' : 'badge-success');
+        el.organizeStartBtn.disabled = false;
+        el.organizePreviewBtn.disabled = false;
+        el.organizeCountBtn.disabled = false;
+        el.organizeCancelBtn.disabled = true;
+        if (p.action === 'failed') showToast('整理过程中出现错误', 'error');
+        else showToast('整理完成', 'success');
+    } else {
+        setOrganizeStatusBadge('运行中', 'badge-info');
+        el.organizeCancelBtn.disabled = false;
+    }
+}

@@ -8,6 +8,7 @@ from .downloaders import router as downloaders_router
 from .auth import router as auth_router
 from .apikeys import router as apikeys_router
 from .strm import router as strm_router
+from .organize import router as organize_router
 
 __all__ = [
     "config_router",
@@ -18,4 +19,5 @@ __all__ = [
     "auth_router",
     "apikeys_router",
     "strm_router",
+    "organize_router",
 ]

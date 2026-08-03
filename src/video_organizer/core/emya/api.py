@@ -83,6 +83,7 @@ class MediaDTO:
     file_second: Optional[int] = None
     file_container: Optional[str] = None
     quality_tags: Optional[str] = None
+    source: Optional[str] = None
 
 
 @dataclass
@@ -840,6 +841,7 @@ class EmyaApiController:
                         file_size=media.file_size,
                         file_second=media.file_second,
                         file_container=media.file_container,
+                        source=media.source,
                     ),
                 )
         except Exception as e:
