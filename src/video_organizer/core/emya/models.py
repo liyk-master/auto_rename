@@ -6,7 +6,7 @@ emya 数据库模型定义
 包含：用户模块、媒体库模块、元数据模块
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 from sqlalchemy import (
     Column,
@@ -38,12 +38,19 @@ class TimestampMixin:
 
     @declared_attr
     def created_at(cls) -> Mapped[datetime]:
-        return mapped_column(DateTime, default=datetime.now, nullable=False)
+        return mapped_column(
+            DateTime,
+            default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+            nullable=False,
+        )
 
     @declared_attr
     def updated_at(cls) -> Mapped[datetime]:
         return mapped_column(
-            DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+            DateTime,
+            default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+            onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+            nullable=False,
         )
 
     @declared_attr
@@ -163,7 +170,10 @@ class UserVideoRecord(Base):
         Integer, ForeignKey("user.id"), nullable=False, comment="用户ID"
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime,
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+        onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+        nullable=False,
     )
 
     # 关系

@@ -3588,7 +3588,6 @@ class VideoRenamer:
                     and parent_show_name
                     and parent_show_name != search_term
                     and parent_show_name != cleaned_name
-                    and not is_invalid_cleaned_name
                 ):
                     logger.info(
                         f"主搜索失败，尝试用父目录名搜索 TMDB: '{parent_show_name}'"

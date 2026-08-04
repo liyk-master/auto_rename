@@ -9,7 +9,7 @@ emya 入库服务
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Tuple
 
@@ -70,6 +70,7 @@ class EmyaService:
         if re.match(pattern, date_str):
             try:
                 from datetime import datetime
+
                 datetime.strptime(date_str, '%Y-%m-%d')
                 return True
             except ValueError:
@@ -288,7 +289,7 @@ class EmyaService:
 
     def _touch_video_list_updated_at(self, session: Session, video_list_id: int) -> None:
         session.query(VideoList).filter(VideoList.id == video_list_id).update(
-            {"updated_at": datetime.now()}
+            {"updated_at": datetime.now(timezone.utc).replace(tzinfo=None)}
         )
 
     # ============================================================
