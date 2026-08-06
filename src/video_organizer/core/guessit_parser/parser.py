@@ -842,23 +842,33 @@ class GuessItParser:
                 logger.debug(f"清理剧名: '{original_show_name}' -> '{show_name}'")
 
         if is_invalid_show_name:
-            # 尝试从父目录获取剧名
-            show_name_from_path, season_from_path, year_from_path = self._extract_show_info_from_path(path)
+            # 尝试从父目录获取剧名，以及从路径提取的季号、年份
+            show_name_from_path = None
+            season_from_path = None
+            year_from_path = None
 
-            if show_name_from_path:
-                # 检查从父目录提取的剧名是否以"短数字+中文"开头
-                # 如 "4驭灵师" 可能是分类编号+剧名，应去除数字
-                # 但 "唐探1900" 这种末尾数字是剧名的一部分，不应去除
-                # 规则：只去除开头的1-2位数字+中文的情况
-                match = re.match(r'^(\d{1,2})([\u4e00-\u9fff].*)$', show_name_from_path)
-                if match:
-                    # 去除开头的短数字，保留中文部分
-                    cleaned_name = match.group(2)
-                    logger.debug(f"去除父目录剧名开头的分类编号: '{show_name_from_path}' -> '{cleaned_name}'")
-                    show_name_from_path = cleaned_name
+            # 单字符剧名（如电影标题 "X"）本身可能是合法标题，且已带明确年份时，
+            # 不应再用父目录名覆盖（避免 "X.2022..." 被替换成父目录名称）
+            if len(show_name.strip()) <= 1 and metadata.get('year'):
+                logger.debug(f"剧名 '{show_name}' 为单字符且带年份，保留原标题（跳过父目录覆盖）")
+                metadata['show_name'] = show_name.strip()
+            else:
+                show_name_from_path, season_from_path, year_from_path = self._extract_show_info_from_path(path)
 
-                metadata['show_name'] = show_name_from_path
-                logger.debug(f"修正剧名: '{show_name}' -> '{show_name_from_path}' (来自父目录)")
+                if show_name_from_path:
+                    # 检查从父目录提取的剧名是否以"短数字+中文"开头
+                    # 如 "4驭灵师" 可能是分类编号+剧名，应去除数字
+                    # 但 "唐探1900" 这种末尾数字是剧名的一部分，不应去除
+                    # 规则：只去除开头的1-2位数字+中文的情况
+                    match = re.match(r'^(\d{1,2})([\u4e00-\u9fff].*)$', show_name_from_path)
+                    if match:
+                        # 去除开头的短数字，保留中文部分
+                        cleaned_name = match.group(2)
+                        logger.debug(f"去除父目录剧名开头的分类编号: '{show_name_from_path}' -> '{cleaned_name}'")
+                        show_name_from_path = cleaned_name
+
+                    metadata['show_name'] = show_name_from_path
+                    logger.debug(f"修正剧名: '{show_name}' -> '{show_name_from_path}' (来自父目录)")
 
             # 如果没有季号但从路径中提取到了季号，也添加
             if metadata.get('season') is None and season_from_path is not None:

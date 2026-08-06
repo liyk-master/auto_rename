@@ -1303,9 +1303,10 @@ class VideoRenamer:
             # 修改: 使用正向预查允许罗马数字后面跟下划线、点或空格，以匹配 "36小時II_01" 格式
             # 添加前向否定断言，确保罗马数字前面不是字母，避免将 iT.WEB-DL 中的 V 误识别为第5季
             r"(?P<show_name>.*?)(?<![a-zA-Z])(?P<roman_season>VIII|VII|VI|III|II|IX|IV|V)(?=[_.:\-\s]|$)",
-            # 模式 B: 极其高频误触的单字母罗马数字 (X, I) 要求后随必须是行尾或元数据标记 (防止切断 Spy x Family)
-            # 修改: 前面必须是非字母数字字符，避免误识别如 IQIYI 中的 I
-            r"(?P<show_name>.*?)(?<![a-zA-Z0-9])(?P<roman_season>X|I)(?=[_.:\-\[\(]|$)",
+            # 模式 B: 极其高频误触的单字母英文字典 (X, I) 要求后随必须是文件末尾或元数据标记。
+            # 原因: show_name 必须至少 1 个字符（.+?），避免把开头的独立 "X"（如电影标题 "X"）误识别成罗马数字季号；
+            #   (?<![a-zA-Z0-9]) 前面必须是非字母数字字符，避免误识别如 IQIYI 中的 I
+            r"(?P<show_name>.+?)(?<![a-zA-Z0-9])(?P<roman_season>X|I)(?=[_.:\-\[\(]|$)",
             # 模式 C: 罗马数字季号 + 下划线 + 集号 (如 "On Call 36小時II_01")
             r"(?P<show_name>.*?)(?P<roman_season>VIII|VII|VI|III|II|IX|IV|V)_(?P<episode>\d{1,3})",
             # 2.5 匹配 "Show Name S2 - 01" 格式（季号在集号前面，用空格分隔）- 必须在 "Show Name - 09" 之前
@@ -2156,7 +2157,7 @@ class VideoRenamer:
                 # show_name 不包含空格和中文，或者是纯英文/纯下划线格式
                 # 先检查 show_name 是否已经是有效的值
                 # 如果是有效的剧名（非空、不是纯数字、长度合理），直接保存
-                if show_name and len(show_name) > 1 and (not show_name.isdigit() or (
+                if show_name and (not show_name.isdigit() or (
                     show_name.isdigit() and metadata.get("year") and show_name != metadata.get("year")
                 )):
                     # 清理下划线和多余空格
