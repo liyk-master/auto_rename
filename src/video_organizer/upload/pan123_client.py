@@ -5,6 +5,7 @@
 
 import binascii
 import hashlib
+import json
 import logging
 import os
 import random
@@ -61,6 +62,51 @@ def _sign_path(path: str, os_type: str = "web", version: str = "3") -> Tuple[str
     data = "|".join([timestamp, random_num, path, os_type, version, time_sign])
     data_sign = str(binascii.crc32(data.encode()) & 0xFFFFFFFF)
     return time_sign, "-".join([timestamp, random_num, data_sign])
+
+
+_TOKEN_EXPIRE_KEYWORDS = (
+    "token",
+    "expired",
+    "过期",
+    "未授权",
+    "authorization",
+    "401",
+)
+
+
+def _is_token_expired(code: int, message: str) -> bool:
+    if code == 401:
+        return True
+    msg = (message or "").lower()
+    return any(k in msg for k in _TOKEN_EXPIRE_KEYWORDS)
+
+
+_VERIFY_KEYWORDS = ("验证", "verify", "captcha", "geetest", "人机")
+
+
+def _is_verification_required(message: str) -> bool:
+    msg = (message or "").lower()
+    return any(k in msg for k in _VERIFY_KEYWORDS)
+
+
+def _parse_expire(value) -> int:
+    """把登录响应中的 expire（可能是 ISO 时间或时间戳）转为 epoch 秒"""
+    if not value:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return int(dt.timestamp())
+    except Exception:
+        return 0
+
+
+DATA_DIR = Path(__file__).resolve().parent / "data"
+
+_GLOBAL_LOGIN_LOCK = threading.Lock()
+_last_login_at = 0.0
+_login_cooldown = 5.0
 
 
 def _get_api_url(raw_url: str) -> str:
@@ -147,6 +193,7 @@ class Pan123Client:
         platform: str = "web",
         app_version: str = "3",
         upload_thread: int = 3,
+        token_file: Optional[str] = None,
     ):
         self.token = token
         self.username = username
@@ -154,6 +201,14 @@ class Pan123Client:
         self.platform = platform
         self.app_version = app_version
         self.upload_thread = upload_thread
+        self.expire = 0
+        if token_file:
+            self.token_file = token_file
+        elif username:
+            self.token_file = str(DATA_DIR / f"p123_{username}.json")
+        else:
+            self.token_file = ""
+        self._auth_lock = threading.Lock()
         self._session = requests.Session()
         self._session.headers.update(
             {
@@ -164,43 +219,112 @@ class Pan123Client:
                 "app-version": self.app_version,
             }
         )
+        self._load_token()
 
     # ----- 认证 -----
 
-    def login(self) -> bool:
-        body: Dict[str, Any]
-        if re.match(r"^[^@]+@[^@]+\.[^@]+$", self.username):
-            body = {"mail": self.username, "password": self.password, "type": 2}
-        else:
-            body = {
-                "passport": self.username,
-                "password": self.password,
-                "remember": True,
-            }
+    def _load_token(self):
+        """从缓存文件加载 token"""
+        if self.token or not self.token_file:
+            return
         try:
-            resp = self._session.post(
-                SIGN_IN,
-                json=body,
-                headers={
-                    "origin": "https://yun.123pan.com",
-                    "referer": "https://yun.123pan.com/",
-                    "user-agent": "Dart/2.19(dart:io)-openlist",
-                    "platform": "web",
-                    "app-version": "3",
-                },
-            )
-            data = resp.json()
-            if data.get("code") == 200:
-                self.token = data["data"]["token"]
+            path = Path(self.token_file)
+            if not path.exists():
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.token = data.get("token", "")
+            self.expire = int(data.get("expire", 0) or 0)
+            if self.token:
                 self._session.headers["authorization"] = f"Bearer {self.token}"
-                logger.info("123云盘登录成功")
-                return True
-            else:
-                logger.error(f"123云盘登录失败: {data.get('message')}")
-                return False
+                logger.info(f"123云盘已加载缓存的 token: {path}")
         except Exception as e:
-            logger.error(f"123云盘登录异常: {e}")
+            logger.warning(f"加载 123 缓存 token 失败: {e}")
+
+    def _save_token(self):
+        """保存 token 到缓存文件"""
+        if not self.username or not self.token_file or not self.token:
+            return
+        try:
+            path = Path(self.token_file)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(
+                    {"token": self.token, "expire": self.expire},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            logger.info(f"123云盘 token 已缓存到: {path}")
+        except Exception as e:
+            logger.warning(f"保存 123 缓存 token 失败: {e}")
+
+    def _token_near_expiry(self) -> bool:
+        """判断缓存 token 是否接近过期"""
+        if not self.expire:
             return False
+        ts = self.expire if self.expire < 10000000000 else self.expire / 1000
+        return ts < time.time() + 60
+
+    def login(self) -> bool:
+        global _last_login_at, _login_cooldown
+        if not self.username or not self.password:
+            logger.error("未配置 123 云盘用户名密码，无法登录")
+            return False
+        with _GLOBAL_LOGIN_LOCK:
+            wait = _login_cooldown - (time.time() - _last_login_at)
+            if wait > 0:
+                logger.info(f"123 登录进入冷却期，{wait:.0f}s 后重试（避免触发人机验证）")
+                return False
+            body: Dict[str, Any]
+            if re.match(r"^[^@]+@[^@]+\.[^@]+$", self.username):
+                body = {"mail": self.username, "password": self.password, "type": 2}
+            else:
+                body = {
+                    "passport": self.username,
+                    "password": self.password,
+                    "remember": True,
+                }
+            try:
+                _last_login_at = time.time()
+                resp = self._session.post(
+                    SIGN_IN,
+                    json=body,
+                    headers={
+                        "origin": "https://yun.123pan.com",
+                        "referer": "https://yun.123pan.com/",
+                        "user-agent": "Dart/2.19(dart:io)-openlist",
+                        "platform": "web",
+                        "app-version": "3",
+                    },
+                )
+                data = resp.json()
+                if data.get("code") == 200:
+                    self.token = data["data"]["token"]
+                    self.expire = _parse_expire(data["data"].get("expire"))
+                    self._session.headers["authorization"] = (
+                        f"Bearer {self.token}"
+                    )
+                    self._save_token()
+                    logger.info("123云盘登录成功")
+                    return True
+                message = data.get("message")
+                logger.error(f"123云盘登录失败: {message}")
+                if _is_verification_required(message):
+                    _login_cooldown = 300
+                    logger.error(
+                        "123云盘要求人机验证（请进行验证），无法自动登录。"
+                        "请手动获取 token 填入配置 [p123] token，"
+                        "或等待风控解除后再试。"
+                    )
+                else:
+                    _login_cooldown = 60
+                return False
+            except Exception as e:
+                _last_login_at = time.time()
+                logger.error(f"123云盘登录异常: {e}")
+                _login_cooldown = 60
+                return False
 
     def ensure_auth(self):
         if not self.token:
@@ -208,6 +332,9 @@ class Pan123Client:
                 self.login()
             else:
                 raise ValueError("Pan123Client 未配置 token 或用户名密码")
+        elif self._token_near_expiry():
+            logger.info("123 token 即将过期，提前刷新")
+            self.login()
 
     # ----- 核心请求方法 -----
 
@@ -221,7 +348,7 @@ class Pan123Client:
     ) -> Dict[str, Any]:
         self.ensure_auth()
         api_url = _get_api_url(url)
-        is_retry = False
+        is_retry = 0
         while True:
             try:
                 resp = self._session.request(
@@ -234,14 +361,15 @@ class Pan123Client:
                 code = body.get("code")
                 if code == 0 or code == 200:
                     return body
-                if not is_retry and code == 401:
-                    logger.info("Token 过期，重新登录")
-                    if self.login():
-                        is_retry = True
-                        api_url = _get_api_url(url)
-                        continue
-                msg = body.get("message", "未知错误")
-                logger.error(f"API 请求失败 [{url}]: {msg}")
+                message = body.get("message", "未知错误")
+                if is_retry < 2 and _is_token_expired(code, message):
+                    logger.info(f"Token 过期，尝试重新登录: {message}")
+                    with self._auth_lock:
+                        if self.login():
+                            is_retry += 1
+                            api_url = _get_api_url(url)
+                            continue
+                logger.error(f"API 请求失败 [{url}]: {message}")
                 return body
             except Exception as e:
                 logger.error(f"API 请求异常 [{url}]: {e}")
