@@ -601,9 +601,18 @@ class EmyaService:
             VideoSubtitle.video_media_id == media.id
         ).delete(synchronize_session=False)
 
-        # 删除媒体记录
-        session.delete(media)
+        # 删除媒体记录（bulk delete + rowcount 校验：0 行命中说明已被并发删除，
+        # 不再误报"已级联删除成功"）
+        deleted_rows = session.query(VideoMedia).filter(
+            VideoMedia.id == media.id
+        ).delete(synchronize_session=False)
         session.flush()
+        if deleted_rows == 0:
+            # 记录已被并发删除（双实例/重复事件竞争），级联清理无需再做
+            logger.info(
+                f"media (sha256={sha256[:16]}...) 已被并发删除，跳过级联清理"
+            )
+            return True
 
         # 级联删除空 Episode
         if episode_id:
