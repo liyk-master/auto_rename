@@ -44,8 +44,18 @@ class FilenameParser:
         stem = path.stem
         parent = path.parent.name
 
+        # 季目录（Season N / Sxx / 第N季 / Specials）不是剧名，
+        # 向上取祖父目录作为剧名上下文（"剧名(2025)/Season 1/05.mkv" → 用祖父剧名）
+        effective_parent = parent
+        if re.match(
+            r"(?i)^(?:Season\s*\d+|S\d+|第\d+季|Specials?|SP\d*)$", parent or ""
+        ):
+            gparent = path.parent.parent.name
+            if gparent and _is_chinese_show_dir(gparent):
+                effective_parent = gparent
+
         # L2 路径上下文：中文剧名目录 + 裸数字集号
-        result = self._parse_path_context(stem, parent)
+        result = self._parse_path_context(stem, effective_parent)
         if result:
             return result
 

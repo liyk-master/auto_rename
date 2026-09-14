@@ -848,7 +848,7 @@ class VideoRenamer:
                 "演唱会",
                 "音乐",
             ]
-            extracted_show_name = metadata.get("show_name", "")
+            extracted_show_name = metadata.get("show_name") or ""
 
             is_fragment = extracted_show_name.upper() in fragment_keywords
             # 如果剧名全是数字（有些正则误抓），也视为无效
@@ -856,7 +856,7 @@ class VideoRenamer:
             # 如果剧名只包含季集信息（如 S01E81 / 第11集 / EP04），也视为无效
             is_season_episode_only = bool(
                 re.match(r"^S\d+E\d+", extracted_show_name.upper())
-                or re.match(r"^第\d+[集话話]", extracted_show_name)
+                or re.match(r"^第\d+[集话話期]", extracted_show_name)
                 or re.match(r"^EP?\d+", extracted_show_name.upper())
             )
 
@@ -1499,7 +1499,7 @@ class VideoRenamer:
         # 它们可能是演唱会名的一部分，如 TMDB 收录 "周慧敏 Deep V 25周年演唱会"）；
         # 仅当文件名无真正的季集标记（SxxExx/第N集/EP）时触发
         if re.search(r"(?i)演唱会|音樂會|音乐会|concert", name_only) and not re.search(
-            r"(?i)(?:\bS\d{1,2}E\d+|第\d+[集话話]|EP\d+|(?:^|[.\s])E\d{1,4}(?=[.\s\-\[\(\)]|$))",
+            r"(?i)(?:(?:^|[.\s_\-\[\(])S\d{1,2}E\d+|第\d+[集话話期]|EP\d+|(?:^|[.\s])E\d{1,4}(?=[.\s\-\[\(\)]|$))",
             name_only,
         ):
             concert_name = re.sub(r"\s*\(\d{4}(?:-\d{4})?\)\s*", " ", name_only)
@@ -1679,7 +1679,7 @@ class VideoRenamer:
             # 2.4 匹配 "Show.Name.EP03.1080p...-ReleaseGroup" 格式（如 Kurosaki.san.no...EP03.1080p.HULU.WEB-DL.AAC2.0.H.264-MagicStar）
             r"^(?P<show_name>.+?)[.\s]*[Ee][Pp](?P<episode>\d+)[.\s]*[^\s]+-(?P<release_group>[A-Za-z]+)$",
             # 匹配 Show Name EP09 / Ep09 / Show.Name.EP09 (严格限制show_name不能只含数字，支持点分隔)
-            r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$).*?)(?=[.\s]*(?:EP|Ep|第)[.\s]*\d)[.\s]*(?:EP|Ep|第)[.\s]*(?P<episode>\d+(?:-\d+)?)[.\s]*(?:集)?[.\s]*(?:\[|\(|$)",
+            r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$).*?)(?=[.\s]*(?:EP|Ep|第)[.\s]*\d)[.\s]*(?:EP|Ep|第)[.\s]*(?P<episode>\d+(?:-\d+)?)[.\s]*(?:[集话話期])?[.\s]*(?:\[|\(|$)",
             # 修复：匹配 "Spy x Family 2 - 05" 格式 (季号在集号前面，用空格分隔)
             r"^(?P<show_name>(?!^\d+$).+?)\s+(?P<season>\d+)\s*-\s*(?P<episode>\d{2})(?:\s|\.|\[|$)",
             # --- 常用 BT 资源/动漫格式匹配 ---
@@ -1715,7 +1715,7 @@ class VideoRenamer:
             # 匹配 [Doomdos] - 荒古恩仇录·破 风篇 - 第32话 - [1080P] 这种格式（备选模式）
             r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$).*?)\s*-\s*第(?P<episode>\d+(?:-\d+)?)[话話]\s*",
             r"(?<!\d{4})第(?P<episode>\d+(?:-\d+)?)集",
-            r"(?<!\d{4})第(?P<episode>\d+(?:-\d+)?)[集话話]",
+            r"(?<!\d{4})第(?P<episode>\d+(?:-\d+)?)[集话話期]",
             r"(?<!\d{4})EP(?P<episode>\d+(?:-\d+)?)",
             r"(?<!\d{4})\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
             # 匹配 #01 或 #1 格式 (如 [AI-Raws] 魔神英雄伝ワタル2 #01)
@@ -3068,6 +3068,8 @@ class VideoRenamer:
 
     def _prepare_search_term(self, search_term: str) -> str:
         """准备搜索词，为TMDB搜索优化"""
+        if not search_term:
+            return ""
         prepared = re.sub(r"\s+", " ", search_term).strip()
 
         # 移除版本描述词 (日语版, 国语版 等)
@@ -3815,7 +3817,7 @@ class VideoRenamer:
         try:
             # ========== 缓存检查 ==========
             # 检查是否已有缓存（同一剧集的元数据）
-            show_name = metadata.get("show_name", metadata.get("title", ""))
+            show_name = metadata.get("show_name") or metadata.get("title") or ""
             # 记录进入本函数时的原始剧名，识别成功后用于登记「搜索别名」：
             # LLM 兜底/父目录名搜索会把剧名纠正成 TMDB 收录名，不登记别名则
             # 同目录下一集仍按原始名查找缓存，永远 miss 并重复走 LLM 兜底
@@ -6017,8 +6019,17 @@ class VideoRenamer:
                     is_special = True
                     break
 
-        # 如果是特别篇，设置季数为0，否则使用正常的安全转换
-        if is_special:
+        # 如果是特别篇且文件名无明确季号（SxxExx/第N季/Season N），
+        # 设置季数为0（TMDB 特别篇常收录在 S00）；文件名有明确季号时尊重之
+        # （如 "Eclipse.of.Illusion.SP.The.Miasma.War.S01E06" 的 S01 是
+        # 特别篇独立剧集自己的季，不该被 SP 关键词强制改成 S00）
+        file_has_explicit_season = bool(
+            re.search(
+                r"(?i)(?:^|[\s\-_.(（])s\d{1,2}(?:e\d+)?(?:$|[\s\-_.)）])|第\d+季|season\s*\d+",
+                original_path.name,
+            )
+        )
+        if is_special and not file_has_explicit_season:
             season = 0
         else:
             season = safe_int(metadata.get("season", 1))

@@ -24,7 +24,7 @@ DEGRADE_DURATION = 30.0
 DEFAULT_CACHE_SIZE = 512
 # TMDB 网站搜索偏好 Cookie（设置语言/时区/成人内容，提高搜索结果匹配度）
 TMDB_WEB_COOKIE = (
-    'preferences='
+    "preferences="
     '{"adult":true,"i18n_fallback_language":"en-US",'
     '"locale":"zh-CN","country_code":"US","timezone":"Asia/Shanghai"}'
 )
@@ -51,7 +51,11 @@ class _GlobalRateLimiter:
             if rate and rate > self._rate_limit_per_sec:
                 self._rate_limit_per_sec = rate
 
-    def degrade(self, rate: int = DEGRADED_RATE_LIMIT_PER_SEC, duration: float = DEGRADE_DURATION) -> None:
+    def degrade(
+        self,
+        rate: int = DEGRADED_RATE_LIMIT_PER_SEC,
+        duration: float = DEGRADE_DURATION,
+    ) -> None:
         """临时降速：rate 请求/秒，持续 duration 秒后恢复"""
         with self._lock:
             self._degraded_rate = rate
@@ -200,12 +204,16 @@ class TMDBClient:
         # 调试日志：打印返回数据的结构
         logger.debug(f"search_video_show 返回的数据类型: {type(data)}")
         if data:
-            logger.debug(f"search_video_show 返回的数据键: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+            logger.debug(
+                f"search_video_show 返回的数据键: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}"
+            )
             if isinstance(data, dict):
                 results = data.get("results", [])
                 logger.debug(f"search_video_show results 数量: {len(results)}")
                 if results:
-                    logger.debug(f"search_video_show 第一个结果: {results[0].get('name') or results[0].get('title') if results else 'none'}")
+                    logger.debug(
+                        f"search_video_show 第一个结果: {results[0].get('name') or results[0].get('title') if results else 'none'}"
+                    )
                 return results
             else:
                 logger.warning(f"search_video_show 返回的数据不是字典类型: {data}")
@@ -699,7 +707,9 @@ class TMDBClient:
         return []
 
     def search_web_fallback(
-        self, query: str, language: str = "zh-CN",
+        self,
+        query: str,
+        language: str = "zh-CN",
         media_type: Optional[str] = None,
     ) -> List[Dict]:
         """
@@ -718,13 +728,15 @@ class TMDBClient:
             url = f"https://www.themoviedb.org/search/{media_type}?query={urllib.parse.quote(query)}"
         else:
             url = f"https://www.themoviedb.org/search?query={urllib.parse.quote(query)}"
+        # language 可能为 None（调用方未指定语言），兜底为 zh-CN 避免 .split 崩溃
+        lang = language or "zh-CN"
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
-            "Accept-Language": f"{language},{language.split('-')[0]};q=0.9",
+            "Accept-Language": f"{lang},{lang.split('-')[0]};q=0.9",
             "Cookie": TMDB_WEB_COOKIE,
         }
         req = urllib.request.Request(url, headers=headers)
@@ -732,8 +744,8 @@ class TMDBClient:
         # 必须走进程级全局限速器，否则多实例并发时网站搜索会互相打爆 429
         _global_rate_limiter.acquire()
         try:
-            html = urllib.request.urlopen(req, timeout=15).read().decode(
-                "utf-8", "ignore"
+            html = (
+                urllib.request.urlopen(req, timeout=15).read().decode("utf-8", "ignore")
             )
         except Exception as e:
             logger.warning(f"TMDB 网站搜索失败: {e}")
@@ -780,13 +792,15 @@ class TMDBClient:
                     title = title_match.group(1).strip()
 
             if title:
-                results.append({
-                    "id": int(entity_id),
-                    "media_type": card_media_type,
-                    "title": title,
-                    "name": title,
-                    "_web_fallback": True,
-                })
+                results.append(
+                    {
+                        "id": int(entity_id),
+                        "media_type": card_media_type,
+                        "title": title,
+                        "name": title,
+                        "_web_fallback": True,
+                    }
+                )
 
         # 按请求的 media_type 过滤，避免类型串扰
         # （TMDB 页面即使指定 /search/movie，仍可能包含 TV 卡片）
