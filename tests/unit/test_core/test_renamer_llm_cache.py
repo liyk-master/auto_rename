@@ -381,7 +381,9 @@ class TestEndToEndSameDirectory:
         # 第二集：入口即命中别名缓存
         renamer.extract_metadata(files[1])
         assert len(fake.calls) == 1
-        assert "z 早春晴朗_tv" in renamer._tmdb_name_to_id
+        # native 路径上下文命中后，父目录“Z 早春晴朗（2026）”被清理为
+        # “早春晴朗”（Z 为杂讯前缀），因此别名键不再带“z ”前缀
+        assert "早春晴朗_tv" in renamer._tmdb_name_to_id
 
 
 class TestCrossInstanceSharedCache:

@@ -3,7 +3,7 @@
 ## 构建/测试/格式化
 
 - **运行全部可用测试（推荐）:** `pytest tests/unit tests/test_emya_models.py tests/test_organizer.py`
-  （当前 296 passed / 1 failed）
+  （当前 330 passed / 1 failed）
 - **裸跑 `pytest` 会失败:** `tests/integration/test_integration.py` 在收集阶段就 ImportError
   （见「已知问题」），必须先 `--ignore` 或按上面的方式指定路径
 - **运行单个测试文件:** `pytest tests/unit/test_core/test_renamer.py`
@@ -38,7 +38,12 @@
   - `file_handler/handler.py` — `VideoFileHandler` 文件处理主循环（原 `core/video_file_handler.py` 已迁移）
   - `monitor/monitor.py` — `FileSystemMonitor` 目录监控
   - `downloader/` — `base.py` + `qbittorrent_monitor.py` + `aria2_monitor.py` + `factory.py`
-  - `guessit_parser/parser.py` — `GuessItParser`，GuessIt 集成 + 中文文件名预处理
+  - `filename_parser/` — `FilenameParser` 确定性解析器（已替代 GuessIt，guessit 已移除）；
+    分层：L2 路径上下文 / L3 紧凑格式 / L4 PT 命名法 / L5 方括号集号 /
+    L6 数字标题保护（1917.mkv→movie）/ L7 电影续集号（Spider-Man.2.2014→续集）；
+    解析链 = `_extract_with_regex`（显式标记/英文 SxxExx/中文集号）+ FilenameParser（L2-L7），
+    猜不到留空交给 TMDB/LLM；格式清单测试 `test_format_matrix.py` 锁分层覆盖；
+    分层设计见 `core/filename_parser/README.md`
   - `emya/` — emya 媒体库入库（`api.py` / `models.py` / `service.py`）
   - `config_loader.py` — 配置加载/保存/验证（支持 frozen 打包环境路径）
   - `tmdb_client.py` — TMDB API 客户端
@@ -99,7 +104,7 @@
   frozen 环境用 exe 同级目录；否则 **cwd 下 `config.ini` → 项目根 `config.ini` → 包内 `config.ini`**。
   注意「配置文件为空」不等于「不可用」，真实密钥常在项目根 `config.ini`
 - 主要 section: `[monitoring]` `[naming]` `[tmdb]` `[llm_fallback]` `[llm_provider_1..3]`
-  `[guessit]` `[emos]` `[emos_recognition]` `[processing]` `[logging]` `[telegram]`
+  `[guessit]` `[parser]` `[emos]` `[emos_recognition]` `[processing]` `[logging]` `[telegram]`
   `[emya_db]` `[yun139]` `[media_tracker]` `[p123]` `[recycle_clean]`；`[downloader.aria2]` / `[downloader.qbittorrent]` 模板中注释示例
 - **回收站清理配置** (`[recycle_clean]`，默认 `enabled = False`):
   - `providers` — 逗号分隔（当前仅 `p123`）、`daily_at` — `HH:MM`，可配多个如 `04:00,16:00`
@@ -120,11 +125,11 @@
     （`entry_year`，识别过程中 year 会被 TMDB 首播年份覆盖，反推必须用入口值）
     反查 TMDB 剧集季列表的 `air_date`，恰一个季匹配则采用（`_infer_season_from_year`），
     否则默认第 1 季（`_ensure_season` 统一兜底，所有识别路径共用）；
-    GuessIt 给裸集号文件名补的默认 season=1 不被信任——
+    解析器给裸集号文件名补的默认 season=1 不被信任——
     无显式季标记（S01/第1季/Season 1）且带目录年份时也允许反推覆盖
     （`_has_explicit_season`，`TestDefaultSeasonNotTrusted` 覆盖）
-  - ⚙ **电影续集号不回吞**：`The.Amazing.Spider-Man.2.2014…` 的续集号 2 会被
-    GuessIt 解析成 season，movie + season 时把续集号合并回搜索词（`The Amazing Spider Man 2`）；
+  - ⚙ **电影续集号不回吞**：`The.Amazing.Spider-Man.2.2014…` 的续集号 2
+    由 native L7 合并回搜索词（`The Amazing Spider Man 2`）；
     同时 `has_exact_match` 对标题做连字符/下划线归一化（`Spider-Man` == `Spider Man`），
     否则 TMDB 收录名带连字符永远匹配不上、退化为按人气选错条目；
     movie 搜索命中后立即落 `tmdb_id`（不依赖 external_ids）
