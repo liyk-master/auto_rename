@@ -420,6 +420,73 @@ class TestVideoRenamer:
         assert result is None
 
     @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_resolve_ambiguous_type_tv_refused_when_episode_less(
+        self, mock_tmdb_client
+    ):
+        """模糊类型判定：零剧集形态的单文件，仅 tv 命中时不锁定 tv。
+
+        "假面-2015-国语7.0.mp4" 无任何季/集信号（无季节/episode/标记），
+        multi 搜索只有 2015 韩剧《假面》撞上年份 → 不锁定 tv（同名撞车防护），
+        保持模糊交由 TMDB 匹配阶段双类型裁决（电影目录下 tv 候选会被排除）。
+        """
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+
+        # multi 搜索只返回电视剧命中 2015，电影无 2015 匹配
+        mock_client_instance.search_all_pages.return_value = [
+            {
+                "id": 1001,
+                "name": "假面",
+                "media_type": "tv",
+                "first_air_date": "2015-05-27",
+                "popularity": 50,
+            },
+            {
+                "id": 1002,
+                "title": "假面",
+                "media_type": "movie",
+                "release_date": "1966-10-18",
+                "popularity": 5,
+            },
+        ]
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {
+            "show_name": "假面",
+            "year": "2015",
+            "original_filename": (r"\影视资源\Downloads\电影\J\假面-2015-国语7.0.mp4"),
+        }
+        result = renamer._resolve_ambiguous_media_type_via_tmdb(metadata, 2015)
+
+        assert result is None
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_resolve_ambiguous_type_tv_kept_with_episode_marker(self, mock_tmdb_client):
+        """有显式季/集标记的文件仍允许锁定 tv（剧集形态信号不受影响）。"""
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+
+        mock_client_instance.search_all_pages.return_value = [
+            {
+                "id": 1001,
+                "name": "假面",
+                "media_type": "tv",
+                "first_air_date": "2015-05-27",
+                "popularity": 50,
+            },
+        ]
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {
+            "show_name": "假面",
+            "year": "2015",
+            "original_filename": r"\影视\剧集\假面\假面S01E01.mkv",
+        }
+        result = renamer._resolve_ambiguous_media_type_via_tmdb(metadata, 2015)
+
+        assert result == "tv"
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
     def test_enrich_with_tmdb_strong_tv_signal_keeps_tv(self, mock_tmdb_client):
         """强 TV 信号保护：TMDB 只返回 movie 结果时，保持 tv 判定不被覆盖"""
         mock_client_instance = MagicMock()
@@ -604,3 +671,910 @@ class TestVideoRenamer:
 
         assert result is None
         mock_client_instance.search_all_pages.assert_not_called()
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_chinese_numeral_prefix_not_fuzzy_collapsed_to_tv(self, mock_tmdb_client):
+        """回归：fuzzy 去数字只剥尾部续集号，不得全位置抠中文数字。
+
+        "四喜临门" 含前导中文数字"四"。旧逻辑 digit_pattern 全位置移除数字后，
+        "四喜临门" 与 "喜临门" 模糊相等得 15000 分，恰好绕过年份守卫 _exact_ok
+        阈值，把电影目录里的 "四喜临门 (2008)" 误配成 tv《喜临门》(2004,
+        id=263362)。修复后年份守卫正常拒绝无年份匹配候选，走电影目录兜底。
+        """
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+        # API 搜索（multi / video_show）全部 0 结果，只有网页兜底返回 3 条子串卡片
+        mock_client_instance.search_all_pages.return_value = []
+        mock_client_instance.search_web_fallback.return_value = [
+            {
+                "id": 263362,
+                "media_type": "tv",
+                "title": "喜临门",
+                "name": "喜临门",
+                "_web_fallback": True,
+                "first_air_date": "2004-03-25",
+            },
+            {
+                "id": 187169,
+                "media_type": "movie",
+                "title": "双喜临门",
+                "name": "双喜临门",
+                "_web_fallback": True,
+                "release_date": "1970-02-04",
+            },
+            {
+                "id": 225754,
+                "media_type": "tv",
+                "title": "三喜临门",
+                "name": "三喜临门",
+                "_web_fallback": True,
+                "first_air_date": "1995-01-01",
+            },
+        ]
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        fp = (
+            r"\影视资源\Downloads\电影\S\四喜临门 (2008) - "
+            r"1080p.SDR.H.264.25fps.MP2.ts"
+        )
+        md = renamer.extract_metadata(fp)
+
+        # 不再被 fuzzy 误配成 tv《喜临门》
+        assert not (md.get("media_type") == "tv" and md.get("tmdb_id") == 263362)
+        # 电影目录 + 无匹配 → 目录信号兜底 movie，不走 tv
+        assert md.get("media_type") == "movie"
+        assert md.get("tmdb_id") in ("", None)
+        assert md.get("show_name") == "四喜临门"
+        assert md.get("year") == "2008"
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_movie_dir_episode_less_never_tv(self, mock_tmdb_client):
+        """回归：电影目录 + 零剧集形态的单文件不得被同名剧集误配成 tv。
+
+        "假面-2015-国语7.0.mp4"（电影目录 J/ 下，无任何季/集信号）的 multi
+        搜索里，2015 韩剧《假面》首播年恰好与文件年份撞车。旧逻辑在"模糊类型
+        判定"阶段仅凭"tv 匹配且无 movie 匹配"就锁定 tv(0.7) → 误配韩剧。
+        修复后：① 零剧集形态拒绝锁定 tv；② 匹配阶段排除 tv 候选；③ 精确标题
+        的电影候选（假面 1966/2007）胜出，最终类型必须为 movie。
+        """
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+        mock_client_instance.search_all_pages.return_value = [
+            {
+                "id": 62806,
+                "name": "假面",
+                "media_type": "tv",
+                "first_air_date": "2015-05-27",
+                "popularity": 30,
+                "genre_ids": [18, 80],
+            },
+            {
+                "id": 797,
+                "title": "假面",
+                "media_type": "movie",
+                "release_date": "1966-10-18",
+                "popularity": 8,
+                "genre_ids": [],
+            },
+            {
+                "id": 38000,
+                "title": "假面",
+                "media_type": "movie",
+                "release_date": "2007-12-27",
+                "popularity": 12,
+                "genre_ids": [],
+            },
+        ]
+        mock_client_instance.search_web_fallback.return_value = []
+        mock_client_instance.find_by_imdb_id.return_value = None
+        mock_client_instance.get_movie_details.return_value = {
+            "id": 38000,
+            "title": "假面",
+            "original_title": "假面",
+            "overview": "测试影片",
+            "release_date": "2007-12-27",
+            "vote_average": 7.0,
+            "vote_count": 10,
+            "genres": [{"name": "剧情"}],
+            "poster_path": "/p.jpg",
+            "backdrop_path": "/b.jpg",
+            "original_language": "zh",
+            "adult": False,
+            "origin_country": ["CN"],
+            "production_countries": [{"iso_3166_1": "CN"}],
+            "runtime": 90,
+            "status": "Released",
+        }
+        mock_client_instance.get_tv_details.return_value = {}
+        mock_client_instance.get_external_ids.return_value = {}
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        fp = r"\影视资源\Downloads\电影\J\假面-2015-国语7.0.mp4"
+        md = renamer.extract_metadata(fp)
+
+        # 绝不能锁定成电视剧（旧逻辑：tv + 韩剧 62806）
+        assert md.get("media_type") == "movie", md
+        assert md.get("tmdb_id") != 62806
+        assert md.get("show_name") == "假面"
+        # 常被解析成 tv 前的旧行为是 `media_type` 为空——现在不再可能
+        assert md.get("media_type") != "tv"
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_movie_dir_compact_sequel_never_tv(self, mock_tmdb_client):
+        """回归：电影目录 + 紧凑续集号（蜘蛛侠3.mkv）不得被 L3 拆成剧集。
+
+        L3 紧凑格式会把 "蜘蛛侠3" 解析成 show_name=蜘蛛侠 episode=3（与
+        "入青云01" 结构同构，单看文件名无法区分）。但文件在电影目录里即
+        电影语义——tv 候选无条件排除，最终匹配到电影《蜘蛛侠3》。
+        """
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+        # multi 搜索同时存在同名剧集诱惑与真实电影
+        mock_client_instance.search_all_pages.return_value = [
+            {
+                "id": 999,
+                "name": "蜘蛛侠",
+                "media_type": "tv",
+                "first_air_date": "2000-01-01",
+                "popularity": 60,
+                "genre_ids": [],
+            },
+            {
+                "id": 559,
+                "title": "蜘蛛侠3",
+                "media_type": "movie",
+                "release_date": "2007-05-01",
+                "popularity": 50,
+                "genre_ids": [],
+            },
+        ]
+        mock_client_instance.search_web_fallback.return_value = []
+        mock_client_instance.find_by_imdb_id.return_value = None
+        mock_client_instance.get_movie_details.return_value = {
+            "id": 559,
+            "title": "蜘蛛侠3",
+            "original_title": "蜘蛛侠3",
+            "overview": "测试影片",
+            "release_date": "2007-05-01",
+            "vote_average": 6.0,
+            "vote_count": 100,
+            "genres": [{"name": "动作"}],
+            "poster_path": "/p.jpg",
+            "backdrop_path": "/b.jpg",
+            "original_language": "zh",
+            "adult": False,
+            "origin_country": ["US"],
+            "production_countries": [{"iso_3166_1": "US"}],
+            "runtime": 140,
+            "status": "Released",
+        }
+        mock_client_instance.get_tv_details.return_value = {}
+        mock_client_instance.get_external_ids.return_value = {}
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        fp = r"\影视资源\Downloads\电影\S\蜘蛛侠3.mkv"
+        md = renamer.extract_metadata(fp)
+
+        assert md.get("media_type") == "movie", md
+        assert md.get("tmdb_id") == 559
+        assert md.get("tmdb_id") != 999
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_generic_dir_episode_less_never_tv(self, mock_tmdb_client):
+        """回归：无电影目录前缀的零剧集形态文件也不得输出 tv。
+
+        "Downloads/假面-2015-国语7.0.mp4"（文件名无任何季/集信号、路径无
+        剧集布局）——TV 证据不足：宁可识别为同名电影，也不输出韩剧《假面》。
+        """
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+        mock_client_instance.search_all_pages.return_value = [
+            {
+                "id": 62806,
+                "name": "假面",
+                "media_type": "tv",
+                "first_air_date": "2015-05-27",
+                "popularity": 30,
+                "genre_ids": [18, 80],
+            },
+            {
+                "id": 38000,
+                "title": "假面",
+                "media_type": "movie",
+                "release_date": "2007-12-27",
+                "popularity": 20,
+                "genre_ids": [],
+            },
+        ]
+        mock_client_instance.search_web_fallback.return_value = []
+        mock_client_instance.find_by_imdb_id.return_value = None
+        mock_client_instance.get_movie_details.return_value = {
+            "id": 38000,
+            "title": "假面",
+            "original_title": "假面",
+            "overview": "测试影片",
+            "release_date": "2007-12-27",
+            "vote_average": 7.0,
+            "vote_count": 10,
+            "genres": [{"name": "剧情"}],
+            "poster_path": "/p.jpg",
+            "backdrop_path": "/b.jpg",
+            "original_language": "zh",
+            "adult": False,
+            "origin_country": ["CN"],
+            "production_countries": [{"iso_3166_1": "CN"}],
+            "runtime": 90,
+            "status": "Released",
+        }
+        mock_client_instance.get_tv_details.return_value = {}
+        mock_client_instance.get_external_ids.return_value = {}
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        fp = r"\影视资源\Downloads\假面-2015-国语7.0.mp4"
+        md = renamer.extract_metadata(fp)
+
+        assert md.get("media_type") == "movie", md
+        assert md.get("tmdb_id") != 62806
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_tv_candidate_admissible_evidence(self, mock_tmdb_client):
+        """_tv_candidate_admissible：tv 候选可选性由剧集证据驱动。"""
+        renamer = VideoRenamer("your_tmdb_api_key")
+
+        # 零剧集形态：不选 tv（宁可不识别也不误配剧）
+        assert (
+            renamer._tv_candidate_admissible(
+                {
+                    "show_name": "假面",
+                    "year": "2015",
+                    "original_filename": r"\影视资源\Downloads\假面-2015-国语7.0.mp4",
+                }
+            )
+            is False
+        )
+        # 裸集号文件（L2）
+        assert (
+            renamer._tv_candidate_admissible(
+                {
+                    "original_filename": r"\影视\剧集\斗破丨苍穹\210 4K.mkv",
+                    "episode": 210,
+                }
+            )
+            is True
+        )
+        # 显式 SxxExx 标记
+        assert (
+            renamer._tv_candidate_admissible(
+                {"original_filename": r"\影视\剧集\假面\假面S01E01.mkv"}
+            )
+            is True
+        )
+        # 剧集布局目录（剧集/分类词）
+        assert (
+            renamer._tv_candidate_admissible(
+                {"original_filename": r"\影视\剧集\云之羽\云之羽.mkv"}
+            )
+            is True
+        )
+        # 中文剧名父目录（L2 结构：云之羽/云之羽.mkv 视为剧集目录）
+        assert (
+            renamer._tv_candidate_admissible(
+                {"original_filename": r"\影视\云之羽\云之羽.mkv"}
+            )
+            is True
+        )
+        # 紧凑后缀 episode 存在（入青云01 类）→ 允许 tv 候选交 TMDB 裁决
+        assert (
+            renamer._tv_candidate_admissible(
+                {"original_filename": r"\影视\Downloads\入青云01.mp4", "episode": 1}
+            )
+            is True
+        )
+        # Season 目录上下文
+        assert (
+            renamer._tv_candidate_admissible(
+                {"original_filename": r"\影视\某剧\Season 2\某剧.mkv"}
+            )
+            is True
+        )
+        # 无文件上下文（单元测试）→ 保守允许，保持旧行为
+        assert renamer._tv_candidate_admissible({"show_name": "早春晴朗"}) is True
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_bare_numeric_stem_default_tv_not_movie(self, mock_tmdb_client):
+        """回归：纯数字集号文件（含质量标签）regex 层不得默认成 movie。
+
+        "完美世界\222 4k.mp4" 的 222 是 3 位裸集号（动画已播 200+ 集），
+        旧 regex 只保护 1-2 位（"01.mp4"），3 位落到 movie 默认分支 →
+        resolver 锁死 movie → 误配电影《完美世界》(2018, id 546794)。
+        修复后 1-3 位纯数字（剥质量标签后）默认 tv；4 位年份仍是电影/不确定。
+        """
+        renamer = VideoRenamer("your_tmdb_api_key")
+        # 3 位裸集号 + 质量标签 → tv
+        assert (
+            renamer._extract_with_regex(r"完美世界\222 4k.mp4").get("media_type")
+            == "tv"
+        )
+        assert (
+            renamer._extract_with_regex(r"完美世界\222.mp4").get("media_type") == "tv"
+        )
+        # 1-2 位裸集号（原有保护，不回归）
+        assert renamer._extract_with_regex(r"01.mp4").get("media_type") == "tv"
+        # 4 位年份数字 → 电影/不确定（不锁 tv）
+        assert renamer._extract_with_regex(r"1917.mkv").get("media_type") != "tv"
+        # 紧凑续集号（蜘蛛侠3）不变：movie 默认，交 TMDB 裁决
+        assert renamer._extract_with_regex(r"蜘蛛侠3.mkv").get("media_type") == "movie"
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_episode_less_tv_show_episode_222_never_movie(self, mock_tmdb_client):
+        """回归：剧集证据充足的裸集号文件不得被误配成电影。
+
+        "完美世界\222 4k.mp4"：父目录剧名 + 3 位裸集号 → 动画《完美世界》
+        (tmdb 124003, 2021) 的 S01E222。旧逻辑 regex 默认 movie →
+        严格 movie 过滤选中电影《完美世界》(2018, id 546794)。
+        修复后必须选中 tv 动画 124003，且 episode=222 保留。
+        """
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+        mock_client_instance.search_all_pages.return_value = [
+            {
+                "id": 124003,
+                "name": "完美世界",
+                "media_type": "tv",
+                "first_air_date": "2021-07-25",
+                "popularity": 73.8878,
+                "genre_ids": [16, 10759],
+            },
+            {
+                "id": 7120,
+                "name": "完美世界",
+                "media_type": "tv",
+                "first_air_date": "2000-01-01",
+                "popularity": 2.8556,
+                "genre_ids": [35],
+            },
+            {
+                "id": 546794,
+                "title": "完美世界",
+                "media_type": "movie",
+                "release_date": "2018-01-01",
+                "popularity": 1.5428,
+                "genre_ids": [10749],
+            },
+        ]
+        mock_client_instance.search_web_fallback.return_value = []
+        mock_client_instance.find_by_imdb_id.return_value = None
+        mock_client_instance.get_movie_details.return_value = {}
+        mock_client_instance.get_tv_details.return_value = {
+            "id": 124003,
+            "name": "完美世界",
+            "original_name": "完美世界",
+            "overview": "测试动画",
+            "first_air_date": "2021-07-25",
+            "vote_average": 8.0,
+            "vote_count": 100,
+            "genres": [{"name": "动画"}],
+            "poster_path": "/p.jpg",
+            "backdrop_path": "/b.jpg",
+            "original_language": "zh",
+            "adult": False,
+            "origin_country": ["CN"],
+            "production_countries": [{"iso_3166_1": "CN"}],
+            "number_of_episodes": 250,
+            "status": "Returning Series",
+        }
+        mock_client_instance.get_external_ids.return_value = {}
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        fp = r"\影视资源\Downloads\完美世界\222 4k.mp4"
+        md = renamer.extract_metadata(fp)
+
+        # 必须识别成动画剧集，绝不能锁死成电影《完美世界》(2018)
+        assert md.get("media_type") == "tv", md
+        assert md.get("tmdb_id") == 124003, md
+        assert md.get("episode") == 222
+        assert md.get("show_name") == "完美世界"
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_compact_sequel_generic_dir_matches_installment(self, mock_tmdb_client):
+        """回归：通用目录紧凑续集号（蜘蛛侠3.mkv）不得被精确标题+人气误配成第一部。
+
+        搜索词是 L3 剥离续集号后的 "蜘蛛侠"（与 "入青云01" 同构），候选里
+        同时有同名第一部《蜘蛛侠》(2002, 557) 与《蜘蛛侠3》(2007, 559)。
+        旧逻辑精确匹配"蜘蛛侠"命中两部，按人气选 557 → 错配第一部。
+        修复后续集号合并回搜索词（蜘蛛侠3）精确匹配 → 559。
+        """
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+        mock_client_instance.search_all_pages.return_value = [
+            {
+                "id": 557,
+                "title": "蜘蛛侠",
+                "media_type": "movie",
+                "release_date": "2002-05-01",
+                "popularity": 45.1209,
+                "genre_ids": [],
+            },
+            {
+                "id": 559,
+                "title": "蜘蛛侠3",
+                "media_type": "movie",
+                "release_date": "2007-05-01",
+                "popularity": 34.5636,
+                "genre_ids": [],
+            },
+            {
+                "id": 999,
+                "name": "蜘蛛侠",
+                "media_type": "tv",
+                "first_air_date": "2000-01-01",
+                "popularity": 60,
+                "genre_ids": [],
+            },
+        ]
+        mock_client_instance.search_web_fallback.return_value = []
+        mock_client_instance.find_by_imdb_id.return_value = None
+        mock_client_instance.get_movie_details.return_value = {
+            "id": 559,
+            "title": "蜘蛛侠3",
+            "original_title": "蜘蛛侠3",
+            "overview": "测试影片",
+            "release_date": "2007-05-01",
+            "vote_average": 6.0,
+            "vote_count": 100,
+            "genres": [{"name": "动作"}],
+            "poster_path": "/p.jpg",
+            "backdrop_path": "/b.jpg",
+            "original_language": "zh",
+            "adult": False,
+            "origin_country": ["US"],
+            "production_countries": [{"iso_3166_1": "US"}],
+            "runtime": 140,
+            "status": "Released",
+        }
+        mock_client_instance.get_tv_details.return_value = {}
+        mock_client_instance.get_external_ids.return_value = {}
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        fp = r"\影视资源\Downloads\蜘蛛侠3.mkv"
+        md = renamer.extract_metadata(fp)
+
+        assert md.get("media_type") == "movie", md
+        assert md.get("tmdb_id") == 559, md
+        assert md.get("tmdb_id") != 557
+        assert md.get("year") == "2007"
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_name_cache_not_poisoned_for_compact_sequel(self, mock_tmdb_client):
+        """回归：名称缓存不得让紧凑续集号文件串味到上一部。
+
+        同一进程内先处理过《蜘蛛侠》(2002, 557) 会把 "蜘蛛侠_movie"→557
+        写进进程级 _tmdb_name_to_id。若后续 "蜘蛛侠3.mkv" 被紧凑拆成
+        show_name=蜘蛛侠 并命中该缓存 → 直接取详情 557 → 错配第一部。
+        修复：movie + episode 无 season（紧凑续集形态）不信任名称缓存，
+        走搜索路径（含续集号合并）→ 559；而合法的 tv 剧集缓存仍生效。
+        """
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+        mock_client_instance.search_all_pages.return_value = [
+            {
+                "id": 557,
+                "title": "蜘蛛侠",
+                "media_type": "movie",
+                "release_date": "2002-05-01",
+                "popularity": 45.1209,
+                "genre_ids": [],
+            },
+            {
+                "id": 559,
+                "title": "蜘蛛侠3",
+                "media_type": "movie",
+                "release_date": "2007-05-01",
+                "popularity": 34.5636,
+                "genre_ids": [],
+            },
+            {
+                "id": 124003,
+                "name": "完美世界",
+                "media_type": "tv",
+                "first_air_date": "2021-07-25",
+                "popularity": 73.8878,
+                "genre_ids": [16, 10759],
+            },
+        ]
+        mock_client_instance.search_web_fallback.return_value = []
+        mock_client_instance.find_by_imdb_id.return_value = None
+        mock_client_instance.get_movie_details.return_value = {
+            "id": 559,
+            "title": "蜘蛛侠3",
+            "original_title": "蜘蛛侠3",
+            "overview": "测试影片",
+            "release_date": "2007-05-01",
+            "vote_average": 6.0,
+            "vote_count": 100,
+            "genres": [{"name": "动作"}],
+            "poster_path": "/p.jpg",
+            "backdrop_path": "/b.jpg",
+            "original_language": "zh",
+            "adult": False,
+            "origin_country": ["US"],
+            "production_countries": [{"iso_3166_1": "US"}],
+            "runtime": 140,
+            "status": "Released",
+        }
+        mock_client_instance.get_tv_details.return_value = {
+            "id": 124003,
+            "name": "完美世界",
+            "original_name": "完美世界",
+            "overview": "测试动画",
+            "first_air_date": "2021-07-25",
+            "vote_average": 8.0,
+            "vote_count": 100,
+            "genres": [{"name": "动画"}],
+            "poster_path": "/p.jpg",
+            "backdrop_path": "/b.jpg",
+            "original_language": "zh",
+            "adult": False,
+            "origin_country": ["CN"],
+            "production_countries": [{"iso_3166_1": "CN"}],
+            "number_of_episodes": 250,
+            "status": "Returning Series",
+        }
+        mock_client_instance.get_external_ids.return_value = {}
+
+        # 模拟上一部《蜘蛛侠》(2002) 留下的进程级污染
+        VideoRenamer._tmdb_name_to_id["蜘蛛侠_movie"] = 557
+        renamer = VideoRenamer("your_tmdb_api_key")
+        md = renamer.extract_metadata(r"\影视资源\Downloads\蜘蛛侠3.mkv")
+
+        # 紧凑续集形态必须无视被污染的缓存，走搜索 → 559
+        assert md.get("tmdb_id") == 559, md
+        assert md.get("tmdb_id") != 557
+
+        # 合法的 tv 剧集名称缓存仍生效（同一进程、同类型）
+        VideoRenamer._tmdb_name_to_id["完美世界_tv"] = 124003
+        md2 = renamer.extract_metadata(r"\影视资源\Downloads\完美世界\222 4k.mp4")
+        assert md2.get("media_type") == "tv", md2
+        assert md2.get("tmdb_id") == 124003, md2
+        assert md2.get("episode") == 222
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_tmdb_marker_short_form_extracted(self, mock_tmdb_client):
+        """回归：{tmdb-6038} 无 id 短格式标记必须被识别并直接取详情。
+
+        README 文档化的 tmdbid_suffix 是 {tmdb-123}（无 id、连字符），旧正则
+        只认 tmdbid=/- 导致写出来的后缀读不回去、6038 被当成数字残渣，
+        show_name 变成 '...内封字幕 {tmdb- }' 垃圾搜索词 → 全部搜索策略失败。
+        """
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+        mock_client_instance.get_movie_details.return_value = {
+            "id": 6038,
+            "title": "上海正午2：上海骑士",
+            "original_title": "Shanghai Knights",
+            "overview": "测试影片",
+            "release_date": "2003-02-07",
+            "vote_average": 6.0,
+            "vote_count": 100,
+            "genres": [{"name": "动作"}],
+            "poster_path": "/p.jpg",
+            "backdrop_path": "/b.jpg",
+            "original_language": "zh",
+            "adult": False,
+            "origin_country": ["US"],
+            "production_countries": [{"iso_3166_1": "US"}],
+            "runtime": 114,
+            "status": "Released",
+        }
+        mock_client_instance.get_tv_details.return_value = {}
+        mock_client_instance.get_external_ids.return_value = {}
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        fp = (
+            r"\影视资源\Downloads\上海正午2：上海骑士.Shanghai.Knights.2003."
+            r"1080p.24fps.SDR.H.264.8bit.DD5.1.内封字幕 {tmdb-6038}.mkv"
+        )
+        md = renamer.extract_metadata(fp)
+
+        assert md.get("tmdb_id") in (6038, "6038"), md
+        assert md.get("media_type") == "movie", md
+        assert md.get("show_name") == "上海正午2：上海骑士", md
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_show_name_residue_cleaned_for_search(self, mock_tmdb_client):
+        """回归：混合中英文名的技术残渣（24fps/H 264/DD5 1/内封字幕）不得
+        污染搜索词与 show_name。
+
+        "上海正午2：上海骑士.Shanghai.Knights.2003.1080p.24fps.SDR.H.264."
+        "8bit.DD5.1.内封字幕.mkv"（无标记版本）：旧逻辑 show_name 保留
+        '24fps H 264 DD5 1 内封字幕 {tmdb- }' 全量残渣 → TMDB 搜索必失败。
+        修复后 _prepare_search_term 剥离技术残留 + 字幕标签 → '上海正午2:上海骑士'。
+        """
+        renamer = VideoRenamer("your_tmdb_api_key")
+        prepared = renamer._prepare_search_term(
+            "上海正午2:上海骑士 Shanghai Knights 24fps H 264 DD5 1 内封字幕"
+        )
+        assert prepared == "上海正午2:上海骑士", prepared
+        # 双标题剥离支持标题内冒号（全/半角）
+        prepared2 = renamer._prepare_search_term(
+            "复仇者联盟3：无限战争 Avengers Infinity War 4K HDR 2160p"
+        )
+        assert prepared2 == "复仇者联盟3：无限战争", prepared2
+        # 既有英文形态不回归
+        prepared3 = renamer._prepare_search_term(
+            "小精灵2 Gremlins 2 - The New Batch 1080p"
+        )
+        assert prepared3 == "小精灵2", prepared3
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_foreign_transliteration_stripped_from_search(self, mock_tmdb_client):
+        """回归：中文标题后的泰米尔/日文音译副标题必须从搜索词剥离。
+
+        "恶魔.அசுரன்.2019..." 与 "安昙春子下落不明.アズミ・ハルコは行方不明."
+        "2016..."（点号格式被正则展平成 "中文标题 + 空格 + 外文音译"）。
+        音译（含日文汉字如 行方不明）不是标题，残留会污染 TMDB 搜索词。
+        判定依据：空格后首字符为外文脚本字母（拉丁/假名/谚文/泰米尔/西里尔）。
+        """
+        renamer = VideoRenamer("your_tmdb_api_key")
+        assert renamer._prepare_search_term("恶魔 அசுரன் 60fps H 264 AAC2 0") == "恶魔"
+        assert (
+            renamer._prepare_search_term(
+                "安昙春子下落不明 アズミ・ハルコは行方不明 24fps"
+            )
+            == "安昙春子下落不明"
+        )
+        assert (
+            renamer._prepare_search_term("因果报应 மகாராஜா 24fps Netflix") == "因果报应"
+        )
+        # 中文续集号/中文副标题不得被误剥
+        assert renamer._prepare_search_term("流浪地球 2") == "流浪地球 2"
+        assert renamer._prepare_search_term("三体 黑暗森林") == "三体 黑暗森林"
+        # 演唱会保护
+        assert (
+            renamer._prepare_search_term("周慧敏 Deep V 25周年演唱会")
+            == "周慧敏 Deep V 25周年演唱会"
+        )
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_dts_hd_ma_and_fx_subtitle_residue(self, mock_tmdb_client):
+        """回归：DTS-HD.MA5.1（点号转空格成 -HD MA5 1）与特效字幕粘连串。
+
+        "深夜食堂2电影版.続・深夜食堂.2016...DTS-HD.MA5.1.5Audios.内封字幕."
+        "中文字幕.特效字幕.国语配音"：旧词表只认 DTS-HD 裸词（DTS 先被剥掉
+        留 "-HD"），MA5 1 与特效字幕/国语配音（粘连串）全残留。
+        """
+        renamer = VideoRenamer("your_tmdb_api_key")
+        assert (
+            renamer._prepare_search_term(
+                "深夜食堂2电影版続・深夜食堂 24fps H 264 -HD MA5 1 "
+                "5Audios 内封字幕中文字幕特效字幕国语配音"
+            )
+            == "深夜食堂2电影版続・深夜食堂"
+        )
+        # DTS-HD.MA5.1 完整形态
+        assert (
+            renamer._prepare_search_term("深夜食堂2电影版 DTS-HD.MA5.1 5Audios")
+            == "深夜食堂2电影版"
+        )
+        # 上一批不回归
+        assert (
+            renamer._prepare_search_term(
+                "魔法奇缘2:解除魔法 24fps Dovi P5 DDP5 1 内封字幕中文字幕国语配音"
+            )
+            == "魔法奇缘2:解除魔法"
+        )
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_structural_title_year_boundary(self, mock_tmdb_client):
+        """回归：点号分隔规范命名以 4 位年份为硬边界切标题（结构性规则）。
+
+        这类命名 '中文标题.英文标题.2023.1080p.24fps.SDR.H.264.8bit.DD5.1.'
+        '内封字幕 {tmdb-123}.mkv' 的规律是年份之前是标题、之后全是标签——
+        确定性一刀切，不依赖逐词黑名单（24fps/Dovi/DTS-HD.MA5.1/特效字幕
+        等新标签层出不穷，黑名单式反剥永远追不完）。
+        """
+        from video_organizer.core.renamer.renamer import (
+            _extract_title_via_year_boundary,
+        )
+
+        # 纯中文+英文翻译
+        assert (
+            _extract_title_via_year_boundary(
+                r"上海正午2：上海骑士.Shanghai.Knights.2003.1080p.24fps.SDR.H.264.8bit.DD5.1.内封字幕 {tmdb-6038}.mkv"
+            )
+            == "上海正午2：上海骑士 Shanghai Knights"
+        )
+        # 泰米尔音译
+        assert (
+            _extract_title_via_year_boundary(
+                r"恶魔.அசுரன்.2019.1080p.60fps.SDR.H.264.8bit.AAC2.0 {tmdb-576928}.mp4"
+            )
+            == "恶魔 அசுரன்"
+        )
+        # 日文原名（汉字开头保留）
+        assert (
+            _extract_title_via_year_boundary(
+                r"深夜食堂2电影版.続・深夜食堂.2016.1080p.24fps.SDR.H.264.8bit.DTS-HD.MA5.1.5Audios.内封字幕.中文字幕.特效字幕.国语配音 {tmdb-429285}.mkv"
+            )
+            == "深夜食堂2电影版 続・深夜食堂"
+        )
+        # 英文在前
+        assert (
+            _extract_title_via_year_boundary(
+                r"SPEC.特别篇：翔.2012.1080p.30fps.SDR.H.264.8bit.DD2.0 {tmdb-345699}.mkv"
+            )
+            == "SPEC 特别篇：翔"
+        )
+        # 纯英文
+        assert (
+            _extract_title_via_year_boundary(
+                r"The.Matrix.Resurrections.2021.2160p.REMUX.DV.HEVC.mkv"
+            )
+            == "The Matrix Resurrections"
+        )
+        # TV 集号标记不进入标题
+        assert (
+            _extract_title_via_year_boundary(
+                r"Swimming.Upstream.S01E02.2026.2160p.WEB-DL.H265.AAC.mkv"
+            )
+            == "Swimming Upstream"
+        )
+        # 无年份 → 不适用（走原逻辑）；标题本身就是年份数字（1984.1984）
+        # 第一个 1984 是片名、第二个是年份 → 正常提取
+        assert _extract_title_via_year_boundary(r"小精灵2.Gremlins.2.mkv") == ""
+        assert _extract_title_via_year_boundary(r"1984.1984.1080p.mkv") == "1984"
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_show_name_chinese_primary_name(self, mock_tmdb_client):
+        """回归：show_name 主名中文化——'砍人快乐 Freaky' → '砍人快乐'。
+
+        结构性提取忠实还原中文+英文原名，但片名规范主名应为纯中文：
+        外文音译/翻译副标题（含 'This Aint Star Trek XXX 3' 这类长尾）
+        由 _strip_trailing_transliteration 统一剥离（show_name 与搜索词共用）。
+        """
+        from video_organizer.core.renamer.renamer import (
+            _strip_trailing_transliteration,
+        )
+
+        assert _strip_trailing_transliteration("砍人快乐 Freaky") == "砍人快乐"
+        assert (
+            _strip_trailing_transliteration(
+                "这不是星际迷航成人版3 This Aint Star Trek XXX 3"
+            )
+            == "这不是星际迷航成人版3"
+        )
+        assert _strip_trailing_transliteration("恶魔 அசுரன்") == "恶魔"
+        # 不误伤：中文开头副标题 / 英文开头 / 纯英文 / 续集号 / 演唱会
+        assert _strip_trailing_transliteration("三体 黑暗森林") == "三体 黑暗森林"
+        assert _strip_trailing_transliteration("SPEC 特别篇:翔") == "SPEC 特别篇:翔"
+        assert (
+            _strip_trailing_transliteration("The Matrix Resurrections")
+            == "The Matrix Resurrections"
+        )
+        assert _strip_trailing_transliteration("流浪地球 2") == "流浪地球 2"
+        assert (
+            _strip_trailing_transliteration("周慧敏 Deep V 25周年演唱会")
+            == "周慧敏 Deep V 25周年演唱会"
+        )
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_seasoned_version_selected_by_dir_year(self, mock_tmdb_client):
+        """回归：同名剧分季/不分季两个版本并存时，目录年份应选中分季版本。
+
+        "一念丨永恒（2026）/10 4K.mkv"：TMDB 有两个一念永恒——
+        id 107371（不分季，200 集全塞 S1，人气 35.3）与 id 331477
+        （分季 S1~S3 + S4 完结季 air=2026，人气 5.8）。旧逻辑季年份
+        boost 只看默认补的 season=1（S1 air 2020≠2026 都得 0），纯人气
+        选中不分季版，年份反推无季可推 → S01。修复：无显式季标记时
+        boost 允许任意季命中目录年份 → 331477 +500 胜出 → 反推 S04。
+        """
+        mock_client_instance = MagicMock()
+        mock_tmdb_client.return_value = mock_client_instance
+
+        def _tv_details(tid, **kw):
+            if tid == 107371:
+                return {
+                    "id": 107371,
+                    "name": "一念永恒",
+                    "first_air_date": "2020-08-12",
+                    "seasons": [
+                        {
+                            "season_number": 1,
+                            "air_date": "2020-08-12",
+                            "episode_count": 200,
+                        }
+                    ],
+                    "original_name": "一念永恒",
+                    "overview": "x",
+                    "poster_path": "",
+                    "backdrop_path": "",
+                    "vote_average": 7.0,
+                    "vote_count": 10,
+                    "genres": [{"name": "动画"}],
+                    "original_language": "zh",
+                    "adult": False,
+                    "origin_country": ["CN"],
+                    "status": "Returning Series",
+                }
+            if tid == 331477:
+                return {
+                    "id": 331477,
+                    "name": "一念永恒",
+                    "first_air_date": "2020-08-12",
+                    "seasons": [
+                        {
+                            "season_number": 1,
+                            "air_date": "2020-08-12",
+                            "episode_count": 52,
+                        },
+                        {
+                            "season_number": 2,
+                            "air_date": "2022-07-20",
+                            "episode_count": 54,
+                        },
+                        {
+                            "season_number": 3,
+                            "air_date": "2024-07-03",
+                            "episode_count": 59,
+                        },
+                        {
+                            "season_number": 4,
+                            "air_date": "2026-07-22",
+                            "episode_count": 30,
+                        },
+                    ],
+                    "original_name": "一念永恒",
+                    "overview": "x",
+                    "poster_path": "",
+                    "backdrop_path": "",
+                    "vote_average": 7.0,
+                    "vote_count": 10,
+                    "genres": [{"name": "动画"}],
+                    "original_language": "zh",
+                    "adult": False,
+                    "origin_country": ["CN"],
+                    "status": "Returning Series",
+                }
+            return {"id": tid, "name": "一念永恒", "seasons": []}
+
+        mock_client_instance.get_tv_details.side_effect = _tv_details
+        mock_client_instance.search_all_pages.return_value = [
+            {
+                "id": 107371,
+                "name": "一念永恒",
+                "media_type": "tv",
+                "first_air_date": "2020-08-12",
+                "popularity": 35.3233,
+                "genre_ids": [16, 10759],
+            },
+            {
+                "id": 331477,
+                "name": "一念永恒",
+                "media_type": "tv",
+                "first_air_date": "2020-08-12",
+                "popularity": 5.8322,
+                "genre_ids": [16, 10759],
+            },
+            {
+                "id": 261597,
+                "name": "一念永恒",
+                "media_type": "tv",
+                "popularity": 1.9142,
+                "genre_ids": [16],
+            },
+        ]
+        mock_client_instance.search_web_fallback.return_value = []
+        mock_client_instance.find_by_imdb_id.return_value = None
+        mock_client_instance.get_movie_details.return_value = {}
+        mock_client_instance.get_external_ids.return_value = {}
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        md = renamer.extract_metadata(
+            r"\影视资源\Downloads\一念丨永恒（2026）\10 4K.mkv"
+        )
+
+        # 必须选中分季版本 331477 并反推出 S04，而不是人气更高的不分季版 107371
+        assert md.get("tmdb_id") == 331477, md
+        assert md.get("media_type") == "tv", md
+        assert md.get("season") == 4, md
+        assert md.get("episode") == 10, md

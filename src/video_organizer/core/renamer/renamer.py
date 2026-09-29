@@ -14,12 +14,25 @@ from typing import Dict, List, Optional, Union, Set
 from jinja2 import Template
 from ..tmdb_client import TMDBClient
 from ..filename_parser import FilenameParser
+from ..filename_parser.parser import _is_chinese_show_dir
 from ...utils.llm_translator import LLMTranslator
 from ...utils.cache import ThreadSafeLRUCache
 
 # 搜索空结果的短时缓存时长（秒）：识别失败的搜索词短时间内不会变，
 # 避免同词被多个文件反复重试打爆 TMDB 限速；到期后自动失效可重试
 _SEARCH_EMPTY_TTL = 600
+
+
+def _config_bool(value) -> bool:
+    """解析 ConfigParser 的布尔值（"False"/"0"/"" 字符串都是 truthy，
+    必须显式转换），否则 enabled=False 的 Provider/模块被当启用。"""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 from ..manual_rule_engine import ManualRuleEngine
 from ..media_type_resolver import MediaTypeResolver
 
@@ -40,6 +53,101 @@ except ImportError:
     ZHCONV_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_title_via_year_boundary(filename: str) -> str:
+    """点号分隔规范命名的结构性标题提取（以 4 位年份为硬边界）。
+
+    规律：'中文标题.英文标题.2023.1080p.24fps.SDR.H.264.8bit.DD5.1.'
+    '内封字幕 {tmdb-123}.mkv' —— 第一个独立 4 位年份 token 之前是标题，
+    之后全部是质量/来源/字幕标签。纯英文同样适用（'The.Matrix.'
+    'Resurrections.2021.2160p...' → 'The Matrix Resurrections'）。
+    不再依赖逐词黑名单反剥（24fps / Dovi.P5 / DTS-HD.MA5.1 / 特效字幕等
+    新标签层出不穷），对规范点号命名是确定性一刀切。
+    返回空串表示不适用（无年份/年份在首位），调用方走原逻辑。
+    """
+    if not filename:
+        return ""
+    stem = Path(str(filename)).stem
+    parts = [p for p in stem.split(".") if p]
+    for i, p in enumerate(parts):
+        if re.fullmatch(r"\d{4}", p) and i > 0:
+            # 标题段剔除独立季/集标记 token（S01E02/S01/E02），
+            # 否则 "Swimming.Upstream.S01E02.2026..." 会带进标题
+            title_parts = [
+                t
+                for t in parts[:i]
+                if not re.match(r"(?i)^(?:S\d{1,2}E\d{1,4}|S\d{1,2}|E\d{1,4})$", t)
+            ]
+            _title = " ".join(title_parts).strip()
+            # 方括号是双语片框架约定（"[第二十条].Article.20.2024..."），
+            # 不是标题的一部分——剥离，避免 "[第二十条]" 整串被后续
+            # 前缀发布组剥离逻辑误当空名清除
+            _title = re.sub(r"[\[\]【】]", " ", _title)
+            return re.sub(r"\s{2,}", " ", _title).strip()
+    return ""
+
+
+def _strip_trailing_transliteration(name: str) -> str:
+    """中文标题 + 空格 + 外文音译副标题 → 仅保留中文主名。
+
+    '砍人快乐 Freaky' → '砍人快乐'；'恶魔 அசுரன்' → '恶魔'；
+    '星际旅行9：起义 Star Trek Insurrection' → '星际旅行9：起义'。
+    判定：首个词含中文，且空格后**首字符**为外文脚本字母（拉丁/假名/谚文/
+    泰米尔/西里尔）即视为音译副标题而剥离——"流浪地球 2"（数字开头）、
+    "三体 黑暗森林"（中文开头）、"SPEC 特别篇：翔"（英文开头）、
+    "头文字D"（无空格段）、演唱会（TMDB 收录整名）均不剥离；
+    音译里混入的日文汉字（行方不明）也不会误判为中文标题。
+    返回原串表示无需剥离。
+    """
+    if not name or re.search(r"演唱会|音乐会|音樂會", name):
+        return name
+    fm = re.match(r"^([^\s]*[\u4e00-\u9fff][^\s]*?)\s+(\S.*)$", name)
+    if not fm or len(fm.group(1)) < 2:
+        return name
+    if re.match(
+        r"[A-Za-z\u0B00-\u0BFF\u3040-\u30FF\uAC00-\uD7AF\u0400-\u04FF]",
+        fm.group(2)[0],
+    ):
+        return fm.group(1).strip()
+    return name
+
+
+# 技术残留词（帧率/编码/音轨/清晰度/来源/色深等）：已由 _extract_keywords
+# 提取进 quality_tags，不属于标题——应同时从 show_name 与搜索词中移除，
+# 否则混合中英文件名（如 "上海正午2：上海骑士.Shanghai.Knights.2003."
+# "1080p.24fps.SDR.H.264.8bit.DD5.1.内封字幕"）会把 24fps/H 264/DD5 1 等
+# 残渣带进 TMDB 搜索词导致搜索失败
+_TECH_RESIDUE_RE = re.compile(
+    r"(?i)(?:[\._\s-]*"
+    r"\b(?:2160p|1080p|720p|480p|360p|240p|4k|uhd|fhd|bluray|bdrip|hdrip|dvdrip|"
+    r"web-dl|webrip|webdl|hdr10\+?|hdr|sdr|hevc|h265|h264|x265|x264|avc|mpeg4|"
+    r"aac|eac3|ac3|dtshd|dts-hd|truehd|atmos|flac|opus|23\.976fps|24fps|25fps|"
+    r"30fps|50fps|60fps|10bit|8bit|12bit|remux|hdtv|dv|quickio|dancho|dee-c|aao|"
+    r"netflix|disney|hbo|amazon|prime|apple|itunes|disney\+)\b"
+    r"|\bH\s*\.?\s*26[45]\b|"
+    r"\b(?:AAC|DTS|DDP|DD|TrueHD)\s*\.?\s*[0-9]\s*\.?\s*[0-9]?\b|"
+    r"\bDTS[\s-]?HD\s*\.?\s*M?A?[0-9]\s*\.?\s*[0-9]?\b|"
+    r"\bMA?[0-9]\s*\.?\s*[0-9]?\b|"
+    r"\bDovi\s*\.?\s*P?[0-9]?\b|\b[0-9]+\s*[Aa]udios?\b|"
+    r"\b(?:5\.1|7\.1|TrueHD|Atmos|DD2\.0)\b|"
+    r"(?:[\s._-]|^)-?HD\b"
+    r")"
+)
+# 字幕/配音描述标签（内封字幕/特效字幕/中文字幕/国语配音/中字 等）：发布信息，非标题。
+# 点号分隔转空格后标签常粘连成串（"内封字幕中文字幕特效字幕国语配音"），
+# 故首标签前只需一个分隔符，后续标签允许无分隔符连续匹配
+_SUBTITLE_TAG_RE = re.compile(
+    r"(?i)(?:[\s._\-]|^)(?:"
+    r"(?:内封|内嵌|内挂|外挂|软|硬|特效|烧录)?(?:中英|简繁|繁简|中文|英文|国语|粤语|双语|中|英)?字幕(?!组)"
+    r"|(?:中字|英字|简中|繁中)"
+    r"|(?:国|粤|英|日|韩|泰)语(?:配音|中字)"
+    r")(?:"
+    r"(?:内封|内嵌|内挂|外挂|软|硬|特效|烧录)?(?:中英|简繁|繁简|中文|英文|国语|粤语|双语|中|英)?字幕(?!组)"
+    r"|(?:中字|英字|简中|繁中)"
+    r"|(?:国|粤|英|日|韩|泰)语(?:配音|中字)"
+    r")*"
+)
 
 
 def decode_filename(filename: str) -> str:
@@ -113,6 +221,23 @@ _LIBRARY_ROOT_WORDS = {
     "国漫",
     "美漫",
     "国产",
+    # 地域/类型分类目录（"欧美剧/韩剧/日剧/" 等是分类不是剧名）
+    "欧美剧",
+    "美剧",
+    "韩剧",
+    "日剧",
+    "港剧",
+    "台剧",
+    "泰剧",
+    "陆剧",
+    "华语剧",
+    "华剧",
+    "日漫",
+    "韩漫",
+    "美番",
+    "日番剧",
+    "动漫合集",
+    "连续剧",
     # 库根目录名（无剧名文件向上补全时的最后一级兜底）
     "影视",
     "影视资源",
@@ -123,6 +248,47 @@ _LIBRARY_ROOT_WORDS = {
     "网盘",
     "备份",
 }
+
+
+# 剧集布局目录词（tv 候选可选的目录上下文）：命中任一即"用户按剧集语义
+# 组织了目录"；电影类词（电影/MOVIES/FILM）不在此列，由电影目录硬规则单独处理
+_TV_LAYOUT_WORDS = frozenset(
+    {
+        "动漫",
+        "动画",
+        "剧集",
+        "电视剧",
+        "综艺",
+        "纪录片",
+        "日番",
+        "国漫",
+        "美漫",
+        "国产",
+        "日漫",
+        "韩漫",
+        "美番",
+        "日番剧",
+        "动漫合集",
+        "连续剧",
+        "欧美剧",
+        "美剧",
+        "韩剧",
+        "日剧",
+        "港剧",
+        "台剧",
+        "泰剧",
+        "陆剧",
+        "华语剧",
+        "华剧",
+        "TV",
+        "TVS",
+        "TVSHOWS",
+        "TV-SHOWS",
+        "SERIES",
+        "ANIME",
+        "DRAMA",
+    }
+)
 
 
 class VideoRenamer:
@@ -154,6 +320,17 @@ class VideoRenamer:
     _search_empty_ttl: Dict[tuple, float] = {}
     # 按年份反推季号的缓存：(tmdb_id, year) -> 季号或 None（None 也缓存防重复查详情）
     _season_infer_cache: ThreadSafeLRUCache = ThreadSafeLRUCache(maxsize=2000)
+    # ============ LLM 规则学习（AI 教程序识别） ============
+    # 某父目录下无法提取集号的文件名样本池（父目录 -> 文件名列表），
+    # 累积到阈值后调一次 LLM 总结命名规律并固化成 pattern，后续同类文件直接命中
+    _episode_fail_pool: Dict[str, List[str]] = {}
+    _episode_fail_lock = threading.Lock()
+    # 学习中标记（防同目录并发重复触发）
+    _episode_learning: Dict[str, bool] = {}
+    # 学习失败防重（同一父目录学过一次失败就不再学，避免每文件重复调 LLM）
+    _episode_failed_learning: set = set()
+    # 已学到的集号提取规则（父目录 -> compiled re）
+    _learned_episode_rules: ThreadSafeLRUCache = ThreadSafeLRUCache(maxsize=500)
 
     # 默认命名规则模板
     DEFAULT_NAMING_RULES = {
@@ -459,7 +636,7 @@ class VideoRenamer:
             )
         except (TypeError, ValueError):
             self._llm_wait_timeout = 60
-        if llm_fallback_config.get("enabled", False):
+        if _config_bool(llm_fallback_config.get("enabled", False)):
             # 收集所有启用的 Provider
             providers = []
 
@@ -477,7 +654,9 @@ class VideoRenamer:
             if not providers and config and isinstance(config, dict):
                 for i in range(1, 10):
                     provider_config = config.get(f"llm_provider_{i}", {})
-                    if provider_config.get("enabled", False):
+                    # ConfigParser 的布尔值全是字符串（"False" 也是 truthy），
+                    # 必须显式解析，否则 enabled=False 的 Provider 被当启用
+                    if _config_bool(provider_config.get("enabled", False)):
                         providers.append(
                             {
                                 "name": provider_config.get("name", f"provider_{i}"),
@@ -500,7 +679,12 @@ class VideoRenamer:
                 self.llm_translator = LLMTranslator(providers=providers)
                 if self.llm_translator.enabled:
                     self._llm_fallback_enabled = True
-                    max_concurrent = llm_fallback_config.get("max_concurrent", 2)
+                    try:
+                        max_concurrent = int(
+                            llm_fallback_config.get("max_concurrent", 2)
+                        )
+                    except (TypeError, ValueError):
+                        max_concurrent = 2
                     if max_concurrent > 0:
                         self._llm_semaphore = threading.Semaphore(max_concurrent)
                     logger.info(
@@ -708,9 +892,10 @@ class VideoRenamer:
                 ).strip()
                 logger.debug(f"剥离完整 DSL 标记后文件名: '{processed_filename}'")
             else:
-                # 尝试简单格式
+                # 尝试简单格式（支持 {tmdbid=123}/{tmdbid-123}/{tmdb-123}，
+                # tmdb- 无 id 形态是 README 文档化的 tmdbid_suffix 约定）
                 simple_marker_match = re.search(
-                    r"[\[\{]tmdbid[=-](\d+)[\]\}]", processed_filename
+                    r"[\[\{]tmdb(?:id)?[=-](\d+)[\]\}]", processed_filename
                 )
                 if simple_marker_match:
                     extracted_tmdb_id = simple_marker_match.group(1)
@@ -721,7 +906,7 @@ class VideoRenamer:
                         )
                     # 从解析用文件名中剥离简单标记
                     processed_filename = re.sub(
-                        r"[\[\{]tmdbid[=-]\d+[\]\}]", "", processed_filename
+                        r"[\[\{]tmdb(?:id)?[=-]\d+[\]\}]", "", processed_filename
                     ).strip()
                     logger.debug(
                         f"剥离简单 tmdbid 标记后文件名: '{processed_filename}'"
@@ -746,7 +931,7 @@ class VideoRenamer:
                         locked_fields.add("media_type")
                 else:
                     simple_marker_match_path = re.search(
-                        r"[\[\{]tmdbid[=-](\d+)[\]\}]", path_str
+                        r"[\[\{]tmdb(?:id)?[=-](\d+)[\]\}]", path_str
                     )
                     if simple_marker_match_path:
                         metadata["tmdb_id"] = simple_marker_match_path.group(1)
@@ -1031,6 +1216,44 @@ class VideoRenamer:
                 except Exception as e:
                     logger.debug(f"父目录名提取失败: {e}")
 
+            # 2.9 统一清洗 show_name 技术残留：regex/native/父目录各来源都可能
+            # 把帧率/编码/音轨/字幕描述带进标题（如 "上海正午2：上海骑士."
+            # "Shanghai.Knights.2003.1080p.24fps.SDR.H.264.8bit.DD5.1.内封字幕"
+            # 的 24fps/H 264/DD5 1/内封字幕），残留会污染 TMDB 搜索与输出路径名。
+            # ⚙ 优先用结构性提取——点号分隔规范命名以 4 位年份为硬边界切标题
+            # （确定性，不依赖标签词表）；不适用于年份边界时再逐词反剥残留
+            if metadata.get("show_name") and "show_name" not in locked_fields:
+                _structural = _extract_title_via_year_boundary(
+                    str(metadata.get("original_filename") or "")
+                )
+                if _structural and _structural != metadata["show_name"]:
+                    logger.info(
+                        f"结构性标题提取（年份边界）: "
+                        f"'{metadata['show_name']}' -> '{_structural}'"
+                    )
+                    metadata["show_name"] = _structural
+                # 中文主名化："砍人快乐 Freaky" → "砍人快乐"（外文音译/翻译
+                # 副标题剥离，片名主名应为纯中文；英文音译仅用于搜索时由
+                # _prepare_search_term 剥离，输出名由 TMDB 题名覆盖）
+                _cn_only = _strip_trailing_transliteration(metadata["show_name"])
+                if _cn_only != metadata["show_name"]:
+                    logger.info(
+                        f"show_name 中文主名化: "
+                        f"'{metadata['show_name']}' -> '{_cn_only}'"
+                    )
+                    metadata["show_name"] = _cn_only
+                _sn = metadata["show_name"]
+                _sn = _TECH_RESIDUE_RE.sub(" ", _sn)
+                _sn = _SUBTITLE_TAG_RE.sub(" ", _sn)
+                _sn = re.sub(r"\s+[\\[{]tmdb(?:id)?\s*[-=]?\s*[\\]}]\s*", " ", _sn)
+                _sn = re.sub(r"\s{2,}", " ", _sn).strip().rstrip(".- _")
+                if _sn and _sn != metadata["show_name"]:
+                    logger.info(
+                        f"清洗 show_name 技术残留: "
+                        f"'{metadata['show_name']}' -> '{_sn}'"
+                    )
+                    metadata["show_name"] = _sn
+
             # 3. 补全媒体类型（如果未锁定）
             if media_type_hint and "media_type" not in locked_fields:
                 metadata["media_type"] = media_type_hint
@@ -1157,9 +1380,43 @@ class VideoRenamer:
                     metadata["show_name"] = show_name
 
                     if self.tmdb_client:
+                        type_conf = metadata.get("_media_type_confidence", 0.0)
+                        # 目录 IMDB ID 类型判定：已整理目录常带 {tt1727824} 标记，
+                        # 直接用 IMDB ID 反查 TMDB 得到权威 media_type——
+                        # 远比「multi 搜索+年份猜谜」可靠（《女巫》目录 {tt4263482}
+                        # 直定位 2015 电影，不被 2004 同名剧季年份误判成 tv）。
+                        # 仅当文件名无季集标记或类型未锁定时信任（有 SxxExx/第N集
+                        # 等硬剧集标记时文件名信号优先）
+                        if "media_type" not in locked_fields:
+                            try:
+                                _imdb_m = re.search(r"\{tt(\d+)\}", str(file_path))
+                                _no_se_ep = not (
+                                    metadata.get("season") and metadata.get("episode")
+                                )
+                                if _imdb_m and _no_se_ep:
+                                    _found = self.tmdb_client.find_by_imdb_id(
+                                        "tt" + _imdb_m.group(1)
+                                    )
+                                    if _found and _found.get("media_type"):
+                                        metadata["media_type"] = _found["media_type"]
+                                        metadata["_media_type_confidence"] = 1.0
+                                        # 保留 find 的 tmdb_id：搜索链失败时回填，
+                                        # 避免 "少年汉尼拔 - Unrated" 这类搜索词
+                                        # 污染导致完全识别失败
+                                        if _found.get("id"):
+                                            metadata["_imdb_fallback_tmdb_id"] = _found[
+                                                "id"
+                                            ]
+                                        locked_fields.add("media_type")
+                                        logger.info(
+                                            f"目录 IMDB ID {_imdb_m.group(1)} "
+                                            f"类型判定: media_type="
+                                            f"{_found['media_type']}"
+                                        )
+                            except Exception as _e:
+                                logger.debug(f"目录 IMDB ID 类型判定失败: {_e}")
                         # 模糊类型判定：低置信度且无强季集信号时，
                         # 用 TMDB multi 搜索（不传年份）+ 年份本地筛选判定类型
-                        type_conf = metadata.get("_media_type_confidence", 0.0)
                         if (
                             "media_type" not in locked_fields
                             and metadata.get("year")
@@ -1281,6 +1538,17 @@ class VideoRenamer:
                 metadata["category_path"] = (
                     f"{metadata['base_category']}/{metadata['sub_category']}"
                 )
+
+            # 8.5 LLM 规则学习（AI 教程序识别）：
+            # tv 且未提取出集号 + 中文剧名父目录 → 首次遇到即调一次 LLM 总结
+            # 命名规律并固化 pattern，立即回填当前文件；后续同目录同类直接命中
+            if metadata.get("media_type") == "tv" and not metadata.get("episode"):
+                try:
+                    _pp = Path(str(file_path)).parent
+                    if _pp and _pp.name and re.search(r"[\u4e00-\u9fff]", _pp.name):
+                        self._collect_episode_fail(file_path, metadata)
+                except Exception as e:
+                    logger.debug(f"LLM 规则学习触发失败: {e}")
 
             return metadata
         except Exception as e:
@@ -1458,6 +1726,16 @@ class VideoRenamer:
             ".sub",
             ".idx",
             ".strm",
+            ".iso",
+            ".ts",
+            ".m2ts",
+            ".mts",
+            ".vob",
+            ".webm",
+            ".mpg",
+            ".mpeg",
+            ".3gp",
+            ".m4v",
         ]
         if ext.lower() not in video_extensions:
             ext = ""
@@ -1466,8 +1744,9 @@ class VideoRenamer:
         # 提取关键词
         metadata["quality_tags"] = self._extract_keywords(name_only)
 
-        # 提取tmdbid信息
-        tmdbid_pattern = r"[\[\{]tmdbid[=-](\d+)[\]\}]"
+        # 提取tmdbid信息（支持 {tmdbid=123}/{tmdbid-123}/{tmdb-123}，
+        # tmdb- 无 id 形态是 README 文档化的 tmdbid_suffix 约定）
+        tmdbid_pattern = r"[\[\{]tmdb(?:id)?[=-](\d+)[\]\}]"
         tmdbid_match = re.search(tmdbid_pattern, name_only, re.IGNORECASE)
         if tmdbid_match:
             metadata["tmdb_id"] = tmdbid_match.group(1)
@@ -1849,6 +2128,23 @@ class VideoRenamer:
                             value = value.strip()
                             # 合并多余空格
                             value = re.sub(r"\s+", " ", value)
+                            # 剥离残留技术词/发布组：
+                            # "在这世界(更多一些)的角落 Extended 10bit QuickIO"
+                            # 的 Extended(版本)/10bit(位深)/QuickIO(发布组) 是
+                            # quality 已提取但 pattern 捕获时仍残留在标题里的词。
+                            # 中文剧名尾部连续剥离（Extended 10bit QuickIO → 空），
+                            # 英文剧名尾词（如 "Cats & Dogs"）可能是真实标题，不动
+                            if re.search(r"[\u4e00-\u9fff]", value):
+                                while True:
+                                    _nv = re.sub(
+                                        r"\s+(?:extended|10bit|8bit|[A-Za-z]{2,10})$",
+                                        "",
+                                        value,
+                                        flags=re.IGNORECASE,
+                                    )
+                                    if _nv == value:
+                                        break
+                                    value = _nv
                         metadata[key] = value
                 match_found = True
 
@@ -2371,7 +2667,6 @@ class VideoRenamer:
                         # 只采纳 show_name，丢弃续集号/音轨/年份被误当的 episode/season
                         for key in ("episode", "season", "season_cn", "season_jp"):
                             match_data_2.pop(key, None)
-                    metadata.update(match_data_2)
                     # Clean up show name
                     if "show_name" in metadata:
                         # 移除show_name中的年份信息
@@ -2594,7 +2889,23 @@ class VideoRenamer:
             if metadata.get("season") or metadata.get("episode"):
                 metadata["media_type"] = "tv"
             else:
-                metadata["media_type"] = "movie"
+                # 纯数字文件名（"01.mp4"/"222 4k.mp4"/"03 1080p.mkv"）是
+                # 剧集集号形态（裸集号场景 L2 路径上下文已识别 episode，但 regex
+                # 层看不到父目录），不应默认 movie——否则 resolver 单 regex 来源
+                # 会把真实剧集锁死成 movie（如 "完美世界\\222 4k.mp4" 的 222
+                # 集）；先剥质量标签（"222 4k" -> "222"）再判定；4 位年份数字
+                # （1917）才是电影
+                _stem = Path(str(metadata.get("original_filename", ""))).stem
+                _stem_clean = re.sub(
+                    r"(?i)[\s._-]*(?:2160p|4k|uhd|fhd|1080p|720p|480p|360p|240p)"
+                    r"[\s._-]*",
+                    "",
+                    _stem,
+                ).strip()
+                if _stem_clean and re.fullmatch(r"\d{1,3}", _stem_clean):
+                    metadata["media_type"] = "tv"
+                else:
+                    metadata["media_type"] = "movie"
 
         # 根据媒体类型处理season和episode的默认值
         media_type = metadata.get("media_type")
@@ -2641,9 +2952,25 @@ class VideoRenamer:
                     show_name = show_name.replace(".", " ").strip()
                 metadata["show_name"] = show_name
 
-        # 最终清理：确保show_name纯净，不包含年份、副标题等无关信息
-        if "show_name" in metadata:
             show_name = metadata["show_name"]
+
+            # 0. 剥离版本后缀（Extended Edition / Unrated / Theatrical Edition /
+            # Director's Cut / Special Edition 等）："少年汉尼拔 - Unrated" 的
+            # "- Unrated" 不是剧名一部分，残留会污染搜索词导致识别失败
+            show_name = re.sub(
+                r"\s*-\s*(?:Extended|Unrated|Theatrical|Director'?s|Special|"
+                r"Ultimate|Collector'?s|Restored)\s+"
+                r"(?:Edition|Cut)\s*$",
+                "",
+                show_name,
+                flags=re.IGNORECASE,
+            )
+            show_name = re.sub(
+                r"\s*-\s*(?:Unrated|Extended)\s*$",
+                "",
+                show_name,
+                flags=re.IGNORECASE,
+            )
 
             # 1. 移除括号内的年份和其他信息
             # 例如：(2022), [2023], (2021-2024) 等
@@ -2841,6 +3168,11 @@ class VideoRenamer:
                 show_name = show_name.strip()
                 metadata["show_name"] = show_name
 
+            # 罗马数字季号（日漫）："Clevatess Ⅱ－魔獸之王與虛假的勇者傳承－"
+            # 的 Ⅱ = 第二季。必须在此 return 之前执行（match_found=True 时
+            # 下面会提前 return，尾部代码不执行）
+            self._apply_roman_numeral_season(metadata)
+
             logger.debug(
                 f"_extract_with_regex: returning, metadata is None: {metadata is None}, keys: {list(metadata.keys()) if metadata else None}"
             )
@@ -2855,11 +3187,32 @@ class VideoRenamer:
             if file_stem and re.search(r"[\u4e00-\u9fff]", file_stem):
                 show_name = file_stem.replace("_", " ").replace(".", " ").strip()
                 show_name = re.sub(r"\s+", " ", show_name)
-                # 移除质量标签
-                quality_pattern = r"\b(1080p|720p|480p|360p|2160p|4k|uhd|fhd|bluray|bdrip|web-dl|webrip|hdr|sdr|hevc|h264|h265|x264|x265|aac|dts|ac3|ddp|truehd|atmos|5\.1|7\.1)\b"
+                # 移除质量标签/音轨/编码词（DTSHD-MA / TrueHD 等变体也用
+                # 词边界匹配，避免 "突袭2:暴徒 (2014) 1080p DTSHD-MA" 残留
+                # DTSHD/1080p 进搜索词）
+                quality_pattern = r"\b(1080p|720p|480p|360p|2160p|4k|uhd|fhd|bluray|bdrip|web-dl|webrip|hdr|sdr|hevc|h264|h265|x264|x265|aac|eac3|ac3|dts|dts[\s-]?hd|dtshd|ddp|truehd|atmos|flac|opus|5\.1|7\.1|remux|extended|10bit|8bit|quickio|dancho|dee-c|aao)\b"
                 show_name = re.sub(quality_pattern, "", show_name, flags=re.IGNORECASE)
-                # 移除年份
-                show_name = re.sub(r"\s*\d{4}\s*", "", show_name)
+                # 残余技术词/发布组（file_stem 兜底时 quality_pattern 未尽词，
+                # 如 "...角落 Extended 10bit QuickIO" 的残留）连续剥离：
+                # 中文剧名尾部英文词（Extended 10bit QuickIO）是技术/发布信息，
+                # 中文剧名本身不会以空格+英文收尾
+                while True:
+                    _nv = re.sub(
+                        r"\s+(?:extended|10bit|8bit|[A-Za-z]{2,10})$",
+                        "",
+                        show_name,
+                        flags=re.IGNORECASE,
+                    )
+                    if _nv == show_name:
+                        break
+                    show_name = _nv
+                # 移除年份：先带括号整块移除（(2014) 不留空括号），再移除裸年份
+                show_name = re.sub(
+                    r"\s*[\[\(]\d{4}(?:-\d{4})?[\]\)]\s*", " ", show_name
+                )
+                show_name = re.sub(r"\s*\d{4}\s*", " ", show_name)
+                # 清理可能的空括号残留（其他分支剥年份后留下的 ()）
+                show_name = re.sub(r"[\[\(]\s*[\]\)]", " ", show_name)
                 show_name = show_name.strip().rstrip(".-")
                 show_name = re.sub(r"\s+", " ", show_name)
                 if show_name:
@@ -2869,7 +3222,77 @@ class VideoRenamer:
                     )
 
         # Ensure we always return a dict (fallback when show_name not in metadata)
+        # 最后兜底：show_name 尾部版本后缀残留（"少年汉尼拔 - Unrated" 来自
+        # 某些 pattern 的 show_name 捕获）统一剥离，保证输出路径干净
+        if metadata.get("show_name"):
+            metadata["show_name"] = re.sub(
+                r"\s*-\s*(?:Extended|Unrated|Theatrical|Director'?s|Special|"
+                r"Ultimate|Collector'?s|Restored)\s+(?:Edition|Cut)\s*$",
+                "",
+                metadata["show_name"],
+                flags=re.IGNORECASE,
+            ).strip()
+            metadata["show_name"] = re.sub(
+                r"\s*-\s*(?:Unrated|Extended)\s*$",
+                "",
+                metadata["show_name"],
+                flags=re.IGNORECASE,
+            ).strip()
+
+        # 罗马数字季号（日漫）：同上，覆盖 show_name 兜底（file_stem）路径
+        self._apply_roman_numeral_season(metadata)
+
         return metadata or {}
+
+    def _apply_roman_numeral_season(self, metadata: Dict) -> None:
+        """罗马数字季号（日漫）："Clevatess Ⅱ－魔獸之王與虛假的勇者傳承－ - 11"
+        的 Ⅱ = 第二季。形态：主名 + 罗马数字 + 破折号分隔副标题；该副标题
+        通常就是 TMDB 的季名（"魔獸之王與虛假的勇者傳承" = S2 季名），
+        双重证据。某些 pattern 会把 show_name 拆碎只剩 "Ⅱ副标题"，此时用
+        cleaned_name 找回主名。Final Fantasy VII 等无破折号分隔副标题的
+        标题不匹配此形态，误伤风险低。
+        """
+        if (
+            str(metadata.get("season")) in ("", "1", "None")
+            and metadata.get("media_type") == "tv"
+            and metadata.get("episode")
+        ):
+            _cl = metadata.get("cleaned_name") or ""
+            if _cl:
+                _rm = re.match(
+                    r"^(?P<base>[A-Za-z][A-Za-z0-9 .'·]*?)\s*"
+                    r"(?P<roman>[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]|I{1,3}|IV|V|VI{0,3}|IX|X)\s*"
+                    r"[－\-—:：]\s*(?P<sub>[一-鿿].+)$",
+                    _cl,
+                )
+                if _rm:
+                    _rom = {
+                        "Ⅰ": "I",
+                        "Ⅱ": "II",
+                        "Ⅲ": "III",
+                        "Ⅳ": "IV",
+                        "Ⅴ": "V",
+                        "Ⅵ": "VI",
+                        "Ⅶ": "VII",
+                        "Ⅷ": "VIII",
+                        "Ⅸ": "IX",
+                        "Ⅹ": "X",
+                    }.get(_rm.group("roman"), _rm.group("roman"))
+                    _sv = self._roman_to_digit(_rom)
+                    if _sv:
+                        metadata["season"] = str(_sv)
+                        logger.info(
+                            f"罗马数字季号: '{_rm.group('base')}' 的 "
+                            f"{_rm.group('roman')} = 第{_sv}季"
+                        )
+                        # pattern 可能把 show_name 拆成只剩 "Ⅱ副标题"，
+                        # 用主名恢复
+                        if metadata.get("show_name", "")[:1] in "ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ":
+                            metadata["show_name"] = _rm.group("base")
+                        # 季名用于后续季名验证（搜索到 tv 后比对季名）
+                        metadata["_season_title_hint"] = _rm.group("sub").strip(
+                            "－-—:： "
+                        )
 
     def _roman_to_digit(self, roman: str) -> Optional[int]:
         """将罗马数字转换为阿拉伯数字 (I-X)"""
@@ -2893,6 +3316,16 @@ class VideoRenamer:
         # 1.5 预处理：将中文方括号转换为英文方括号，便于后续正则匹配
         # 这样可以统一处理 [xxx] 和 【xxx】 格式
         cleaned = cleaned.replace("【", "[").replace("】", "]")
+
+        # 1.6 技术残留/字幕标签先整段剥离：旧标签循环按固定表逐个剥，
+        # 顺序敏感会拆残（"hdr" 先吃 HDR10 留 "10"、"dts" 先吃 DTS-HD 留
+        # "HD"、MA5.1 因 "5.1" 的 lookbehind 要求前置分隔符而漏剥、
+        # 4Audios/特效字幕不在表内）。先整词移除后，循环只兜剩余
+        cleaned = _TECH_RESIDUE_RE.sub(" ", cleaned)
+        cleaned = _SUBTITLE_TAG_RE.sub(" ", cleaned)
+        cleaned = re.sub(
+            r"\s*[{[]tmdb(?:id)?\s*[-=]?\s*[0-9]*\s*[}\]]\s*", " ", cleaned
+        )
 
         # 2. 预处理：移除括号内的技术参数和发布组
         # 质量标记正则表达式
@@ -3072,9 +3505,20 @@ class VideoRenamer:
             return ""
         prepared = re.sub(r"\s+", " ", search_term).strip()
 
-        # 移除版本描述词 (日语版, 国语版 等)
-        version_patterns = r"日语版|国语版|粤语版|中字|字幕|双语|内嵌"
+        # 移除版本描述词 (日语版, 国语版 等；字幕/中字等整词标签由
+        # _SUBTITLE_TAG_RE 负责——这里只剥词面 "字幕" 会留下 "内封/中文"
+        # 残渣，挡住后续外文音译副标题剥离)
+        version_patterns = r"日语版|国语版|粤语版"
         prepared = re.sub(version_patterns, "", prepared)
+
+        # 移除技术残留词（24fps / H 264 / DD5 1 / 1080p 等）与字幕描述标签：
+        # 混合中英文件名会把质量标签带进搜索词导致 TMDB 无结果
+        prepared = _TECH_RESIDUE_RE.sub(" ", prepared)
+        prepared = _SUBTITLE_TAG_RE.sub(" ", prepared)
+        # 兜底剥离 tmdb 标记残渣（如 "{tmdb- }"，标记预处理失败时防御）
+        prepared = re.sub(
+            r"\s*[{[]tmdb(?:id)?\s*[-=]?\s*[0-9]*\s*[}\]]\s*", " ", prepared
+        )
 
         # 将下划线替换为空格 (Jujutsu_Kaisen -> Jujutsu Kaisen)
         prepared = prepared.replace("_", " ")
@@ -3086,21 +3530,13 @@ class VideoRenamer:
             prepared = re.sub(r"\d+集", "", prepared)
             # 移除括号中的年份，如 (2023)、（2023）
             prepared = re.sub(r"[（\(]\d{4}[）\)]", "", prepared)
-            # 双标题剥离：中文剧名 + 空格 + 英文翻译副标题
-            # （如 "小精灵2 Gremlins 2 - The New Batch" → "小精灵2"、
+            # 双标题/音译副标题剥离：中文剧名 + 空格 + 外文翻译/音译
+            # （"小精灵2 Gremlins 2 - The New Batch" → "小精灵2"、
+            # "砍人快乐 Freaky" → "砍人快乐"、"恶魔 அசுரன்" → "恶魔"、
             # "進擊的巨人 The Final Season" → "進擊的巨人"）。
-            # 英文部分是翻译/副标题，仅用中文主名搜索更精准；
-            # 纯英文剧名（无中文）与纯中文剧名不受影响；
-            # 演唱会/音乐会不剥离——"周慧敏 Deep V 25周年演唱会" 的英文
-            # 部分是演唱会名一部分（TMDB 收录 "周慧敏 Deep V 25周年演唱会"）
-            m = None
-            if not re.search(r"演唱会|音乐会|音樂會", prepared):
-                m = re.match(
-                    r"^([\u4e00-\u9fff][\u4e00-\u9fff\d\s·～]*?)\s+[A-Za-z]",
-                    prepared,
-                )
-                if m:
-                    prepared = m.group(1).strip()
+            # 纯英文剧名（无中文）/纯中文剧名/续集号（"流浪地球 2"）/中文
+            # 副标题（"三体 黑暗森林"）/演唱会均不受影响
+            prepared = _strip_trailing_transliteration(prepared)
             prepared = prepared.strip()
         else:
             # 对于英文搜索词，只移除 SxxExx 格式，保留 Sxx 格式用于电视剧识别
@@ -3111,7 +3547,29 @@ class VideoRenamer:
 
         # 移除尾部残留的横杠/点（show_name 提取自 "剧名 - S04E02" 时可能带尾 "-"）
         prepared = re.sub(r"\s*[-–—]\s*$", "", prepared)
+        # 兜底清理：剥年份后残留的空括号（如 "突袭2:暴徒 () DTSHD-MA" 的 ()）
+        prepared = re.sub(r"[（(]\s*[）)]", " ", prepared)
+        prepared = re.sub(r"\s*[（(]\d{4}(?:-\d{4})?[）)]\s*", " ", prepared)
         prepared = re.sub(r"\s*\.\s*$", "", prepared)
+        # 剥离尾部发布组残留（show_name 兜底自整文件名时带 "-MA" 等）：
+        # "突袭2:暴徒 -MA" -> "突袭2:暴徒"。剧名副标题不会是纯大写
+        # 2-6 字母前缀横杠的形态，误伤风险低
+        prepared = re.sub(r"\s*-\s*[A-Z][A-Za-z0-9]{1,5}\s*$", "", prepared)
+        # 剥离版本后缀（"少年汉尼拔 - Unrated" / "与狼共舞 - Extended Edition"）：
+        # 残留会污染搜索词导致 TMDB 搜索无结果
+        prepared = re.sub(
+            r"\s*-\s*(?:Extended|Unrated|Theatrical|Director'?s|Special|"
+            r"Ultimate|Collector'?s|Restored)\s+(?:Edition|Cut)\s*$",
+            "",
+            prepared,
+            flags=re.IGNORECASE,
+        )
+        prepared = re.sub(
+            r"\s*-\s*(?:Unrated|Extended)\s*$",
+            "",
+            prepared,
+            flags=re.IGNORECASE,
+        )
         return prepared.strip()
 
     def _search_with_language(
@@ -3298,7 +3756,19 @@ class VideoRenamer:
 
             # 只有单一类型匹配才判定，否则保持原判断
             if tv_matched and not movie_matched:
-                resolved = "tv"
+                # ⚙ 单文件剧集形态校验：没有任何季/集信号（无 season/episode、
+                # 无 SxxExx/第N集/EP、非裸集号）的独立视频文件，"仅年份匹配"
+                # 的同名剧集结果可能是年份撞车（如 "假面-2015-国语7.0.mp4"
+                # 撞上 2015 韩剧《假面》首播年），不锁定 tv，保持模糊交由
+                # TMDB 匹配阶段双类型裁决（电影目录下 tv 候选会被排除）
+                if not self._filename_has_episode_form(metadata):
+                    logger.info(
+                        f"模糊类型判定: '{search_term}' ({target_year}) 仅 tv 命中，"
+                        f"但文件无剧集形态信号，拒绝锁定 tv（疑似同名撞车）"
+                    )
+                    resolved = None
+                else:
+                    resolved = "tv"
             elif movie_matched and not tv_matched:
                 resolved = "movie"
             else:
@@ -3343,11 +3813,15 @@ class VideoRenamer:
                 pass
             return False
         else:
-            # 电影：匹配上映年份
+            # 电影：匹配上映年份（±1 容差——目录年份常为首映/电影节年份，
+            # 与 TMDB 上映年份可能有 1 年偏差：
+            # 《女巫》(The Witch) 目录 2015 / TMDB 2016-02-19，
+            # 《绅士们》目录 2019 / TMDB 2020-01-01，若严格相等则 movie 匹配
+            # 失败，只剩 tv《好女巫》2015 首播命中 → 电影被误判成剧集）
             release_date = result.get("release_date", "")
             if release_date:
                 try:
-                    return int(release_date.split("-")[0]) == target_year
+                    return abs(int(release_date.split("-")[0]) - target_year) <= 1
                 except (ValueError, TypeError):
                     pass
             return False
@@ -3472,6 +3946,110 @@ class VideoRenamer:
             )
         )
 
+    def _filename_has_episode_form(self, metadata: Dict) -> bool:
+        """文件名/元数据是否带剧集形态信号（单文件独立视频 vs 剧集文件）。
+
+        剧集形态信号 = 已解析出 season/episode、文件名含显式季/集标记
+        （SxxExx / 第N季 / 第N集话 / EPxx / Season N / OVA / SP / 独立 E##
+        / 裸 Sxx），或文件主干是裸集号（01.mp4 / 210 4K 的 210）。
+
+        没有任何这些信号时，一个「单文件 + 年份 + 音频/评分标注」的独立视频
+        更可能是电影（如 "假面-2015-国语7.0.mp4"），不应被仅年份撞车的同名
+        剧集（2015 韩剧《假面》首播年恰好 2015）锁定成 TV。
+
+        无文件上下文的调用（单元测试直传精简 metadata）视为有剧集形态，
+        保持旧行为。
+        """
+        if metadata.get("season") or metadata.get("episode"):
+            return True
+        fp = str(metadata.get("original_filename") or metadata.get("file_path") or "")
+        if not fp:
+            # 无文件上下文（单元测试直传精简 metadata / 缓存别名路径）：
+            # 无法判断文件形态，保守视为有剧集形态，保持旧行为
+            return True
+        if re.search(
+            r"(?i)(?:^|[^a-z0-9])s\d{1,2}e\d{1,4}(?:[^a-z0-9]|$)"
+            r"|第\d{1,4}季|第\d{1,4}[集话話]"
+            r"|(?:^|[^a-z0-9])ep\d{1,4}(?:[^a-z0-9]|$)"
+            r"|season\s*\d+"
+            r"|(?:^|[^a-z0-9])e\d{1,4}(?=[^a-z0-9]|$)"
+            r"|(?:^|[^a-z0-9])s\d{1,2}(?:[^a-z0-9]|$)"
+            r"|(?:^|[^a-z0-9])(?:ova|sp)\s*\d*(?:[^a-z0-9]|$)",
+            fp,
+        ):
+            return True
+        # 裸集号文件（01/02/210...）：排除年份形状（1917/2015，4 位）
+        stem = Path(fp).stem
+        if stem.strip().isdigit() and len(stem.strip()) <= 3:
+            return True
+        return False
+
+    def _tv_candidate_admissible(self, metadata: Dict) -> bool:
+        """tv 候选是否可选：必须有剧集证据，否则宁可不识别也不误配 tv。
+
+        剧集证据 = ① 已解析出 season/episode（含紧凑后缀等弱信号，交 TMDB
+        双类型裁决）；② 文件名含显式季/集标记（SxxExx/第N季/第N集话/EP/
+        Season N/OVA/SP/独立 E##/裸 Sxx）；③ 裸集号文件（01.mp4/210）；
+        ④ 中文剧名目录下的数字开头文件（L2 路径上下文：斗破丨苍穹/210 4K）；
+        ⑤ 路径处于剧集布局（剧集/动漫/韩剧... 分类目录、Season 目录、
+        中文剧名父目录——"云之羽/云之羽.mkv"）。
+
+        全无剧集证据的独立视频文件（如 "假面-2015-国语7.0.mp4"）不具备
+        剧集形态——宁可识别失败（类型留空/走目录兜底），也不得把同名撞车的
+        电视剧结果输出为 tv。电影目录场景由调用方按电影语义先行排除。
+        """
+        if metadata.get("season") or metadata.get("episode"):
+            return True
+        fp = str(metadata.get("original_filename") or metadata.get("file_path") or "")
+        if not fp:
+            # 无文件上下文（单元测试直传精简 metadata）：保守允许，保持旧行为
+            return True
+        path = Path(fp)
+        stem = path.stem
+        parent = path.parent.name
+        if re.search(
+            r"(?i)(?:^|[^a-z0-9])s\d{1,2}e\d{1,4}(?:[^a-z0-9]|$)"
+            r"|第\d{1,4}季|第\d{1,4}[集话話]"
+            r"|(?:^|[^a-z0-9])ep\d{1,4}(?:[^a-z0-9]|$)"
+            r"|season\s*\d+"
+            r"|(?:^|[^a-z0-9])e\d{1,4}(?=[^a-z0-9]|$)"
+            r"|(?:^|[^a-z0-9])s\d{1,2}(?:[^a-z0-9]|$)"
+            r"|(?:^|[^a-z0-9])(?:ova|sp)\s*\d*(?:[^a-z0-9]|$)",
+            fp,
+        ):
+            return True
+        # 裸集号文件（01/02/210...）：排除 4 位年份形状
+        if stem.strip().isdigit() and len(stem.strip()) <= 3:
+            return True
+        # 中文剧名目录下的数字开头文件（L2 路径上下文：斗破丨苍穹/210 4K.mkv）
+        if re.match(r"^\d{1,4}", stem.strip()) and _is_chinese_show_dir(parent):
+            return True
+        # 剧集布局目录上下文
+        for _seg in fp.replace("\\", "/").split("/"):
+            if _seg.upper() in _TV_LAYOUT_WORDS:
+                return True
+            if re.match(r"(?i)^(?:season\s*\d+|s\d+|第\d+季|specials?|sp\d*)$", _seg):
+                return True
+        if parent and _is_chinese_show_dir(parent):
+            return True
+        return False
+
+    def _tv_candidate_inadmissible(self, metadata: Dict) -> bool:
+        """tv 候选是否不可选：电影目录硬规则或缺少剧集证据。
+
+        电影目录（或 movie hint 之外的目录结构）本身即电影语义——与
+        [电影目录] 识别失败兜底策略一致（用户把文件放进电影目录即电影语义）
+        ——无条件排除 tv 候选；通用目录下，无任何剧集证据（无 season/episode、
+        无显式季/集标记、非裸集号、非剧集布局目录）的单文件也不得输出 tv。
+        两条件任意满足即剔除 tv 候选（宁识别失败留空类型，也不误配电视剧）。
+        """
+        if re.search(
+            r"(?:^|[/\\])(?:电影|Movies)(?:[/\\]|$)",
+            str(metadata.get("original_filename", "")).replace("\\", "/"),
+        ):
+            return True
+        return not self._tv_candidate_admissible(metadata)
+
     def _ensure_season(self, metadata: Dict, entry_year: Optional[str] = None) -> None:
         """season 缺失或仅默认值 1 时补齐：优先用目录年份反推 TMDB 季号。
 
@@ -3526,6 +4104,158 @@ class VideoRenamer:
             )
             return
         metadata["season"] = 1
+
+    # ============ LLM 规则学习（AI 教程序识别） ============
+
+    def _learn_episode_rule(
+        self, filenames: List[str], show_name: str
+    ) -> Optional[re.Pattern]:
+        """调一次 LLM 让 AI 总结这批文件名的集号提取规律，返回可编译正则。
+
+        只返回"捕获组1为集号"的安全正则；若 LLM 未给出有效规律或返回非法正
+        则则返回 None（调用方丢弃，不影响现有逐文件 LLM 兜底）。
+        """
+        translator = self.llm_translator
+        if translator is None:
+            return None
+        sample_lines = "\n".join(f"- {f}" for f in filenames[:8])
+        prompt = f"""以下是同一部剧《{show_name}》目录下的多个视频文件名，
+现有解析规则无法从中提取集号（episode）：
+{sample_lines}
+
+请分析这些文件名的共同命名规律，找出集号在文件名中的位置，
+并【只输出一个 Python 正则表达式】（re 模块语法），要求：
+1. 捕获组 1 必须是集号数字（\\d+）
+2. 该正则要能对这 8 个以内的样本全部提取出合理的集号
+3. 不要任何解释文字、markdown 代码块或 JSON，只输出正则本身
+4. 如果样本之间没有共同规律（集号位置不固定），输出 None
+
+示例：
+- 若文件名是 "02 balabala.mp4"、"03 xxx.mp4"，正则可为：^(\\d+) 
+- 若文件名是 "S01E05 sub.mkv"、"S01E06 hd.mkv"，正则可为：^S\\d+E(\\d+)
+- 若文件名是 "第2集 备注.mp4"、"第3集 备注.mp4"，正则可为：^第(\\d+)集
+"""
+        try:
+            content = translator.ask(prompt, temperature=0.1)
+        except Exception as e:
+            logger.warning(f"LLM 规则学习调用失败: {e}")
+            return None
+        if not content:
+            logger.warning("LLM 规则学习返回空")
+            return None
+        pattern_str = content.strip().strip("`").strip()
+        # 去掉可能的 markdown 代码块围栏
+        if pattern_str.startswith("python") or pattern_str.startswith("re"):
+            pattern_str = pattern_str.split("\n", 1)[-1]
+        if pattern_str.startswith("```"):
+            pattern_str = pattern_str.strip("`").strip()
+        if not pattern_str or pattern_str.upper() == "NONE":
+            return None
+        # 验证：能编译 + 捕获组存在 + 对样本全部提取出合理集号才接受
+        try:
+            compiled = re.compile(pattern_str)
+        except re.error as e:
+            logger.warning(f"LLM 规则学习返回非法正则 '{pattern_str}': {e}")
+            return None
+        if compiled.groups < 1:
+            logger.warning(f"LLM 规则学习正则无捕获组: {pattern_str}")
+            return None
+        valid = 0
+        for f in filenames:
+            m = compiled.search(f)
+            if m and m.group(1) and m.group(1).isdigit():
+                ep = int(m.group(1))
+                if 1 <= ep <= 10000:
+                    valid += 1
+        # 验证：对样本全部（或至少一半，单文件则 1 个）提取出合理集号才接受
+        need = max(1, len(filenames) // 2)
+        if valid < need:
+            logger.warning(
+                f"LLM 规则学习正则仅命中 {valid}/{len(filenames)} 个样本（需 {need}），丢弃"
+            )
+            return None
+        logger.info(f"LLM 规则学习成功: '{pattern_str}' 命中 {valid}/{len(filenames)}")
+        return compiled
+
+    def _collect_episode_fail(
+        self, file_path: Union[str, Path], metadata: Dict
+    ) -> None:
+        """确保当前文件能提取出集号：无可用规则时立即调一次 LLM 学习并回填。
+
+        原「累积 ≥2 样本再学习」会令每种新命名形态的第一个文件识别失败；
+        改为「第一次遇到新形态就学习」：episode 为空时调一次 LLM 总结规律、
+        固化成 pattern，并立即回填当前文件——第一个文件也能识别成功，
+        后续同目录同类文件直接命中缓存规则（零 LLM）。
+
+        学习失败（LLM 无规律/验证不过）会记录防重标记，避免每个文件重复调 LLM。
+        """
+        if not self._llm_fallback_enabled or self.llm_translator is None:
+            return
+        try:
+            path = Path(str(file_path))
+        except Exception:
+            return
+        if not path.parent or not path.parent.name:
+            return
+        parent = str(path.parent)
+        # 已有规则直接应用
+        if self._learned_episode_rules.get(parent) is not None:
+            self._apply_learned_rule(file_path, metadata)
+            return
+        with self._episode_fail_lock:
+            # 正在学习或已学习失败（防重），不再触发
+            if self._episode_learning.get(parent):
+                return
+            if parent in self._episode_failed_learning:
+                return
+            self._episode_learning[parent] = True
+        show_name = (
+            metadata.get("show_name")
+            or metadata.get("parent_show_name", "")
+            or path.parent.name
+        )
+        try:
+            # 单文件也立即学习（样本不足时 LLM 也能从上下文猜规律）；
+            # 样本池里有历史失败文件时一并带上，提高规律准确性
+            with self._episode_fail_lock:
+                pool = self._episode_fail_pool.get(parent, [])
+                samples = list(pool)
+            if path.name not in samples:
+                samples.append(path.name)
+            compiled = self._learn_episode_rule(samples, show_name)
+            if compiled is not None:
+                self._learned_episode_rules[parent] = compiled
+                # 立即回填当前文件
+                self._apply_learned_rule(file_path, metadata)
+                return
+            # 学习失败：记录防重 + 保留样本供后续（若有新样本）再试
+            with self._episode_fail_lock:
+                self._episode_failed_learning.add(parent)
+                pool = self._episode_fail_pool.setdefault(parent, [])
+                if path.name not in pool:
+                    pool.append(path.name)
+        finally:
+            with self._episode_fail_lock:
+                self._episode_learning[parent] = False
+
+    def _apply_learned_rule(self, file_path: Union[str, Path], metadata: Dict) -> Dict:
+        """应用已学到的集号提取规则（同目录 LLM 规则），命中则回填 episode。"""
+        try:
+            path = Path(str(file_path))
+            rule = self._learned_episode_rules.get(str(path.parent))
+            if rule is None:
+                return metadata
+            m = rule.search(path.name)
+            if m and m.group(1) and m.group(1).isdigit():
+                episode = int(m.group(1))
+                if 1 <= episode <= 10000:
+                    metadata["episode"] = episode
+                    logger.info(
+                        f"应用 LLM 学习规则: '{path.name}' -> episode={episode}"
+                    )
+        except Exception as e:
+            logger.debug(f"应用 LLM 学习规则失败: {e}")
+        return metadata
 
     def _build_llm_parse_cache_key(self, filename: str, show_name: str) -> tuple:
         """构造 LLM 解析缓存键：父目录名 + 原始剧名（不含具体文件名）
@@ -3783,8 +4513,41 @@ class VideoRenamer:
             )
 
             if multi_results:
+                # search_multi 不支持 year 参数（TMDB API 限制），结果会是全
+                # 年份噪音——文件带明确年份而结果无该年份（±3 容差）条目时
+                # 视为噪音：如 "映像 (1975)" 的 multi 96 条全是 2013-2024
+                # 无关条目（真正条目 The Image (1975)/67018 需网页或英文名才能
+                # 命中），此时应继续降级触发 web fallback/备选策略，而不是
+                # 把噪音当结果导致年份守卫拒绝后直接失败
+                if year:
+                    _y = str(year)[:4]
+                    _years = {str(int(_y) + d) for d in range(-3, 4)}
+                    _yr_ok = [
+                        r
+                        for r in multi_results
+                        if str(r.get("release_date") or r.get("first_air_date") or "")[
+                            :4
+                        ]
+                        in _years
+                    ]
+                    if not _yr_ok:
+                        logger.warning(
+                            f"multi 结果 {len(multi_results)} 条无文件年份 "
+                            f"{_y} 匹配，视为噪音，继续降级"
+                        )
+                        multi_results = None
+            if multi_results:
                 results = multi_results
                 logger.info(f"multi 搜索返回 {len(results)} 个结果（未过滤类型）")
+            elif year:
+                # multi 判噪音（无年份匹配）后不再分别搜索 TV/Movie：
+                # 分别搜索同样是无年份匹配的噪音（如 "映像 (1975)" 的
+                # tv 46 条 + movie 96 条全是子串命中的无关条目），只会挡住
+                # 后续 web fallback/备选策略；直接返回空让主流程降级
+                logger.warning(
+                    f"multi 结果判噪音，跳过分别搜索，交由 web fallback/备选策略"
+                )
+                results = []
             else:
                 # multi 失败，分别搜索但明确标记为混合结果
                 logger.warning("multi 搜索失败，分别搜索 TV 和 Movie（结果将混合）")
@@ -3886,9 +4649,19 @@ class VideoRenamer:
                     return metadata
 
             # 检查是否已有 name -> tmdb_id 的映射（用于同一剧集不同集数，含 media_type 防污染）
+            # ⚙ 紧凑续集形态（movie + episode 无 season，如 "蜘蛛侠3.mkv" 的 L3
+            # 把续集号吃掉成 episode）不信任名称缓存：上一部《蜘蛛侠》(2002, 557)
+            # 的映射会串味到这一部，跳过缓存让搜索路径（含续集号合并）重新裁决
+            _compact_sequel_form = (
+                media_type == "movie"
+                and metadata.get("episode") is not None
+                and not metadata.get("season")
+            )
             name_key = f"{show_name.lower().strip()}_{media_type}"
             cached_tmdb_id = (
-                self._tmdb_name_to_id.get(name_key) if show_name and name_key else None
+                self._tmdb_name_to_id.get(name_key)
+                if show_name and name_key and not _compact_sequel_form
+                else None
             )
             if cached_tmdb_id is not None:
                 logger.info(
@@ -3953,6 +4726,15 @@ class VideoRenamer:
                                     f"TMDB ID {tmdb_id_int} movie 详情不存在，"
                                     f"回退 tv: {_alt_details.get('name')}"
                                 )
+                    # 跨类型探测后 movie/tv 详情都不存在：坏 tmdbid
+                    # （如 [tmdbid-1601810] 是无效 ID）清除，避免搜索失败后
+                    # 残留错误 ID 影响下游分类/路径 {tmdbid=xxx}
+                    if not details:
+                        metadata.pop("tmdb_id", None)
+                        logger.warning(
+                            f"TMDB ID {tmdb_id_int} movie/tv 详情均不存在，"
+                            f"清除坏 ID"
+                        )
                     if media_type_hint == "tv":
                         if details and details.get("name"):
                             logger.info(
@@ -4085,6 +4867,10 @@ class VideoRenamer:
                         # details 已由上面的跨类型探测层获取（movie 或回退后的 tv）
                         if details and details.get("title"):
                             logger.info(f"成功获取电影详情: {details.get('title', '')}")
+                            # 简单 tmdbid 格式（[tmdbid=123]）只锁 id 不锁类型，
+                            # 这里 movie 详情取到后必须回填 media_type，否则
+                            # 返回时类型仍为 None 被当成"未知"
+                            metadata["media_type"] = "movie"
                             # 构造搜索结果格式，直接跳到元数据丰富部分
                             best_match = {
                                 "id": tmdb_id_int,
@@ -4219,6 +5005,9 @@ class VideoRenamer:
             # 搜索匹配的视频信息
             # 首先尝试明确的类型搜索
             media_type_hint = metadata.get("media_type", metadata.get("type", ""))
+            # 续集号合并标记：合并发生时，精确匹配优先用合并后的完整标题
+            # （蜘蛛侠3）再退到优化搜索词（蜘蛛侠），见下方检查处
+            _sequel_merged_term = None
             # 电影续集号修复：GuessIt 会把 "The.Amazing.Spider-Man.2.2014…" 里的
             # 数字 2 解析成 season（电影不该有季），导致 show_name 丢失续集号、
             # 搜索“第一部标题”而误识别成第一部。电影有 season 时视为续集号，
@@ -4235,8 +5024,33 @@ class VideoRenamer:
                     and not search_term.rstrip().endswith(sequel_num)
                 ):
                     search_term = f"{search_term.strip()} {sequel_num}".strip()
+                    _sequel_merged_term = search_term
                     logger.info(
                         f"电影续集号合并回搜索词: "
+                        f"'{metadata.get('show_name')}' -> '{search_term}'"
+                    )
+            # 电影紧凑续集号修复：中文紧凑形态 "蜘蛛侠3.mkv" 的续集号 3 被
+            # L3 解析成 episode（电影不该有集），搜索词只剩 "蜘蛛侠"，精确
+            # 匹配按人气选中第一部《蜘蛛侠》(2002) 而非《蜘蛛侠3》。电影有
+            # episode 而无 season 时视为续集号，合并回搜索词（蜘蛛侠3），
+            # 让精确匹配（含主搜索词的候选）能选中完整标题；无同名续集时
+            # （如 "入青云01" 实为剧集）精确匹配自然落空，不影响后续流程
+            if (
+                media_type_hint == "movie"
+                and metadata.get("episode")
+                and not metadata.get("season")
+            ):
+                sequel_num = str(metadata["episode"]).split("-")[0].strip()
+                if (
+                    sequel_num.isdigit()
+                    and search_term
+                    and not search_term.rstrip().endswith(sequel_num)
+                ):
+                    _sep = "" if re.search(r"[一-鿿]", search_term) else " "
+                    search_term = f"{search_term.strip()}{_sep}{sequel_num}".strip()
+                    _sequel_merged_term = search_term
+                    logger.info(
+                        f"电影紧凑续集号合并回搜索词: "
                         f"'{metadata.get('show_name')}' -> '{search_term}'"
                     )
             year = metadata.get("year")
@@ -4258,6 +5072,18 @@ class VideoRenamer:
                         year_int = None
                 except (ValueError, TypeError):
                     year_int = None
+
+            # ⚙ 季年份加分的目标季：文件无显式季标记时（裸集号 native 默认补
+            # season=1，见 _has_explicit_season），默认季不可信——允许任意季
+            # 命中目录年份。否则 "一念永恒（2026）/10 4K.mkv" 在分季
+            # (331477: S4 air 2026) 与不分季 (107371: 仅 S1 air 2020) 两个
+            # 同名版本间选择时，季年份 boost 都只看 S1 而得 0，纯 popularity
+            # 会选错版本，后续 _infer_season_from_year 也无从反推 S04
+            _boost_season_arg = metadata.get("season")
+            if _boost_season_arg is not None and not self._has_explicit_season(
+                metadata
+            ):
+                _boost_season_arg = None
 
             # 使用处理后的年份（过滤了无效年份）
             # 注意：对于电视剧不传年份，因为文件名中的年份可能是任意一季的播出年份，
@@ -4327,6 +5153,11 @@ class VideoRenamer:
                     def _norm_title(t):
                         # 分号也归一化：TMDB 收录名 "Steins;Gate 0" 的分号
                         # 与文件名 "Steins Gate 0" 的空格等价
+                        # 全角标点转半角：TMDB 中文标题常用全角冒号
+                        # （"突袭2：暴徒" vs 搜索词半角 "突袭2:暴徒"），
+                        # 不转则精确匹配永不成立，退化为按人气选（可能选错同名）；
+                        # 全角括号同转（"剧名（2026）" == "剧名 (2026)"）
+                        t = t.translate(str.maketrans("：（）．，", ":().,"))
                         return re.sub(r"\s+", " ", re.sub(r"[-_.;]", " ", t)).strip()
 
                     target_term_space = _norm_title(target_term_lower)
@@ -4457,9 +5288,49 @@ class VideoRenamer:
                         year=search_year,
                         language=primary_language,
                     )
+                    if general_results and search_year:
+                        # search_video_show 同样可能忽略 year 参数
+                        # （"映像 (1975)" 的 96 条全是 2013-2024 子串噪音）：
+                        # 文件带年份而结果无该年份（±3）匹配时判噪音，交给后续
+                        # 网页兜底/备选策略
+                        _gy = str(search_year)[:4]
+                        if _gy.isdigit():
+                            _gyears = {str(int(_gy) + d) for d in range(-3, 4)}
+                            _g_ok = [
+                                r
+                                for r in general_results
+                                if str(
+                                    r.get("release_date")
+                                    or r.get("first_air_date")
+                                    or ""
+                                )[:4]
+                                in _gyears
+                            ]
+                            if not _g_ok:
+                                logger.warning(
+                                    f"通用搜索结果 {len(general_results)} 条无文件年份 "
+                                    f"{_gy} 匹配，视为噪音"
+                                )
+                                general_results = None
                     if general_results:
                         primary_results = general_results
                         logger.info(f"通用搜索返回 {len(primary_results)} 个结果")
+                    else:
+                        # 通用搜索判噪音/无结果后：触发主流程网页兜底。
+                        # 中文短词在 API 索引可能匹配不到（"映像" 对应 The Image
+                        # 67018 只能靠网页/英文名），且用户环境（登录+成人偏好）
+                        # 网页搜索能命中 API 找不到的条目
+                        if self.tmdb_client:
+                            web_results = self.tmdb_client.search_web_fallback(
+                                prepared_search_term,
+                                language=primary_language,
+                                media_type=None,
+                            )
+                            if web_results:
+                                primary_results = web_results
+                                logger.info(
+                                    f"TMDB 网站搜索返回 {len(primary_results)} 个结果"
+                                )
 
                 # 通用搜索结果全是非首选类型且父目录名可用时，用父目录名搜索
                 if primary_results and media_type_hint and confidence >= 0.5:
@@ -4516,15 +5387,44 @@ class VideoRenamer:
                                         "使用前5个"
                                     )
 
+            # ⚙ tv 证据门槛（在精确匹配缩减之前执行）：无剧集证据时立即剔除
+            # tv 候选。否则同名剧集会在 has_exact_match 阶段独占精确匹配，把
+            # 结果收窄成唯一的 tv 候选（如 Downloads/假面-2015-国语7.0.mp4
+            # → 2015 韩剧《假面》），后续即使排除 tv 也已无候选可选。电影目录
+            # 本身即电影语义，同样无条件剔除 tv 候选
+            if self._tv_candidate_inadmissible(metadata):
+                _pre_tv = len(primary_results)
+                primary_results = [
+                    r for r in primary_results if r.get("media_type") != "tv"
+                ]
+                if len(primary_results) != _pre_tv:
+                    logger.info(
+                        f"tv 证据不足（电影目录={bool(re.search(r'(?:^|[/\\])(?:电影|Movies)(?:[/\\]|$)', str(metadata.get('original_filename', '')).replace('\\', '/')))}）：搜索阶段剔除 "
+                        f"{_pre_tv - len(primary_results)} 个 tv 候选"
+                    )
+
             # 检查是否有完全匹配
             if primary_results:
-                exact_match_found, exact_matches = has_exact_match(
-                    primary_results, prepared_search_term, search_year, return_all=True
-                )
-                if not exact_match_found:
+                # 目标年份（供后续 _exact_match_key/_secondary_exact_match_key
+                # 引用）：提前初始化，避免精确匹配为空时 NameError
+                _track_target_year = ""
+                # ⚙ 精确匹配词优先级：续集号合并后优先用完整标题（蜘蛛侠3）
+                # 判定——用基础词（蜘蛛侠）判定会把第一部《蜘蛛侠》(2002) 也
+                # 当成精确匹配，按人气误选；合并词无精确命中（如 "入青云01"
+                # 实为剧集）再退到优化搜索词/原始搜索词
+                _exact_terms = []
+                if _sequel_merged_term and _sequel_merged_term != prepared_search_term:
+                    _exact_terms.append(_sequel_merged_term)
+                for _t in (prepared_search_term, search_term):
+                    if _t and _t not in _exact_terms:
+                        _exact_terms.append(_t)
+                exact_match_found, exact_matches = False, []
+                for _t in _exact_terms:
                     exact_match_found, exact_matches = has_exact_match(
-                        primary_results, search_term, search_year, return_all=True
+                        primary_results, _t, search_year, return_all=True
                     )
+                    if exact_match_found:
+                        break
 
                 if exact_matches:
                     # 目标年份：父目录年份优先（如 "猫和老鼠 (1940)"），否则文件名年份。
@@ -4583,7 +5483,7 @@ class VideoRenamer:
                         for _r in exact_matches:
                             if _r.get("_season_year_boost") is None:
                                 _r["_season_year_boost"] = self._get_season_year_boost(
-                                    _r["id"], year_int, metadata.get("season")
+                                    _r["id"], year_int, _boost_season_arg
                                 )
 
                     def _exact_match_key(r):
@@ -4594,11 +5494,77 @@ class VideoRenamer:
                             )[:4]
                             if _m_year == _track_target_year:
                                 _m_boost = 10000
+                        # 类型优先：解析器已有强 media_type 信号时，同类型结果压倒
+                        # popularity 差异，避免 multi 搜索混入的异类（如日本剧场版
+                        # movie 名与 tv 剧名同形）压过对应类型的正确条目。
+                        # 例：'死神 千年血战篇 祸进谭' multi 搜索返回
+                        # tv(id=333069, popularity=1.0) + movie(id=1669841,
+                        # popularity=6.5, 剧场版)，tv 信号明确时只按 popularity
+                        # 会选错 movie → 误走 LLM 兜底
+                        _type_boost = 0
+                        if media_type_hint and r.get("media_type") == media_type_hint:
+                            _type_boost = 1_000_000
                         return (
                             r.get("popularity", 0)
                             + r.get("_season_year_boost", 0)
                             + _m_boost
+                            + _type_boost
                         )
+
+                    # 多完全匹配（歧义）+ 英文搜索词 + 父目录中文名可用时，
+                    # 用父目录中文名取交集消除歧义：
+                    #   "Beyond.The.Clouds" 9 个完全匹配撞韩剧《阳光满溢》，
+                    #   但父目录 "云雀叫天录" 是国产剧主名，中文搜索取交集
+                    #   → 命中唯一国产剧条目；唯一匹配/无中文父目录时不触发
+                    if (
+                        len(exact_matches) > 1
+                        and not search_term_is_chinese
+                        and metadata.get("parent_show_name")
+                    ):
+                        _pn = metadata["parent_show_name"]
+                        if (
+                            re.search(r"[\u4e00-\u9fff]", _pn)
+                            and not self._is_garbage_show_candidate(_pn)
+                            and _pn.upper() not in _LIBRARY_ROOT_WORDS
+                        ):
+                            try:
+                                _parent_results = self._search_with_language(
+                                    _pn, media_type_hint, None, "zh-CN"
+                                )
+                                if _parent_results:
+                                    _parent_ids = {
+                                        r.get("id")
+                                        for r in _parent_results
+                                        if r.get("id")
+                                    }
+                                    _intersect = [
+                                        m
+                                        for m in exact_matches
+                                        if m.get("id") in _parent_ids
+                                    ]
+                                    if 1 <= len(_intersect) < len(exact_matches):
+                                        logger.info(
+                                            f"多完全匹配用父目录中文名 '{_pn}' "
+                                            f"取交集: {len(exact_matches)} -> "
+                                            f"{len(_intersect)}"
+                                        )
+                                        exact_matches = _intersect
+                                    elif (
+                                        len(_intersect) == 0
+                                        and len(_parent_results) == 1
+                                    ):
+                                        # 无交集但父目录中文搜索唯一命中：
+                                        # 命名者用中文目录指定主剧名，英文文件名
+                                        # 是英译/通用名（撞同名剧），用父目录
+                                        # 唯一结果消除歧义
+                                        logger.info(
+                                            f"英文完全匹配与父目录中文名 '{_pn}' "
+                                            f"无交集，但父目录唯一命中 "
+                                            f"id={_parent_results[0].get('id')}，采用之"
+                                        )
+                                        exact_matches = _parent_results[:1]
+                            except Exception as e:
+                                logger.debug(f"父目录中文名交集筛选失败: {e}")
 
                     if len(exact_matches) == 1:
                         best_match = exact_matches[0]
@@ -4694,6 +5660,21 @@ class VideoRenamer:
                             if general_secondary_results:
                                 secondary_results = general_secondary_results
 
+                    # ⚙ 跨语言搜索同样剔除无剧集证据的 tv 候选：否则 tv 会在此
+                    # 阶段经 has_exact_match 精确匹配被重新选中（如通用目录的
+                    # "假面-2015-国语7.0.mp4"，跨语言搜索把 2015 韩剧再次精确
+                    # 命中并收窄成唯一候选）
+                    if self._tv_candidate_inadmissible(metadata):
+                        _pre_s = len(secondary_results)
+                        secondary_results = [
+                            r for r in secondary_results if r.get("media_type") != "tv"
+                        ]
+                        if len(secondary_results) != _pre_s:
+                            logger.info(
+                                f"tv 证据不足：跨语言搜索剔除 "
+                                f"{_pre_s - len(secondary_results)} 个 tv 候选"
+                            )
+
                     # 检查跨语言搜索结果
                     if secondary_results:
                         exact_match_found, exact_matches = has_exact_match(
@@ -4727,7 +5708,7 @@ class VideoRenamer:
                                             self._get_season_year_boost(
                                                 _r["id"],
                                                 year_int,
-                                                metadata.get("season"),
+                                                _boost_season_arg,
                                             )
                                         )
 
@@ -4861,6 +5842,87 @@ class VideoRenamer:
                         elif alt_results:
                             results = alt_results[:5]  # 取前5个结果
                             logger.info(f"备选搜索返回 {len(results)} 个结果")
+
+                # 备选策略1.5：剥离尾部续集数字变体（"Spy Kids 1" -> "Spy Kids"）
+                # 续集号是否在 TMDB 收录名里不确定：Spider-Man 2 收录名含 2、
+                # Spy Kids 1 收录名不含 1（就叫 Spy Kids）。主搜索带续集号
+                # 0 结果（TMDB 按标题分词搜不到 "Spy Kids 1"）时，用无续集号
+                # 标题 + 年份重搜。纯数字标题（1917）、无前缀（8 Mile）、
+                # 中文数字标题（9条命/28天）均不匹配此形态，误伤风险低
+                if not results:
+                    _seq = re.match(r"^(.+?)[\s\-_.]+(\d{1,2})$", search_term)
+                    if _seq and not re.match(r"^\d+$", _seq.group(1)):
+                        alt_base = _seq.group(1)
+                        logger.info(
+                            f"剥离尾部续集数字变体搜索: "
+                            f"'{search_term}' -> '{alt_base}'"
+                        )
+                        alt_results = self._search_with_language(
+                            alt_base, media_type_hint, search_year, primary_language
+                        ) or self._search_with_language(
+                            alt_base, media_type_hint, search_year, secondary_language
+                        )
+                        if alt_results:
+                            alt_exact_found, alt_exact = has_exact_match(
+                                alt_results, alt_base, search_year
+                            )
+                            if alt_exact_found:
+                                logger.info(
+                                    f"续集数字变体找到完全匹配: "
+                                    f"{alt_exact.get('name', alt_exact.get('title'))}"
+                                )
+                                results = [alt_exact]
+                            else:
+                                results = alt_results[:5]  # 取前5个结果
+                                logger.info(
+                                    f"续集数字变体搜索返回 {len(results)} 个结果"
+                                )
+
+                # 备选策略1.6：剥离括号内容变体
+                # "在这世界(更多一些)的角落" -> "在这世界的角落"（TMDB 收录名
+                # 通常不含括号副标题，如《在这世界的角落》加长版片名带
+                # "(更多一些)" 但 TMDB 只有主条目 id=378108）。0 结果时才
+                # 尝试，不影响正常命中；media_type 未定时 movie/tv 都试
+                if not results:
+                    _paren = re.sub(r"[（(][^（）()]*[）)]", "", search_term).strip()
+                    if (
+                        _paren
+                        and _paren != search_term
+                        and re.search(r"[\u4e00-\u9fff]", _paren)
+                    ):
+                        logger.info(
+                            f"剥离括号内容变体搜索: " f"'{search_term}' -> '{_paren}'"
+                        )
+                        alt_results = self._search_with_language(
+                            _paren,
+                            media_type_hint or "movie",
+                            search_year,
+                            primary_language,
+                        )
+                        if not alt_results:
+                            alt_results = self._search_with_language(
+                                _paren,
+                                media_type_hint or "tv",
+                                search_year,
+                                secondary_language,
+                            )
+                        if alt_results:
+                            alt_exact_found, alt_exact = has_exact_match(
+                                alt_results, _paren, search_year
+                            )
+                            if alt_exact_found:
+                                logger.info(
+                                    f"括号变体找到完全匹配: "
+                                    f"{alt_exact.get('name', alt_exact.get('title'))}"
+                                )
+                                results = [alt_exact]
+                                # 同步搜索词，否则后续年份守卫/exact 计算仍用
+                                # 带括号的原词，无法识别完全匹配
+                                search_term = _paren
+                                prepared_search_term = _paren
+                            else:
+                                results = alt_results[:5]  # 取前5个结果
+                                logger.info(f"括号变体搜索返回 {len(results)} 个结果")
 
                 # 备选策略2：智能截断剧名，尝试去除副标题后重新搜索
                 # 适用于 "请吃红小豆吧！新年快乐" 格式，实际剧名是 "请吃红小豆吧"
@@ -5113,9 +6175,31 @@ class VideoRenamer:
             # 如果仍然没有结果，直接返回，不使用降级的show_name
             if not results:
                 logger.warning(f"所有搜索策略失败，无法识别 '{search_term}'")
+                # 目录 {tt} IMDB 已锁定类型但搜索失败（如 "少年汉尼拔 - Unrated"
+                # 的搜索词污染 / 冒号变体搜不到）：用 find 的 tmdb_id + 目录名回填，
+                # 保证已整理目录（带 {tt}）的文件绝不因搜索失败而丢失 ID
+                _imdb_tid = metadata.pop("_imdb_fallback_tmdb_id", None)
+                if _imdb_tid and not metadata.get("tmdb_id"):
+                    metadata["tmdb_id"] = str(_imdb_tid)
+                    _clean_parent = metadata.get("parent_show_name")
+                    if _clean_parent:
+                        metadata["show_name"] = _clean_parent
+                    logger.info(
+                        f"搜索失败，回填目录 IMDB tmdb_id={_imdb_tid} "
+                        f"(show_name='{metadata.get('show_name')}')"
+                    )
                 metadata.setdefault("quality_tags", original_quality_tags)
                 metadata.setdefault("year", "")
                 metadata.setdefault("tmdb_id", "")
+                # 电影目录信号兜底：/电影(or Movies)/ 目录 + 识别失败 → 类型定 movie
+                # （用户把文件放进电影目录即电影语义；失败时不误配条目，但保留目录类型）
+                _fp = str(metadata.get("original_filename", "")).replace("\\", "/")
+                if re.search(
+                    r"(?:^|/)(?:电影|Movies)(?:/|$)", _fp
+                ) and not metadata.get("media_type"):
+                    metadata["media_type"] = "movie"
+                    metadata["_type_from_dir"] = True
+                    logger.info(f"[电影目录] 识别失败，按目录信号兜底 media_type=movie")
                 metadata.pop("parent_show_name", None)
                 return metadata
 
@@ -5465,6 +6549,39 @@ class VideoRenamer:
                     return metadata
 
             # 计算标题相似度并按相似度和流行度排序
+            # 剔除 person/company 等非媒体条目（search_multi 无年份重搜会混入
+            # 人物/公司，如 "映像" 的 "薄荷映像" person 条目 popularity 高
+            # 会被误选成 best_match 导致识别失败/None）
+            target_results = [
+                r for r in target_results if r.get("media_type") in ("movie", "tv", "")
+            ]
+            # ⚙ tv 证据门槛：tv 候选仅在有剧集证据时可选。
+            # 电影目录（或 movie hint）本身即电影语义——与 [电影目录] 识别
+            # 失败兜底策略一致（用户把文件放进电影目录即电影语义）——无条件
+            # 排除 tv 候选；通用目录下，无任何剧集证据（无 season/episode、
+            # 无显式季/集标记、非裸集号、非剧集布局目录）的单文件也不得输出
+            # tv（"假面-2015-国语7.0.mp4" 的"仅年份撞车"同名剧集是误配高发
+            # 形态）：宁可识别失败留空类型，也不误配成电视剧。
+            # ⚠️ 不把 metadata.media_type == "movie" 纳入排除条件：该值可能是
+            # regex 层对无季集文件的默认标签（如 "斗破丨苍穹/210 4K.mkv" 的
+            # L2 episode=210 在 regex 之后才解析），此时仍需允许 tv 候选参与
+            # 匹配（严格类型过滤会按置信度处理）
+            _movie_dir_ctx = bool(
+                re.search(
+                    r"(?:^|[/\\])(?:电影|Movies)(?:[/\\]|$)",
+                    str(metadata.get("original_filename", "")).replace("\\", "/"),
+                )
+            )
+            if self._tv_candidate_inadmissible(metadata):
+                _pre_tv = len(target_results)
+                target_results = [
+                    r for r in target_results if r.get("media_type") != "tv"
+                ]
+                if len(target_results) != _pre_tv:
+                    logger.info(
+                        f"tv 证据不足（电影目录={_movie_dir_ctx}）：排除 "
+                        f"{_pre_tv - len(target_results)} 个 tv 候选，仅保留 movie 候选"
+                    )
             search_term_lower = search_term.lower()
 
             # 对电视剧结果预计算季年份加分
@@ -5473,7 +6590,7 @@ class VideoRenamer:
                 for _r in target_results:
                     if _r.get("media_type") == "tv":
                         boost = self._get_season_year_boost(
-                            _r["id"], year_int, metadata.get("season")
+                            _r["id"], year_int, _boost_season_arg
                         )
                         if boost:
                             tv_season_year_boost[_r["id"]] = boost
@@ -5502,10 +6619,17 @@ class VideoRenamer:
                 # 定义通用数字字符集（用于模糊匹配）
                 # 包括：阿拉伯数字(0-9)、中文数字(一二三四五六七八九十)、罗马数字(Ⅰ-Ⅹ, ⅰ-ⅹ)
                 digit_pattern = "[0-9一二三四五六七八九十ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅰⅱⅲⅳⅵⅶⅷⅸⅹⅺⅻⅼⅽⅾⅿ]+"
-                # 进一步标准化：移除所有数字（用于模糊匹配）
-                fuzzy_search = re.sub(digit_pattern, "", normalized_search)
-                fuzzy_title = re.sub(digit_pattern, "", normalized_title)
-                fuzzy_original = re.sub(digit_pattern, "", normalized_original)
+                # 进一步标准化：仅移除【尾部】数字序列（续集/季号模糊匹配，
+                # 如 "蜘蛛侠3" -> "蜘蛛侠"）。
+                # ⚠️ 不能全位置移除：中文数字在标题开头/中间时是标题本体的一部分——
+                # "四喜临门" ≠ "喜临门"、"双喜临门" ≠ "喜临门"，全位置抠数字会让
+                # 所有 "X喜临门" 类标题崩到 "喜临门" 上，fuzzy 得 15000 分，恰好
+                # 绕过「年份守卫」的 _exact_ok 阈值，把电影目录里的文件误配成
+                # 无关联的 tv（如 "四喜临门 (2008)" 被识别成 tv 喜临门 (2004)）
+                trailing_digit_pattern = digit_pattern + r"$"
+                fuzzy_search = re.sub(trailing_digit_pattern, "", normalized_search)
+                fuzzy_title = re.sub(trailing_digit_pattern, "", normalized_title)
+                fuzzy_original = re.sub(trailing_digit_pattern, "", normalized_original)
 
                 score = 0
                 # 1. 完全匹配得分最高（在标准化后的字符串上）
@@ -5547,16 +6671,132 @@ class VideoRenamer:
 
             # 按得分排序
             sorted_results = sorted(target_results, key=calculate_score, reverse=True)
-            best_match = sorted_results[0]
+            # 年份守卫（防模糊标题 popularity 误配）：
+            # 文件带明确年份（如 "映像 (1975)"）且为 movie 上下文时，
+            # 候选条目必须匹配该年份（±1 容差），否则拒绝 popularity 兜底——
+            # "映像" 的 tv 候选是"别对映像研出手！"(2020)、movie 候选是
+            # "封印映像N"系列，全是不相关结果，宁识别失败（走电影目录兜底）
+            # 也不误配错误条目。
+            # 仅当存在精确标题匹配（score>=15000）时例外（翻拍/收录年份偏差）。
+            # ⚠️ 仅 movie 上下文守卫：tv 季年份天然分散（"死神 千年血战篇"
+            # 目录年份 2026 但首播 2022），守卫会误杀剧集
+            best_match = None
+            _file_year = str(metadata.get("year") or "")[:4]
+            _is_movie_ctx = (
+                metadata.get("media_type") == "movie" or media_type_hint == "movie"
+            )
+            # 电影目录（/电影/ or /Movies/）本身即电影语义信号：不带显式类型
+            # 提示的电影目录文件（如 "映像 (1975) - 2160p..."）也应启用年份守卫
+            if not _is_movie_ctx:
+                _fp_ctx = str(metadata.get("original_filename", "")).replace("\\", "/")
+                _is_movie_ctx = bool(
+                    re.search(r"(?:^|/)(?:电影|Movies)(?:/|$)", _fp_ctx)
+                )
+            if _file_year and _file_year.isdigit() and _is_movie_ctx:
+                # ±3 容差：电影首映年 vs 文件名年份常见偏差（发行年/首映年），
+                # 如 "在这世界（更多一些）的角落" 文件名 2019 对应 TMDB 2016 条目
+                _years = {str(int(_file_year) + d) for d in range(-3, 4)}
+                if not self._filename_has_episode_form(metadata):
+                    # 零剧集形态 + 电影上下文：精确标题优先于年份撞车。
+                    # "假面-2015-国语7.0.mp4" 的年份匹配候选全是子串弱匹配
+                    # （"假面骑士"系列）时，宁选标题精确的《假面》(1966/2007)
+                    # 也不误配无关系列电影（tv 候选已在上一步整体排除）
+                    _exact_cands = [
+                        r for r in sorted_results if calculate_score(r) >= 15000
+                    ]
+                    _both = [
+                        r
+                        for r in _exact_cands
+                        if str(r.get("release_date") or r.get("first_air_date") or "")[
+                            :4
+                        ]
+                        in _years
+                    ]
+                    _cands = _both or _exact_cands
+                    if _cands:
+                        best_match = _cands[0]
+                    else:
+                        _yr_matched = [
+                            r
+                            for r in sorted_results
+                            if str(
+                                r.get("release_date") or r.get("first_air_date") or ""
+                            )[:4]
+                            in _years
+                        ]
+                        if _yr_matched:
+                            best_match = _yr_matched[0]
+                else:
+                    _yr_matched = [
+                        r
+                        for r in sorted_results
+                        if str(r.get("release_date") or r.get("first_air_date") or "")[
+                            :4
+                        ]
+                        in _years
+                    ]
+                    if _yr_matched:
+                        best_match = _yr_matched[0]
+                    else:
+                        _exact_ok = [
+                            r for r in sorted_results if calculate_score(r) >= 15000
+                        ]
+                        if _exact_ok:
+                            best_match = _exact_ok[0]
+                        else:
+                            # 年份为空的候选不算"不匹配"（web fallback 结果常缺
+                            # release_date，如 Spy Kids → 网页命中但日期无法解析）：
+                            # 仅放行 movie 类型且年份未知的候选——tv 剧集年份未知
+                            # 不可信（多季/特番常缺日期，"秘蔵映像！藤圭子熱唱"
+                            # 这类子串命中的 tv 特番若放行必然错配成剧）；
+                            # 仅当候选全都有明确年份且都偏差（或未知年份全是 tv）
+                            # 时才拒绝
+                            _unknown_movie = [
+                                r
+                                for r in sorted_results
+                                if not str(
+                                    r.get("release_date")
+                                    or r.get("first_air_date")
+                                    or ""
+                                )[:4]
+                                and r.get("media_type") == "movie"
+                            ]
+                            if _unknown_movie:
+                                best_match = _unknown_movie[0]
+                                logger.warning(
+                                    f"年份守卫：文件年份 {_file_year}，无年份匹配候选，"
+                                    f"但存在年份未知 movie 候选 "
+                                    f"{_unknown_movie[0].get('title') or _unknown_movie[0].get('name')}，"
+                                    f"允许（web 结果常缺日期）"
+                                )
+                            else:
+                                logger.warning(
+                                    f"年份守卫：文件年份 {_file_year}，候选无匹配年份条目"
+                                    f"（{[ (r.get('name') or r.get('title'), str(r.get('release_date') or r.get('first_air_date'))[:4]) for r in sorted_results[:4]]}），"
+                                    f"拒绝 popularity 兜底，识别失败"
+                                )
+            else:
+                best_match = sorted_results[0] if sorted_results else None
             logger.info(
-                f"找到最匹配的结果: {best_match.get('name', best_match.get('title'))} (类型: {best_match.get('media_type')}, 得分: {calculate_score(best_match)})"
+                f"找到最匹配的结果: {best_match.get('name', best_match.get('title')) if best_match else 'None'} (类型: {best_match.get('media_type') if best_match else '-'}, 得分: {calculate_score(best_match) if best_match else 0})"
             )
             # 保存 genre_ids 用于判断动画类型（搜索结果中有，详情API中文版可能丢失动画标签）
-            metadata["genre_ids"] = best_match.get("genre_ids", [])
+            metadata["genre_ids"] = (
+                best_match.get("genre_ids", []) if best_match else []
+            )
 
             # 3. 确保结果有效
             if not best_match:
                 logger.warning(f"没有找到有效的匹配结果")
+                # 电影目录信号兜底：/电影(or Movies)/ 目录 + 识别失败 → 类型定 movie
+                # （用户把文件放进电影目录即电影语义；失败时不误配条目，但保留目录类型）
+                _fp = str(metadata.get("original_filename", "")).replace("\\", "/")
+                if re.search(
+                    r"(?:^|/)(?:电影|Movies)(?:/|$)", _fp
+                ) and not metadata.get("media_type"):
+                    metadata["media_type"] = "movie"
+                    metadata["_type_from_dir"] = True
+                    logger.info(f"[电影目录] 识别失败，按目录信号兜底 media_type=movie")
                 # 确保返回的metadata包含必要字段
                 metadata.setdefault("quality_tags", original_quality_tags)
                 metadata.setdefault("year", "")

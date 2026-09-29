@@ -32,6 +32,22 @@ _QUALITY_SUFFIX_RE = re.compile(
 )
 
 
+# 裸分辨率数值（不带 p/k 后缀的画质标注）：L2 数字集号提取时排除，
+# 避免 "1080.iso" / "2160" 这类纯分辨率文件名被误当集号
+_RESOLUTION_NUMBERS = frozenset(
+    {
+        "480",
+        "576",
+        "720",
+        "1080",
+        "1440",
+        "2160",
+        "2880",
+        "4320",
+    }
+)
+
+
 class FilenameParser:
     """确定性文件名解析器（分层规则引擎）。"""
 
@@ -94,16 +110,40 @@ class FilenameParser:
     # ---- 各层规则 ----
 
     def _parse_path_context(self, stem: str, parent: str) -> Dict[str, Any]:
-        """L2：中文剧名目录 + 裸数字文件名 → episode（国漫年番）。"""
+        """L2：中文剧名目录 + 裸数字文件名 → episode（国漫年番/裸集号）。
+
+        支持两种形态：
+        - 纯数字（去质量标签后）："115 4K.mp4" -> episode=115
+        - 数字开头的杂乱后缀："02 balabala.mp4" -> episode=2（垃圾备注不影响）
+        """
+        if not _is_chinese_show_dir(parent):
+            return {}
         numeric = _strip_quality_suffix(stem)
-        if numeric.isdigit() and _is_chinese_show_dir(parent):
+        if numeric.isdigit():
+            # 裸分辨率数值（1080/2160/720/480 等，无 p 后缀）是画质标注不是集号：
+            # "电影/1080.iso" 的 1080 是分辨率；
             # 4 位纯数字（19xx/20xx）是电影年份名（"1917 4K.mkv" 的 1917），
-            # 不是集号（裸集号至多 4 位非年份）；交给 L6 数字标题保护判 movie
-            if re.match(r"^(?:19|20)\d{2}$", numeric):
+            # 也不是集号——均交给 L6 数字标题保护判 movie
+            if numeric in _RESOLUTION_NUMBERS or re.match(r"^(?:19|20)\d{2}$", numeric):
                 return {}
             logger.info(f"L2 路径上下文命中: '{parent}/{stem}' -> episode={numeric}")
             # season 留空，交由 renamer._ensure_season 用目录年份反推或默认第 1 季
             return {"episode": int(numeric), "media_type": "tv"}
+        # 数字开头 + 任意杂乱后缀（"02 balabala" / "123 abc-1080p"）：
+        # 中文剧名目录下开头的数字即集号，垃圾备注不影响；
+        # 4 位年份开头（1917）排除，避免电影名被当集号；
+        # 开头的质量词（"4K 115" / "2160p 02"）先剥离——4K/2160p 不是集号
+        lead_stripped = re.sub(r"^\d{1,4}[kKpP]\s*", "", stem)
+        m_lead = re.match(r"^(\d{1,4})(?:[^\d].*|$)", lead_stripped)
+        if m_lead and not re.match(r"^(?:19|20)\d{2}", m_lead.group(1)):
+            # 裸分辨率数值不是集号（"1080 4K" / "2160 iso"）
+            if m_lead.group(1) in _RESOLUTION_NUMBERS:
+                return {}
+            episode = int(m_lead.group(1))
+            logger.info(
+                f"L2 路径上下文命中(数字开头): '{parent}/{stem}' -> episode={episode}"
+            )
+            return {"episode": episode, "media_type": "tv"}
         return {}
 
     def _parse_pt_naming(self, stem: str) -> Dict[str, Any]:
@@ -190,6 +230,12 @@ class FilenameParser:
             return {}
         # 标题需含中文（本项目紧凑格式主要面向中文剧）
         if not re.search(r"[\u4e00-\u9fff]", title):
+            return {}
+        # 标题必须以中文字符结尾："宽恕 (2022) 2160p AC3.mkv" 的 AC3 是
+        # Dolby 音频编码（AC3 的 3 不是集号），"入青云01" 的 01 才是集号——
+        # 质量/编码标签（AC3/EAC3/H265/DTS5.1 等）都是英文字母结尾，
+        # 中文标题 + 数字的紧凑集号则以中文结尾，据此区分
+        if not re.search(r"[\u4e00-\u9fff]$", title):
             return {}
         # 数字前不能是数字或点（排除 "唐探1"+"900" 拆分、音频 "5.1"）
         if re.search(r"[\d.]$", title):

@@ -28,6 +28,11 @@ TMDB_WEB_COOKIE = (
     '{"adult":true,"i18n_fallback_language":"en-US",'
     '"locale":"zh-CN","country_code":"US","timezone":"Asia/Shanghai"}'
 )
+# 网站搜索最多保留的结果数。
+# 页面通常渲染 40 张卡片（movie+tv 各 20），相关性重排后精确标题匹配会浮到最前，
+# 保留较多候选供下游「年份守卫 / 精确匹配消歧」使用；旧逻辑只取前 5 条（页序），
+# 冷门条目（如 1975 成人片《映像》id=67018 排在 30+ 名）会被热门子串噪音挤掉。
+WEB_FALLBACK_MAX_RESULTS = 20
 
 
 class _GlobalRateLimiter:
@@ -47,6 +52,10 @@ class _GlobalRateLimiter:
 
     def set_rate_limit_per_sec(self, rate: int) -> None:
         """设置基础限速（取所有调用方中的最大值，避免互相降速）"""
+        try:
+            rate = int(rate)
+        except (TypeError, ValueError):
+            return
         with self._lock:
             if rate and rate > self._rate_limit_per_sec:
                 self._rate_limit_per_sec = rate
@@ -505,6 +514,32 @@ class TMDBClient:
         )
         return self._request_with_retry(url, params)
 
+    def find_by_imdb_id(
+        self,
+        imdb_id: str,
+        language: Optional[str] = "zh-CN",
+    ) -> Optional[Dict]:
+        """通过 IMDB ID（ttXXXX）反查 TMDB 条目，返回单个结果（含 media_type）。
+
+        已整理的目录常带 {tt1727824} 标记，这是比年份猜谜强得多的类型/条目
+        信号（如《女巫》目录 {tt4263482} 直接定位 2015 电影，不再被 2004
+        同名剧集的季年份误判成 tv）。
+        """
+        url = f"{self.BASE_URL}/find/{imdb_id}"
+        params = {"external_source": "imdb_id"}
+        if language is not None:
+            params["language"] = language
+        data = self._request_with_retry(url, params, cacheable=True)
+        if not data or not isinstance(data, dict):
+            return None
+        for mtype, key in (("movie", "movie_results"), ("tv", "tv_results")):
+            results = data.get(key) or []
+            if results:
+                result = results[0]
+                result["media_type"] = mtype
+                return result
+        return None
+
     def get_tv_episode_details(
         self,
         tv_id: int,
@@ -754,67 +789,131 @@ class TMDBClient:
         if not html:
             return []
 
-        # 从 HTML 中提取 movie/tv 的 ID 和标题
-        # 网站搜索结果结构:
-        #   <a data-media-type="movie" href="/movie/131482">
-        #     <img alt="白云山传奇" class="poster" ...>
-        #   </a>
+        # 从 HTML 中提取 movie/tv 卡片（ID / 标题 / 原始名 / 发布日期）
+        # 网站搜索结果结构（TMDB 改版后）:
+        #   <div id="..." class="comp:media-card ..." data-object-id="...">
+        #     <a class="flex w-full" data-media-type="movie" data-media-adult="true"
+        #        href="/movie/67018-the-image"><img alt="映像" class="poster" ...></a>
+        #     ...
+        #     <a ... href="/movie/67018-the-image"><h2 ...><span>映像</span>
+        #       <span class="font-light"> (The Image)</span>...</h2></a>
+        #     <span class="release_date w-full font-light">1975 年 12 月 20 日</span>
+        #   </div>
+        # ⚙ href 从 /movie/131482（纯 id）变为 /movie/10054-spy-kids（id-slug 格式），
+        #   正则必须允许 slug 后缀，否则全部失配返回 0 结果。
+        # ⚙ 按 class="comp:media-card 切分卡片：海报链接和标题链接是两个 <a>，且发布
+        #   日期/原始名在标题链接之后，旧「锚点→下一锚点」切片会丢掉这些字段——
+        #   缺失 release_date 会让年份守卫把网页候选当「年份未知」，无法按年份选中。
         seen_ids = set()
         results = []
-        # 匹配所有搜索结果卡片: <a ... data-media-type="movie|tv" href="/movie|tv/ID">
-        for match in re.finditer(
-            r'<a[^>]*?data-media-type="(movie|tv)"[^>]*?href="/(movie|tv)/(\d+)"[^>]*>',
-            html,
-        ):
-            card_media_type = match.group(1)
-            entity_id = match.group(3)
+        for card_seg in html.split('class="comp:media-card')[1:]:
+            m = re.search(
+                r'data-media-type="(movie|tv)"[^>]*?href="/(movie|tv)/(\d+)[^"]*"',
+                card_seg,
+            )
+            if not m:
+                continue
+            card_media_type = m.group(1)
+            entity_id = m.group(3)
             if entity_id in seen_ids:
                 continue
             seen_ids.add(entity_id)
 
-            # 从这个 <a> 到下一个 <a> 之间找标题
-            a_start = match.start()
-            next_a = html.find("<a ", a_start + 1)
-            if next_a == -1:
-                next_a = a_start + 1000
-            a_content = html[a_start:next_a]
-
-            # 从 <img alt="TITLE"> 提取标题
+            # 标题：海报 <img alt="TITLE">（zh-CN 本地化标题）
             title = ""
-            img_alt = re.search(r'<img[^>]*?alt="([^"]*)"', a_content)
+            img_alt = re.search(r'<img[^>]*?alt="([^"]*)"', card_seg)
             if img_alt:
                 title = img_alt.group(1).strip()
-
             if not title:
-                # 降级：从 <a> 的文本内容中提取
-                title_match = re.search(r">([^<]+)</a>", a_content)
+                # 降级：标题链接 h2 内的文本
+                title_match = re.search(r"<h2[^>]*><span>([^<]*)</span>", card_seg)
                 if title_match:
                     title = title_match.group(1).strip()
+            if not title:
+                continue
 
-            if title:
-                results.append(
-                    {
-                        "id": int(entity_id),
-                        "media_type": card_media_type,
-                        "title": title,
-                        "name": title,
-                        "_web_fallback": True,
-                    }
-                )
+            item = {
+                "id": int(entity_id),
+                "media_type": card_media_type,
+                "title": title,
+                "name": title,
+                "_web_fallback": True,
+            }
+
+            # 原始名（卡片 h2 内 <span class="font-light"> (Original)</span>）
+            ot = re.search(
+                (
+                    r"<h2[^>]*><span>[^<]*</span>"
+                    r'<span class="font-light">\s*\(([^)]*)\)\s*</span>'
+                ),
+                card_seg,
+            )
+            if ot and ot.group(1).strip():
+                item["original_title"] = ot.group(1).strip()
+                if card_media_type == "tv":
+                    item["original_name"] = ot.group(1).strip()
+
+            # 发布日期（本地化 "1975 年 12 月 20 日"；英文页可能 "Dec 20, 1975"，
+            # 兜底只取任意 4 位年份）。下游年份守卫/精确匹配按它做年份对齐，
+            # 缺失会让候选变成「年份未知」而无法命中。
+            rd = re.search(
+                r'<span class="release_date[^"]*"[^>]*>([^<]*)</span>', card_seg
+            )
+            if rd:
+                _dt = rd.group(1).strip()
+                if _dt:
+                    _dm = re.match(
+                        r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日", _dt
+                    )
+                    _date_key = (
+                        "release_date"
+                        if card_media_type == "movie"
+                        else "first_air_date"
+                    )
+                    if _dm:
+                        item[_date_key] = (
+                            f"{_dm.group(1)}-{int(_dm.group(2)):02d}-"
+                            f"{int(_dm.group(3)):02d}"
+                        )
+                    else:
+                        _dy = re.search(r"(\d{4})", _dt)
+                        if _dy:
+                            item[_date_key] = f"{_dy.group(1)}-01-01"
+            results.append(item)
 
         # 按请求的 media_type 过滤，避免类型串扰
         # （TMDB 页面即使指定 /search/movie，仍可能包含 TV 卡片）
         if media_type in ("movie", "tv"):
             results = [r for r in results if r["media_type"] == media_type]
 
-        # 去重后保留前 5 条
+        # 相关性重排：TMDB 网页按热度排卡片，冷门/成人条目（如 1975 成人片
+        # 《映像》id=67018）可能排到 30+ 名，旧逻辑按页序截前 5 条会把它丢掉；
+        # 按「本地化标题/原始名 与查询词的匹配度」重排，让精确标题匹配浮到最前，
+        # 再截断，冷门条目才不会被热门子串噪音挤掉。
+        def _norm_match(s):
+            return re.sub(r"[\s\-_;.·・]", "", (s or "").lower())
+
+        _q = _norm_match(query)
+
+        def _relevance(r):
+            _t = _norm_match(r.get("title"))
+            _o = _norm_match(r.get("original_title"))
+            if _q and (_t == _q or (_o and _o == _q)):
+                return 0
+            if _q and _t and (_q in _t or _t in _q or (_o and (_q in _o or _o in _q))):
+                return 1
+            return 2
+
+        results.sort(key=_relevance)
+
+        # 去重后保留前 N 条（重排后精确匹配已浮到最前）
         seen = set()
         deduped = []
         for r in results:
             if r["id"] not in seen:
                 seen.add(r["id"])
                 deduped.append(r)
-                if len(deduped) >= 5:
+                if len(deduped) >= WEB_FALLBACK_MAX_RESULTS:
                     break
 
         if deduped:
