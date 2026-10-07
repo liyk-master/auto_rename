@@ -897,19 +897,28 @@ class EmyaApiController:
                 error_code="ADD_SUBTITLE_ERROR",
             )
 
-    def delete_media_by_sha256(self, sha256: str) -> ApiResponse:
+    def delete_media_by_sha256(
+        self,
+        sha256: str,
+        file_name: Optional[str] = None,
+        file_size: Optional[int] = None,
+    ) -> ApiResponse:
         """
         通过 sha256 删除媒体记录（硬删除，级联清理空父级）
 
         Args:
             sha256: 文件的 SHA256 值
+            file_name: 原始文件名（可选，content_hash 匹配不到时按 path_url 文件名兜底）
+            file_size: 文件大小（可选，与 file_name 配合兜底匹配）
 
         Returns:
             ApiResponse
         """
         try:
             with self.service.db.session_scope() as session:
-                deleted = self.service.hard_delete_media_cascade(session, sha256)
+                deleted = self.service.hard_delete_media_cascade(
+                    session, sha256, file_name=file_name, file_size=file_size
+                )
                 if deleted:
                     return ApiResponse(
                         success=True,

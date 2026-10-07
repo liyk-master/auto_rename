@@ -12,9 +12,10 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Tuple
+from urllib.parse import quote
 
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
 
 from .models import (
@@ -456,6 +457,27 @@ class EmyaService:
     # 媒体资源操作
     # ============================================================
 
+    @staticmethod
+    def _normalize_content_hash(value: Optional[str]) -> Optional[str]:
+        """规范化 content_hash：剥掉已有前缀、统一小写、按长度补正确前缀。
+
+        32 位十六进制 → md5:；64 位十六进制 → sha256:；其他格式原样返回。
+        避免再产生 `sha256:<32位hex>` 这类畸形格式导致删除链匹配失败
+        （历史数据中此类畸形行正是“删一部剧残留几集”的根因之一）。
+        """
+        if not value:
+            return value
+        v = value.strip()
+        for p in ("sha256:", "md5:", "sha1:"):
+            if v.lower().startswith(p):
+                v = v[len(p):]
+        v = v.lower()
+        if re.fullmatch(r"[0-9a-f]{32}", v):
+            return f"md5:{v}"
+        if re.fullmatch(r"[0-9a-f]{64}", v):
+            return f"sha256:{v}"
+        return value
+
     def create_media(
         self,
         session: Session,
@@ -490,8 +512,8 @@ class EmyaService:
         Returns:
             VideoMedia 实例（可能是已存在的记录）
         """
-        if content_hash and not content_hash.startswith(("sha256:", "md5:", "sha1:")):
-            content_hash = f"sha256:{content_hash}"
+        if content_hash:
+            content_hash = self._normalize_content_hash(content_hash)
         media = VideoMedia(
             uuid=str(uuid.uuid4()),
             video_list_id=video_list_id,
@@ -529,15 +551,96 @@ class EmyaService:
         logger.info(f"创建媒体资源: {name} (ID: {media.id})")
         return media
 
+    def _query_media_by_hash(self, session: Session, value: Optional[str]) -> List[VideoMedia]:
+        """按哈希值查询全部命中媒体（候选格式: 裸值 + sha256:/md5:/sha1: 前缀，大小写无关）。"""
+        if not value:
+            return []
+        h = value.strip().lower()
+        for p in ("sha256:", "md5:", "sha1:"):
+            if h.startswith(p):
+                h = h[len(p):]
+        cands = sorted({h, f"sha256:{h}", f"md5:{h}", f"sha1:{h}"}, key=lambda s: (len(s), s))
+        return (
+            session.query(VideoMedia)
+            .filter(VideoMedia.content_hash.in_(cands))
+            .order_by(VideoMedia.id.asc())
+            .all()
+        )
+
     def _find_media_by_content_hash(self, session: Session, sha256: str) -> Optional[VideoMedia]:
-        """通过 content_hash 精确查找媒体记录。"""
+        """通过 content_hash 查找媒体记录（兼容历史多种前缀/大小写格式）。"""
+        medias = self._query_media_by_hash(session, sha256)
+        return medias[0] if medias else None
+
+    def find_media_by_sha256(
+        self,
+        session: Session,
+        sha256: str,
+        file_name: Optional[str] = None,
+        file_size: Optional[int] = None,
+    ) -> List[VideoMedia]:
+        """通过 content_hash（兼容 sha256/md5 及各历史格式）查找媒体记录，返回全部命中。
+
+        删除事件可用的信息有限，这里逐级放宽匹配：
+        1. content_hash 精确（多前缀候选、大小写无关）——覆盖正常的 sha256:64hex 行；
+        2. path_url 含裸哈希——覆盖 content_hash 缺失但 URL 里嵌了哈希的旧行；
+        3. （file_name + file_size）—— path_url 末尾带该文件名且大小一致，
+           覆盖历史畸形格式（如 sha256:<32位hex>）与 content_hash 为空的行，
+           解决“删一部剧后残留几集”的问题。
+        """
         if not sha256:
-            return None
-        if not sha256.startswith(("sha256:", "md5:", "sha1:")):
-            sha256 = f"sha256:{sha256}"
-        return session.query(VideoMedia).filter(
-            VideoMedia.content_hash == sha256.lower(),
-        ).first()
+            return []
+        results, seen = [], set()
+
+        for m in self._query_media_by_hash(session, sha256):
+            if m.id not in seen:
+                seen.add(m.id)
+                results.append(m)
+        if results:
+            return results
+
+        # 兜底1: content_hash 不匹配（可能为空），但 path_url 里嵌了同样的哈希
+        h = sha256.strip().lower()
+        for m in (
+            session.query(VideoMedia)
+            .filter(VideoMedia.path_url.contains(h))
+            .order_by(VideoMedia.id.asc())
+            .all()
+        ):
+            if m.id not in seen:
+                seen.add(m.id)
+                results.append(m)
+
+        # 兜底2: 按事件携带的原始文件名 + 文件大小匹配（URL 末尾即文件名）
+        if not results and file_name and file_size is not None:
+            base = Path(file_name).name
+            if base:
+                tails = [
+                    self._like_escape(base),
+                    self._like_escape(quote(base, safe="")),
+                ]
+                conds = [VideoMedia.path_url.like(f"%{t}") for t in tails]
+                query = session.query(VideoMedia).filter(
+                    or_(
+                        VideoMedia.file_size == file_size,
+                        VideoMedia.file_size.is_(None),
+                    )
+                )
+                for m in (
+                    query.filter(or_(*conds))
+                    .order_by(VideoMedia.id.asc())
+                    .limit(50)
+                    .all()
+                ):
+                    if m.id not in seen:
+                        seen.add(m.id)
+                        results.append(m)
+        return results
+
+    @staticmethod
+    def _like_escape(s: str) -> str:
+        """转义 LIKE 通配符，避免文件名中的 %/_ 干扰匹配。"""
+        return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     def get_media_by_episode(
         self, session: Session, video_episode_id: int
@@ -562,31 +665,42 @@ class EmyaService:
             )
         ).all()
 
-    def find_media_by_sha256(self, session: Session, sha256: str) -> Optional[VideoMedia]:
-        """通过 content_hash（sha256）精确查找媒体记录"""
-        if not sha256:
-            return None
-        # 优先用 content_hash 精确查找
-        media = self._find_media_by_content_hash(session, sha256)
-        if media:
-            return media
-        # 兜底：旧数据可能没有 content_hash，退化为 path_url.contains
-        return session.query(VideoMedia).filter(
-            VideoMedia.path_url.contains(sha256),
-        ).first()
-
-    def hard_delete_media_cascade(self, session: Session, sha256: str) -> bool:
+    def hard_delete_media_cascade(
+        self,
+        session: Session,
+        sha256: str,
+        file_name: Optional[str] = None,
+        file_size: Optional[int] = None,
+    ) -> bool:
         """
-        硬删除媒体记录并级联清理空父级。
+        硬删除媒体记录并级联清理空父级（支持同哈希多条命中逐条清理）。
 
         删除链: VideoMedia -> VideoEpisode(空) -> VideoSeason(空) -> VideoList(空)
         每级只在上二级删除后无剩余记录时继续向上级联。
+
+        查找不局限于 content_hash 精确匹配：
+        - 兼容历史 md5:/sha256:/无前缀 等各类格式（大小写无关）；
+        - 精确匹配不到时按 path_url 中的哈希、以及（file_name+file_size）对应的
+          文件名做兜底，解决“删一部剧后残留几集”的历史畸形数据问题。
         """
-        media = self.find_media_by_sha256(session, sha256)
-        if not media:
-            logger.warning(f"未找到 sha256={sha256[:16]}... 的媒体记录")
+        medias = self.find_media_by_sha256(
+            session, sha256, file_name=file_name, file_size=file_size
+        )
+        if not medias:
+            logger.warning(
+                f"未找到 sha256={sha256[:16]}... 的媒体记录"
+                + (f"（file_name={file_name!r}）" if file_name else "")
+            )
             return False
 
+        deleted_any = False
+        for media in medias:
+            if self._hard_delete_media_one(session, media, sha256):
+                deleted_any = True
+        return deleted_any
+
+    def _hard_delete_media_one(self, session: Session, media: VideoMedia, sha256: str) -> bool:
+        """删除单条媒体记录并级联清理空父级（内部方法，供批量删除循环调用）。"""
         episode_id = media.video_episode_id
         season_id = media.video_season_id
         list_id = media.video_list_id
