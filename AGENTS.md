@@ -128,6 +128,16 @@
     解析器给裸集号文件名补的默认 season=1 不被信任——
     无显式季标记（S01/第1季/Season 1）且带目录年份时也允许反推覆盖
     （`_has_explicit_season`，`TestDefaultSeasonNotTrusted` 覆盖）
+  - ⚙ **同名「电视剧/动漫」双条目按集号容量判定**：TMDB 常有同名双条目
+    （《凡人修仙传》2020 动画 206 集 / 2025 真人剧 30 集），目录年份 2025 触发的
+    季年份加分会把 `S01E194` 选进只更新到 30 集的真人剧。识别时在年份/热度
+    打分前用 `_filter_candidates_by_episode_capacity()` 剔除集数容不下文件集号的
+    tv 候选（有显式季标记看该季集数，否则看总集数）。⚠️ **只做 tv 候选之间的
+    消歧**：只有一个 tv 候选或没有任何 tv 候选能容纳集号时不剔除（TMDB 对在播剧
+    常只收录很少集数，如《真男人》S02 仅收录 1 集而文件是 S02E05）——否则唯一
+    标题精确匹配的 tv 会出局、退化成同名 movie；movie 等非 tv 候选也不受益。
+    容量未知（详情缺失/集数 0）不剔除；`_tv_episode_capacity_cache` 按 tmdb_id
+    缓存容量，失败结果不缓存（`tests/unit/test_core/test_episode_capacity.py` 覆盖）
   - ⚙ **电影续集号不回吞**：`The.Amazing.Spider-Man.2.2014…` 的续集号 2
     由 native L7 合并回搜索词（`The Amazing Spider Man 2`）；
     同时 `has_exact_match` 对标题做连字符/下划线归一化（`Spider-Man` == `Spider Man`），

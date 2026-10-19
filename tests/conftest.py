@@ -23,6 +23,7 @@ def _isolate_renamer_shared_cache():
         "_season_year_boost_cache",
         "_type_resolve_cache",
         "_llm_parse_cache",
+        "_tv_episode_capacity_cache",
     ]
     saved = {}
     for name in names:

@@ -9,7 +9,7 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Dict, List, Optional, Union, Set
+from typing import Dict, List, Optional, Tuple, Union, Set
 
 from jinja2 import Template
 from ..tmdb_client import TMDBClient
@@ -21,6 +21,11 @@ from ...utils.cache import ThreadSafeLRUCache
 # 搜索空结果的短时缓存时长（秒）：识别失败的搜索词短时间内不会变，
 # 避免同词被多个文件反复重试打爆 TMDB 限速；到期后自动失效可重试
 _SEARCH_EMPTY_TTL = 600
+
+# 集数容量校验最多探测的候选数（每个候选一次 TMDB 详情请求，命中缓存后为零成本）：
+# 同名剧集候选通常不足 5 个，设上限只为防止异常搜索结果触发大量请求；
+# 超出上限的候选视为「容量未知」，不剔除
+_EPISODE_CAPACITY_PROBE_LIMIT = 8
 
 
 def _config_bool(value) -> bool:
@@ -308,6 +313,10 @@ class VideoRenamer:
     _search_cache: ThreadSafeLRUCache = ThreadSafeLRUCache(maxsize=2000)
     # 季后验年份匹配缓存：避免同一剧集重复请求
     _season_year_boost_cache: ThreadSafeLRUCache = ThreadSafeLRUCache(maxsize=2000)
+    # 剧集集数容量缓存：tmdb_id -> (总集数, {季号: 该季集数})；详情缺失/请求失败
+    # 不入缓存（下次重试）。用于「同名电视剧 vs 动漫」按文件集号剔除容量不足的
+    # 候选（见 _filter_candidates_by_episode_capacity）
+    _tv_episode_capacity_cache: ThreadSafeLRUCache = ThreadSafeLRUCache(maxsize=2000)
     # 模糊类型判定缓存：避免批量处理时重复请求
     _type_resolve_cache: ThreadSafeLRUCache = ThreadSafeLRUCache(maxsize=2000)
     # LLM 文件名解析缓存：同一目录的多集（如 "剧名（2026）/01.mp4"、"02.mp4"）
@@ -3884,6 +3893,152 @@ class VideoRenamer:
 
         return self._season_year_boost_cache.get_or_create(cache_key, _calc_boost)
 
+    def _get_tv_episode_capacity(
+        self, tmdb_id: int
+    ) -> Optional[Tuple[int, Dict[int, int]]]:
+        """查询 TMDB 剧集的集数容量，用于按文件集号剔除不可能的候选。
+
+        Returns:
+            (总集数, {季号: 该季集数})；TMDB 详情缺失、请求失败或完全是
+            空壳条目时返回 None（表示容量未知，调用方不得据此剔除候选）。
+        """
+        tmdb_client = self.tmdb_client
+        if tmdb_client is None:
+            return None
+        try:
+            cache_key = int(tmdb_id)
+        except (TypeError, ValueError):
+            return None
+
+        def _calc() -> Optional[Tuple[int, Dict[int, int]]]:
+            """真实查 TMDB 详情（single-flight 的 leader 执行体）。"""
+            try:
+                details = tmdb_client.get_tv_details(tmdb_id)
+            except Exception as e:
+                logger.debug(f"获取剧集集数容量失败 (ID: {tmdb_id}): {e}")
+                return None
+            if not details:
+                return None
+            try:
+                total = int(details.get("number_of_episodes") or 0)
+            except (TypeError, ValueError):
+                total = 0
+            season_counts: Dict[int, int] = {}
+            for season in details.get("seasons") or []:
+                try:
+                    season_number = int(season.get("season_number"))
+                    episode_count = int(season.get("episode_count") or 0)
+                except (TypeError, ValueError):
+                    continue
+                season_counts[season_number] = episode_count
+            if total <= 0 and not any(season_counts.values()):
+                return None
+            return total, season_counts
+
+        # 不做 None 负缓存：容量缺失/请求失败不该被固化为「未知」，
+        # 否则同一 ID 的后续文件永远失去集号校验（成功结果会被 TMDBClient
+        # 的请求缓存兜底，重复探测成本极低）
+        return self._tv_episode_capacity_cache.get_or_create(cache_key, _calc)
+
+    def _filter_candidates_by_episode_capacity(
+        self, candidates: List[Dict], metadata: Dict, label: str = ""
+    ) -> List[Dict]:
+        """按文件集号剔除「集数容量不可能包含该集」的 tv 候选。
+
+        同名剧集在 TMDB 常见「电视剧 + 动漫」双条目（《凡人修仙传》：2025
+        真人剧共 30 集 / 2020 动画共 206 集）。仅凭年份加分或热度，194 集的
+        国漫文件会被目录年份 2025 的真人剧条目吸走。集号是硬约束：总集数
+        （或显式季的集数）小于文件集号的条目一定不是本文件所属条目，
+        应在年份/热度打分之前先剔除。
+
+        ⚠ 只做 tv 候选之间的消歧，且必须有「正向替代」才剔除：
+        - 只有一个 tv 候选时不剔——TMDB 对在播剧集常「只收录 1 集」
+          （《真男人》S02 仅收录 1 集，文件却是 S02E05），按容量剔除会把
+          唯一标题精确匹配的 tv 候选挤掉，退化成 movie/其他条目；
+        - 没有任何 tv 候选能容纳集号时不剔——集号可能误解析或 TMDB 未更新，
+          保留原候选让年份/热度裁决；
+        - movie 等非 tv 候选不参与判定、也不会因 tv 被剔除而受益。
+
+        其余保守策略：
+        - 候选不足 2 个、无集号：原样返回；
+        - 容量未知（详情缺失 / 集数为 0）视为通过，不剔除；
+        - 季号是解析器补的默认值（无显式季标记）时只按总集数判定，
+          避免把「集号跨季连续编号、TMDB 按季拆分」的剧集误杀。
+        """
+        if len(candidates) < 2:
+            return candidates
+        # 仅在 ≥2 个 tv 候选之间消歧（单 tv 候选无歧义可消，见 docstring）
+        if len([r for r in candidates if r.get("media_type") == "tv"]) < 2:
+            return candidates
+        episode = metadata.get("episode")
+        if episode is None:
+            return candidates
+        matched = re.match(r"\d+", str(episode).strip())
+        if not matched:
+            return candidates
+        ep_num = int(matched.group())
+        if ep_num <= 0:
+            return candidates
+
+        season_int: Optional[int] = None
+        season = metadata.get("season")
+        if season is not None and str(season).strip().isdigit():
+            season_int = int(str(season).strip())
+        # 默认补的 season=1 不可信：只按总集数校验
+        if season_int is not None and not self._has_explicit_season(metadata):
+            season_int = None
+
+        remaining: List[Dict] = []
+        dropped: List[str] = []
+        # 能容纳集号（或容量未知）的 tv 候选数 = 「正向替代」个数：
+        # 为 0 时不得剔除任何候选（否则唯一的 tv 精确匹配会出局）
+        passed_tv = 0
+        probed = 0
+        for result in candidates:
+            if result.get("media_type") != "tv":
+                remaining.append(result)
+                continue
+            tmdb_id = result.get("id")
+            if not tmdb_id or probed >= _EPISODE_CAPACITY_PROBE_LIMIT:
+                remaining.append(result)
+                passed_tv += 1
+                continue
+            probed += 1
+            capacity = self._get_tv_episode_capacity(tmdb_id)
+            if not capacity:
+                remaining.append(result)
+                passed_tv += 1
+                continue
+            total, season_counts = capacity
+            limit = total
+            scope = f"总集数 {total}"
+            if season_int is not None and season_counts.get(season_int, 0) > 0:
+                limit = season_counts[season_int]
+                scope = f"第{season_int}季 {limit} 集"
+            if limit > 0 and ep_num > limit:
+                dropped.append(
+                    f"{result.get('name') or result.get('title')}"
+                    f"(id={tmdb_id}, {scope})"
+                )
+                continue
+            remaining.append(result)
+            passed_tv += 1
+
+        if not dropped:
+            return candidates
+        if not passed_tv:
+            logger.warning(
+                f"{label}集数容量过滤：tv 候选（{'; '.join(dropped)}）的集数都"
+                f"小于文件集号 E{ep_num}，无可用替代，保留原候选"
+                f"（疑 TMDB 未更新或集号误解析）"
+            )
+            return candidates
+        logger.info(
+            f"{label}集数容量过滤：文件 E{ep_num} 剔除 {len(dropped)} 个容量不足候选 "
+            f"({'; '.join(dropped)})，剩余 {passed_tv} 个 tv 候选"
+        )
+        return remaining
+
     def _infer_season_from_year(self, tmdb_id: int, target_year: str) -> Optional[int]:
         """用年份反推季号：查 TMDB 剧集季列表，恰一个季的播出年份匹配时返回该季号。
 
@@ -5448,6 +5603,14 @@ class VideoRenamer:
                             f"  [DEBUG]   id={_m.get('id')}, name={_m.get('name')}, genre_ids={_m.get('genre_ids')}, popularity={_m.get('popularity')}, media_type={_m.get('media_type')}"
                         )
 
+                    # 集数容量硬约束（先于年份/热度打分）：同名「电视剧 vs 动漫」
+                    # 双条目时，集数容不下文件集号的条目一定不是本文件——如
+                    # 《凡人修仙传》真人剧 30 集 vs 动画 206 集，S01E194 若先按
+                    # 目录年份 2025 加分会把文件选进 30 集的真人剧条目
+                    exact_matches = self._filter_candidates_by_episode_capacity(
+                        exact_matches, metadata, "精确匹配"
+                    )
+
                     # 获取字幕组类型映射
                     release_group = original_release_group or metadata.get(
                         "release_group", ""
@@ -5684,6 +5847,10 @@ class VideoRenamer:
                             return_all=True,
                         )
                         if exact_matches:
+                            # 集数容量硬约束（同主搜索路径）：剔除已知容不下文件集号的候选
+                            exact_matches = self._filter_candidates_by_episode_capacity(
+                                exact_matches, metadata, "跨语言精确匹配"
+                            )
                             # 获取字幕组类型映射
                             release_group = original_release_group or metadata.get(
                                 "release_group", ""
@@ -6582,6 +6749,11 @@ class VideoRenamer:
                         f"tv 证据不足（电影目录={_movie_dir_ctx}）：排除 "
                         f"{_pre_tv - len(target_results)} 个 tv 候选，仅保留 movie 候选"
                     )
+            # 集数容量硬约束（同精确匹配路径）：无精确匹配时也先剔除已知
+            # 容不下文件集号的 tv 候选，避免季年份加分把人气低的错误条目选走
+            target_results = self._filter_candidates_by_episode_capacity(
+                target_results, metadata, "候选排序"
+            )
             search_term_lower = search_term.lower()
 
             # 对电视剧结果预计算季年份加分
