@@ -43,6 +43,10 @@
     L6 数字标题保护（1917.mkv→movie）/ L7 电影续集号（Spider-Man.2.2014→续集）；
     解析链 = `_extract_with_regex`（显式标记/英文 SxxExx/中文集号）+ FilenameParser（L2-L7），
     猜不到留空交给 TMDB/LLM；格式清单测试 `test_format_matrix.py` 锁分层覆盖；
+    ⚙ L2「中文剧名目录 + 数字开头 = 集号」不适用于「`数字.英文标题.年份`」点分
+    形态（`三傻大闹宝莱坞/3.ldiots.2009.1080p...` 的 3 是片名 3 Idiots 而非第 3 集，
+    误当集号会连带判成 tv 而使后续搜索全部落空；中文副标题点分如
+    `狂飙/01.开端.2023.1080p.mp4` 仍提取 episode=1）；
     分层设计见 `core/filename_parser/README.md`
   - `emya/` — emya 媒体库入库（`api.py` / `models.py` / `service.py`）
   - `config_loader.py` — 配置加载/保存/验证（支持 frozen 打包环境路径）
@@ -152,10 +156,46 @@
     `renamer._parse_filename_with_cache()` 按「父目录 + 原始剧名」缓存并做 single-flight
     并发合并（等待者不占并发槽）；纠正后的剧名会作为「搜索别名」写入
     `_tmdb_cache` / `_tmdb_name_to_id`，否则下一集仍按未纠正名查找而永远 miss
+  - ⚙ **media_type 未知时兜底搜索照常发出**：`_search_with_language()` 在
+    `media_type_hint` 为空时改走通用 `search_video_show`（早期版本直接
+    `return []`）。cleaned_name / 父目录名 / 截断 / LLM 四个兜底全复用该方法，
+    而它们恰恰最常发生在类型判不出来时（纯英文文件名 + 中文目录名，如
+    `影视/西西里的美丽传说/Melina.2000.UNCUT...`），否则父目录名兜底与 LLM 兜底
+    静默失效、识别必然失败；也让「同名多版本」能被父目录中文名纠正
+    （`傲慢与偏见/Pride.And.Prejudice.2005` 由 1995 剧集改为 2005 电影 4348）
+    （`test_renamer.py::TestUnknownMediaTypeParentDirFallback` 覆盖）
+  - ⚙ **片名以年份样数字开头时年份取后一个**：`2001 A Space Odyssey 1968 USA
+    BluRay Remux ...` 的首个 2001 属于片名本体（TMDB 收录名
+    `2001: A Space Odyssey`），取 2001 会把标题砍成 `A Space Odyssey`/父目录的
+    `太空漫游`，且所有搜索都带 year=2001 → 年份噪音过滤把整批候选判为噪音
+    （`TestLeadingTitleYear` 覆盖；`2012.mkv` 这类只有一个年份的不受影响）
+  - ⚙ **无有效扩展名的条目不识别**：后缀不是「`.` + 字母数字」时
+    （139 秒传/网盘清单里的 0 字节说明文本或目录名，如
+    `影视/双子杀手/1.本片可做为设备测试片使用`——注意 `Path().suffix` 会把整个
+    中文串当后缀，看似「有后缀」）直接返回 `{}`，否则会被 L2 当集号、
+    误配成父目录电影的第 1/2 集（`TestNonVideoEntrySkipped` 覆盖）
+  - ⚙ **父目录兜底禁止拿垃圾目录当剧名**（ACG 秒传高发）：
+    - 季节目录带修饰词（`第一季 蓝光原盘REMUX 内封…字幕 年糕`、`S01 4K`、
+      `Season 2 2025`）不是剧名，`_is_garbage_show_candidate` 对
+      `^(第[一二三四五六七八九十百千\d]+季|SEASON\s*\d+|S\d{1,2}(?:E\d+)?)`
+      开头的目录一律判垃圾；否则会被当 show_name 填进 metadata，主搜索
+      拿「第一季」类词汇导出 90 条任意剧按人气误配（实测胆大党→土豆逗严肃
+      科普/魔法使莎莉，`TestJunkParentDirNotUsedAsShowName` 覆盖）
+    - 目录名末尾的冗余词「系列」剥离后再用（`胆大党系列`→`胆大党`，TMDB
+      搜「胆大党系列」命中率为 0；`进击的巨人系列`→`进击的巨人`）
+    - `番剧/新番/日漫/国漫/美漫/港漫` 补进分类词表（fragment_keywords +
+      garbage 判定）：无剧名的英文文件名（正则收不出 show_name）向上兜底到
+      分类层后会拿「番剧」当搜索词，返回热门电影随手误配（实测辉夜姬物语被
+      配成 The Jogger / 名侦探柯南）
+    - 截断搜索词不允许截成纯季节词（`第一季`/`S01`/`Season 1`），与
+      「不做数字季号截断」配套
   - LLM 只贡献剧名级信息（show_name / tmdb_corrected_title / year / media_type），
     episode/season 一律由文件名解析决定，不取 LLM 的猜测
 - **LLM Provider 配置** (`[llm_provider_N]`):
-  - `api_url`, `api_key`, `model`, `name` — 基本连接参数
+  - `api_url`, `api_key`, `model`, `name` — 基本连接参数；
+    ⚙ `api_key` 可空：内网/网关类 Provider（如 139 云盘）常不校验 token，
+    空 key 时 `_call_api` 自动省略 Authorization 头，`_init_providers` 与
+    `LLMProvider.__post_init__` 均不再因空 key 过滤/禁用 Provider
   - `max_tokens` — 最大输出 token（默认 4096，推理模型需更大预算）
   - `max_tokens_cap` — 截断时自动翻倍上限（默认 16384）
   - `timeout`, `max_retries`, `weight`, `enabled` — 控制参数

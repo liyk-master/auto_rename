@@ -843,6 +843,16 @@ class VideoRenamer:
             if decoded_filename != file_path.name:
                 logger.debug(f"解码文件名: {file_path.name} -> {decoded_filename}")
 
+            # ⚙ 后缀不是「点 + 字母数字」的条目不是视频文件：139 秒传/网盘清单
+            # 里的 0 字节说明文本或目录名（如 “1.本片可做为设备测试片使用”、
+            # “2.非自动匹配切换帧速率为59.94或者60”）——注意
+            # ``Path('1.本片可…').suffix`` 会返回整个中文串，看起来“有后缀”。
+            # 这类条目会被 L2「中文剧名目录 + 数字开头」当成集号，误配成父目录
+            # 电影的第 1/2 集，因此直接跳过识别。
+            if not re.fullmatch(r"\.[A-Za-z0-9]{1,8}", file_path.suffix):
+                logger.warning(f"无有效扩展名，按非视频文件跳过识别: {file_path.name}")
+                return {}
+
             # 0. 应用手动规则（如果启用）
             locked_fields: Set[str] = set()
             processed_filename: str = decoded_filename
@@ -1041,6 +1051,9 @@ class VideoRenamer:
                 "DOCUMENTARY",
                 "演唱会",
                 "音乐",
+                # 分类目录词补全：ACG 语境下的番剧分类目录
+                "番剧",
+                "新番",
             ]
             extracted_show_name = metadata.get("show_name") or ""
 
@@ -1147,9 +1160,19 @@ class VideoRenamer:
                             show_candidate = self._clean_filename_for_search(
                                 show_candidate
                             )
+                        # ⚙ 目录名常见冗余尾词："胆大党系列" → "胆大党"。系列
+                        # 目录（XX系列/XX合集）在 139 秒传里是资源站组织方式，
+                        # TMDB 收录名通常不带"系列"，且搜"胆大党系列"命中率为 0
+                        if (
+                            show_candidate
+                            and show_candidate.endswith("系列")
+                            and len(show_candidate) > 2
+                        ):
+                            show_candidate = show_candidate[:-2].strip()
                         # 跳过不像剧名的中间层（``1-100 4K`` / ``第1-100话`` /
-                        # ``合集 全1-100话 4K`` / ``Season 01`` 的 ``Season``），
-                        # 继续向上级查找真实剧名目录
+                        # ``合集 全1-100话 4K`` / ``Season 01`` 的 ``Season`` /
+                        # 带修饰词的季节目录 ``第一季 蓝光原盘REMUX…`` /
+                        # 分类目录 ``番剧`` / ``新番``），继续向上级查找真实剧名目录
                         if not show_candidate or self._is_garbage_show_candidate(
                             show_candidate
                         ):
@@ -1199,7 +1222,17 @@ class VideoRenamer:
             if "parent_show_name" not in metadata:
                 try:
                     for part_name in reversed(file_path.parts[:-1]):
-                        if not part_name or part_name in ("", "/", "\\", ":"):
+                        # ⚙ Windows 盘符（``D:\\``）不是目录名：`Path` 的 parts
+                        # 会把 ``D:/Downloads/...`` 拆出 ``'D:\\'`` 这一级（不是
+                        # 单字符 ``'\\'``，旧过滤条件漏掉）。若盘符被当真父目录名，
+                        # 识别失败时兜底策略会拿 ``D:\\`` 去 TMDB 搜——返回 100 条
+                        # 随机热门条目按得分误配（实测 ``Downloads/Melina.2000...``
+                        # 被随机配成“吸血鬼猎人D”9463）
+                        if (
+                            not part_name
+                            or part_name in ("", "/", "\\", ":")
+                            or re.fullmatch(r"[A-Za-z]:[\\/]?", part_name)
+                        ):
                             continue
                         raw_name = part_name
                         if "(" in raw_name:
@@ -1211,6 +1244,13 @@ class VideoRenamer:
                         candidate = parent_md.get("show_name") if parent_md else None
                         if not candidate:
                             candidate = self._clean_filename_for_search(decoded_name)
+                        # ⚙ 同 show_name 补全：剥离目录名冗余尾词 "系列"
+                        if (
+                            candidate
+                            and candidate.endswith("系列")
+                            and len(candidate) > 2
+                        ):
+                            candidate = candidate[:-2].strip()
                         if not candidate:
                             continue
                         upper_candidate = candidate.upper()
@@ -1660,6 +1700,9 @@ class VideoRenamer:
         # 单字符：首字母分类目录（如 \影视\电影\D\）或单字，不是剧名
         if len(v) <= 1:
             return True
+        # 分类目录词（ACG 语境）：番剧/新番（与 fragment_keywords 对齐）
+        if v in ("番剧", "新番", "日漫", "国漫", "美漫", "港漫"):
+            return True
         if v in _LIBRARY_ROOT_WORDS:  # MOVIES / TV / 全集 / 合集 / SEASON …
             return True
         # 合集变体组合词：全季合集 / 全集打包 / XX合集 等
@@ -1676,6 +1719,17 @@ class VideoRenamer:
             or re.match(r"^第\d+[集话季]$", v)
             or re.match(r"^SEASON\s*\d+$", v)
             or re.match(r"^(?:SP|OVA|PV|NCOP|NCED|BD|CD)\d*$", v)
+        ):
+            return True
+        # ⚙ 季节目录带修饰词："第一季 蓝光原盘REMUX 内封…字幕 年糕" /
+        # "S01 1080p" / "Season 2 4K" 是「季节 + 压制描述」，不是剧名；
+        # 纯 "第1季"/"S01"/"Season 1" 已被上面完整匹配规则覆盖。
+        # 否则会被当 show_name 填进 metadata，导致 TMDB 主搜索拿季节词
+        # 搜垃圾结果（实测 "第一季" 搜索返回 90 条任意剧并按人气误配
+        # 土豆逗严肃科普 / 魔法使莎莉）
+        if re.match(
+            r"^(?:第[一二三四五六七八九十百千\d]+季|SEASON\s*\d+|S\d{1,2}(?:E\d+)?)",
+            v,
         ):
             return True
         # 纯分辨率/格式：1080p / 4K / UHD / 720P
@@ -1774,6 +1828,21 @@ class VideoRenamer:
             if year_match:
                 metadata["year"] = year_match.group(1)
                 break
+
+        # ⚙ 片名以年份样数字开头时，不取它，取后面那个才是发行年份：
+        # ``2001 A Space Odyssey 1968 USA BluRay Remux ...`` 的首个 2001 属于
+        # 片名本体（TMDB 收录名 ``2001: A Space Odyssey``），若把 2001 当年份，
+        # 标题会被砍成 ``A Space Odyssey``/父目录的 ``太空漫游``，且后续所有
+        # TMDB 搜索都带 year=2001（真实条目 1968）——年份噪音过滤会把整批候选
+        # 判为噪音，识别必然失败。仅当名字以年份样数字开头、且后面还有另一个
+        # 年份样数字时才覆盖（``2012.mkv`` / ``1917.2019.2160p`` 不受影响）。
+        _lead_title_year = re.match(
+            r"(?:19|20)\d{2}(?!\d|[xXpP])\D.*?((?:19|20)\d{2})(?!\d|[xXpP])",
+            name_only,
+        )
+        if _lead_title_year:
+            metadata["year"] = _lead_title_year.group(1)
+            logger.debug(f"片名以年份样数字开头，改用后一个年份: {metadata['year']}")
 
         # 清理文件名，用于搜索
         cleaned_name = self._clean_filename_for_search(base_name)
@@ -3646,7 +3715,14 @@ class VideoRenamer:
                 elif media_type_hint == "movie":
                     method_name = "search_movie"
                 else:
-                    return results
+                    # ⚙ media_type 未知时用通用 multi 搜索，不能直接返回空：
+                    # 本方法同时被「cleaned_name / 父目录名 / 截断 / LLM 兜底」
+                    # 复用，而这些兜底恰恰最常发生在 media_type 判不出来时
+                    # （纯英文文件名 + 中文目录名，如
+                    # "影视/西西里的美丽传说/Melina.2000.UNCUT..."）。
+                    # 此前 unknown 分支静默返回 []，等于父目录中文名兜底
+                    # 与 LLM 兜底全部失效，识别必然失败
+                    method_name = "search_video_show"
 
                 # 1. 第一次搜索：使用年份参数（分页搜索）
                 results = tmdb.search_all_pages(
@@ -6107,6 +6183,15 @@ class VideoRenamer:
                             if (
                                 len(truncated_name) >= 2
                                 and truncated_name != search_term
+                                # ⚙ 截断结果不允许是纯季节词（"第一季"）/季标记
+                                # （"S01"/"Season 1"）：这类搜索词 TMDB 会返回
+                                # 大量任意剧集按人气误配（AGENTS.md「不做数字季号
+                                # 截断」的配套防线）。
+                                and not re.fullmatch(
+                                    r"第[一二三四五六七八九十百千\d]+季|SEASON\s*\d+|S\d{1,2}|S\d{1,2}E\d+",
+                                    truncated_name.strip(),
+                                    re.IGNORECASE,
+                                )
                             ):
                                 logger.info(
                                     f"尝试截断搜索词: '{search_term}' -> '{truncated_name}'"

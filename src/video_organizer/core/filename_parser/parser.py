@@ -118,6 +118,16 @@ class FilenameParser:
         """
         if not _is_chinese_show_dir(parent):
             return {}
+        # ⚙ 点分「英文标题 + 年份」形态（``3.ldiots.2009.1080p...`` /
+        # ``127.Hours.2010...``）是电影原名，开头的数字属于片名而不是集号：
+        # 英文点分命名与中文剧名目录的裸集号约定冲突时，宁可交给 regex/父目录
+        # 兜底（父目录中文名能精确命中 TMDB），也不要把 ``3`` 当集号——
+        # 一旦判成集号就会顺带把整条判成 tv 剧集，后续始终搜不到条目
+        # （中文副标题的点分文件名如 ``01.开端.2024.1080p`` 不受影响）
+        if re.match(r"^\d{1,4}\.[A-Za-z]", stem) and re.search(
+            r"\.(?:19|20)\d{2}(?:\.|$)", stem
+        ):
+            return {}
         numeric = _strip_quality_suffix(stem)
         if numeric.isdigit():
             # 裸分辨率数值（1080/2160/720/480 等，无 p 后缀）是画质标注不是集号：

@@ -1578,3 +1578,383 @@ class TestVideoRenamer:
         assert md.get("media_type") == "tv", md
         assert md.get("season") == 4, md
         assert md.get("episode") == 10, md
+
+
+class TestLeadingTitleYear:
+    """回归：片名以「年份样数字」开头时，年份必须取后面那个。
+
+    ``2001 A Space Odyssey 1968 USA BluRay ...`` 的首个 2001 属于片名本体
+    （TMDB 收录名 ``2001: A Space Odyssey``）。若把 2001 当年份，标题会被截成
+    ``A Space Odyssey``、父目录只剩 ``太空漫游``，且所有 TMDB 搜索都带
+    year=2001（真实条目 1968）——年份噪音过滤会把整批候选判成噪音而识别失败。
+    """
+
+    @pytest.fixture
+    def renamer(self):
+        return VideoRenamer("your_tmdb_api_key")
+
+    def test_leading_year_belongs_to_title(self, renamer):
+        md = renamer._extract_with_regex(
+            "2001 A Space Odyssey 1968 USA BluRay Remux UHD DoVi HDR10 2160p "
+            "DTS-HDMA5.1.mkv"
+        )
+        assert md["year"] == "1968"
+
+    def test_leading_year_without_second_year_kept(self, renamer):
+        """只有一个年份样数字时保持原行为（2012 是发行年份）。"""
+        md = renamer._extract_with_regex("2012.1080p.BluRay.x264.mkv")
+        assert md["year"] == "2012"
+
+    def test_resolution_not_mistaken_for_second_year(self, renamer):
+        """1920x1080 不是年份，不能被当成「后一个年份」。"""
+        md = renamer._extract_with_regex("2001 A Space Odyssey 1920x1080 BluRay.mkv")
+        assert md["year"] == "2001"
+
+
+class TestNonVideoEntrySkipped:
+    """回归：无有效扩展名的条目（说明文本/目录名）不参与识别。
+
+    139 秒传/网盘清单里 ``1.本片可做为设备测试片使用`` 这类 0 字节说明条目
+    （``Path().suffix`` 会返回整个中文串）会被 L2「中文剧名目录 + 数字开头」
+    当成集号，误配成父目录电影的第 1/2 集。
+    """
+
+    def test_chinese_note_entry_skipped(self):
+        renamer = VideoRenamer("your_tmdb_api_key")
+        assert (
+            renamer.extract_metadata("Q:/影视/双子杀手/1.本片可做为设备测试片使用")
+            == {}
+        )
+
+    def test_digit_dot_note_entry_skipped(self):
+        renamer = VideoRenamer("your_tmdb_api_key")
+        assert (
+            renamer.extract_metadata(
+                "Q:/影视/双子杀手/2.非自动匹配切换帧速率为59.94或者60"
+            )
+            == {}
+        )
+
+    def test_video_extension_still_recognized(self):
+        renamer = VideoRenamer("your_tmdb_api_key")
+        md = renamer._extract_with_regex("Gemini.Man.2019.2160p.BluRay.REMUX.mkv")
+        assert md["year"] == "2019"
+
+
+class TestUnknownMediaTypeParentDirFallback:
+    """回归：media_type 判不出来时兜底搜索必须真的发出去。
+
+    ``_search_with_language`` 此前在 media_type 未知时直接 ``return []``，
+    而「cleaned_name / 父目录名 / 截断 / LLM」四个兜底全走这个方法——
+    等于「纯英文文件名 + 中文目录名」这一大类（影视/西西里的美丽传说/
+    Melina.2000.UNCUT...）的父目录名兜底与 LLM 兜底静默失效。
+    """
+
+    @staticmethod
+    def _renamer(entries, details):
+        """entries: {搜索词小写: [候选...]}；details: {tmdb_id: 详情}。"""
+        renamer = VideoRenamer("your_tmdb_api_key")
+        table = {k.lower(): v for k, v in entries.items()}
+
+        class StubTMDB:
+            def __getattr__(self, name):
+                return lambda *a, **k: []
+
+            def search_all_pages(self, method, term, **k):
+                return [dict(e) for e in table.get(str(term).lower(), [])]
+
+            def get_movie_details(self, movie_id, **k):
+                return dict(details.get(movie_id, {}))
+
+            def get_tv_details(self, tv_id, **k):
+                return dict(details.get(tv_id, {}))
+
+            def get_movie_credits(self, *a, **k):
+                return {}
+
+            def get_tv_credits(self, *a, **k):
+                return {}
+
+        renamer.tmdb_client = StubTMDB()
+        renamer._llm_fallback_enabled = False
+        return renamer
+
+    def test_unknown_type_uses_generic_search(self):
+        renamer = VideoRenamer("your_tmdb_api_key")
+        calls = []
+
+        class StubTMDB:
+            def __getattr__(self, name):
+                return lambda *a, **k: []
+
+            def search_all_pages(self, method, term, **k):
+                calls.append(method)
+                return [{"id": 1, "name": "x", "media_type": "movie"}]
+
+        renamer.tmdb_client = StubTMDB()
+        out = renamer._search_with_language("x", None, "2000", "zh-CN")
+        assert calls == ["search_video_show"]
+        assert out
+
+    def test_typo_english_name_falls_back_to_parent_dir(self):
+        """Melina.2000（源文件名拼错 Malèna）→ 父目录中文名精确命中。"""
+        movie = {
+            "id": 10867,
+            "title": "西西里的美丽传说",
+            "name": "西西里的美丽传说",
+            "original_title": "Malèna",
+            "original_name": "Malèna",
+            "media_type": "movie",
+            "release_date": "2000-10-27",
+            "original_language": "it",
+            "popularity": 20.0,
+            "genre_ids": [18],
+            "overview": "x",
+            "vote_average": 8.0,
+            "vote_count": 100,
+            "poster_path": "",
+            "backdrop_path": "",
+        }
+        renamer = self._renamer({"西西里的美丽传说": [movie]}, {10867: dict(movie)})
+        md = renamer.extract_metadata(
+            "Q:/影视/西西里的美丽传说/Melina.2000.UNCUT.1080p.Bluray.REMUX.AVC.mkv"
+        )
+        assert md.get("tmdb_id") == 10867, md
+        assert md.get("show_name") == "西西里的美丽传说", md
+        assert md.get("media_type") == "movie", md
+
+    def test_leading_number_movie_title_falls_back_to_parent_dir(self):
+        """3.ldiots.2009（typо 3 Idiots）→ 父目录中文名精确命中。"""
+        movie = {
+            "id": 20453,
+            "title": "三傻大闹宝莱坞",
+            "name": "三傻大闹宝莱坞",
+            "original_title": "3 Idiots",
+            "original_name": "3 Idiots",
+            "media_type": "movie",
+            "release_date": "2009-12-23",
+            "original_language": "hi",
+            "popularity": 30.0,
+            "genre_ids": [35],
+            "overview": "x",
+            "vote_average": 8.0,
+            "vote_count": 100,
+            "poster_path": "",
+            "backdrop_path": "",
+        }
+        renamer = self._renamer({"三傻大闹宝莱坞": [movie]}, {20453: dict(movie)})
+        md = renamer.extract_metadata(
+            "Q:/影视/三傻大闹宝莱坞/3.ldiots.2009.1080p.BluRay.REMUX.AVC.mkv"
+        )
+        assert md.get("tmdb_id") == 20453, md
+        assert md.get("show_name") == "三傻大闹宝莱坞", md
+        assert md.get("media_type") == "movie", md
+        # 不得被当成剧集第 3 集
+        assert not md.get("episode"), md
+
+    def test_same_title_tv_pool_resolved_by_parent_dir_year(self):
+        """Pride.And.Prejudice.2005：multi 候选全是同名剧集/旧版电影（无 2005
+        年份）时，父目录中文名搜索精确命中 2005 电影而不是人气更高的 1995 剧集。"""
+        tv_1995 = {
+            "id": 1457,
+            "name": "傲慢与偏见",
+            "title": "傲慢与偏见",
+            "original_name": "Pride and Prejudice",
+            "media_type": "tv",
+            "first_air_date": "1995-09-24",
+            "original_language": "en",
+            "popularity": 20.03,
+            "genre_ids": [18],
+            "overview": "x",
+            "vote_average": 8.0,
+            "vote_count": 100,
+            "poster_path": "",
+            "backdrop_path": "",
+        }
+        movie_2005 = {
+            "id": 4348,
+            "title": "傲慢与偏见",
+            "name": "傲慢与偏见",
+            "original_title": "Pride & Prejudice",
+            "original_name": "Pride & Prejudice",
+            "media_type": "movie",
+            "release_date": "2005-09-16",
+            "original_language": "en",
+            "popularity": 40.0,
+            "genre_ids": [18, 10749],
+            "overview": "x",
+            "vote_average": 8.0,
+            "vote_count": 100,
+            "poster_path": "",
+            "backdrop_path": "",
+        }
+        renamer = self._renamer(
+            {
+                "pride and prejudice": [tv_1995],
+                "傲慢与偏见": [movie_2005],
+            },
+            {4348: dict(movie_2005), 1457: dict(tv_1995)},
+        )
+        md = renamer.extract_metadata(
+            "Q:/影视/傲慢与偏见/Pride.And.Prejudice.2005.1080p.BluRay.REMUX.VC-1.mkv"
+        )
+        assert md.get("tmdb_id") == 4348, md
+        assert md.get("media_type") == "movie", md
+
+
+class TestDriveLetterParentSkipped:
+    """回归：Windows 盘符（``D:\``）不得被当成父目录名兜底搜索。
+
+    ``Path('D:/Downloads/...').parts`` 的最后一级父目录是 ``'D:\'``（不是单
+    字符 ``'\'``，旧过滤条件漏掉）。识别失败时兜底策略会拿盘符去 TMDB 搜，
+    返回热门随机结果按得分误配——实测 ``Downloads/Melina.2000...`` 被随机
+    配成“吸血鬼猎人D”(9463)。
+    """
+
+    def test_drive_letter_not_used_as_search_term(self):
+        renamer = VideoRenamer("your_tmdb_api_key")
+        searched = []
+
+        class StubTMDB:
+            def __getattr__(self, name):
+                return lambda *a, **k: []
+
+            def search_all_pages(self, method, term, **k):
+                searched.append(str(term))
+                return []
+
+        renamer.tmdb_client = StubTMDB()
+        renamer._llm_fallback_enabled = False
+        md = renamer.extract_metadata(
+            "D:/Downloads/Melina.2000.UNCUT.1080p.Bluray.REMUX.AVC.DTS-HD.MA.5.1.mkv"
+        )
+        # 不得把盘符当搜索词
+        assert not any(
+            ("D:\\" in t or t.strip("\/:") == "D") for t in searched
+        ), searched
+        assert md.get("tmdb_id") in ("", None), md
+
+
+class TestJunkParentDirNotUsedAsShowName:
+    """回归：父目录兜底不得把垃圾目录当剧名去搜 TMDB。
+
+    139 ACG 秒传里常见：
+
+    - ``胆大党系列/第一季 蓝光原盘REMUX…年糕/S01E01.2024.mkv``：最近父目录是
+      「季节 + 压制描述」（不含剧名），真剧名在上上级 ``胆大党系列``。旧逻辑把
+      整串目录名当 show_name 搜 TMDB（0 结果），再截断成 ``第一季`` 搜出 90 条
+      任意剧按人气误配（土豆逗严肃科普 / 魔法使莎莉）。
+    - 分类目录 ``番剧`` / ``新番`` 不在垃圾词表中：无剧名的英文电影文件名
+      （正则收不出 show_name）向上兜底到分类层后拿 ``番剧`` 当搜索词 → 返回一串
+      热门电影随手误配（辉夜姬物语被配成 The Jogger / 名侦探柯南）。
+    """
+
+    @staticmethod
+    def _is_garbage(name: str) -> bool:
+        return VideoRenamer._is_garbage_show_candidate(name)
+
+    def test_season_desc_dir_is_garbage(self):
+        """季节目录带压制描述（``第一季 蓝光原盘REMUX 内封…字幕``）不是剧名。"""
+        assert self._is_garbage("第一季 蓝光原盘REMUX 内封精修简日双语特效字幕 年糕")
+        assert self._is_garbage("S01 1080p 4K")
+        assert self._is_garbage("Season 2 2025")
+        assert self._is_garbage("第二季 蓝光原盘REMUX")
+
+    def test_real_title_dir_not_garbage(self):
+        """真实剧名目录不受影响（不因放宽 garbage 而误伤）。"""
+        assert not self._is_garbage("胆大党")
+        assert not self._is_garbage("千年女优")
+        assert not self._is_garbage("未麻的部屋")
+        assert not self._is_garbage("火影忍者")
+
+    def test_anime_category_dir_is_garbage(self):
+        """ACG 分类目录词不得当剧名。"""
+        assert self._is_garbage("番剧")
+        assert self._is_garbage("新番")
+        assert self._is_garbage("日漫")
+
+    def test_season_dir_skipped_series_dir_used(self):
+        """E2E：胆大党/第一季 蓝光原盘…/S01E09 → 搜「胆大党」命中 240411。"""
+        searched = []
+
+        def _cand():
+            return {
+                "id": 240411,
+                "name": "胆大党",
+                "title": "胆大党",
+                "media_type": "tv",
+                "release_date": "2024-10-04",
+                "first_air_date": "2024-10-04",
+                "popularity": 40.0,
+                "genre_ids": [16],
+                "original_language": "ja",
+                "vote_average": 8.0,
+                "vote_count": 50,
+            }
+
+        class StubTMDB:
+            def __getattr__(self, name):
+                return lambda *a, **k: []
+
+            def search_all_pages(self, method, term, **k):
+                searched.append(str(term))
+                if str(term).startswith("胆大党"):
+                    return [_cand()]
+                return []
+
+            def get_tv_details(self, tv_id, **k):
+                return dict(id=tv_id, name="胆大党", overview="x")
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        renamer.tmdb_client = StubTMDB()
+        renamer._llm_fallback_enabled = False
+        md = renamer.extract_metadata(
+            "Q:/番剧/胆大党系列/第一季 蓝光原盘REMUX 内封精修简日双语特效字幕 年糕/"
+            "S01E09.2024.1080p.BluRay.REMUX.AVC.FLAC.2.0-年糕.mkv"
+        )
+        assert md.get("tmdb_id") == 240411, md
+        assert md.get("season") == "01" and md.get("episode") == "09", md
+        assert not any("第一季" in t for t in searched), searched
+
+    def test_category_dir_not_used_when_regex_fails(self):
+        """E2E：辉夜姬物语（无年份英文点分标题）→ 分类目录「番剧」不得当
+        搜索词，最终走 cleaned_name 命中 149871。"""
+        searched = []
+
+        def _cand():
+            return {
+                "id": 149871,
+                "name": "The Tale of The Princess Kaguya",
+                "title": "辉耀姬物语",
+                "media_type": "movie",
+                "release_date": "2013-11-23",
+                "popularity": 12.0,
+                "original_language": "ja",
+                "genre_ids": [16, 18],
+                "vote_average": 8.0,
+                "vote_count": 10,
+            }
+
+        class StubTMDB:
+            def __getattr__(self, name):
+                return lambda *a, **k: []
+
+            def search_all_pages(self, method, term, **k):
+                searched.append(str(term))
+                if "princess kaguya" in str(term).lower():
+                    return [_cand()]
+                return []
+
+            def get_movie_details(self, movie_id, **k):
+                return dict(id=movie_id, title="辉耀姬物语", overview="x")
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        renamer.tmdb_client = StubTMDB()
+        renamer._llm_fallback_enabled = False
+        md = renamer.extract_metadata(
+            "Q:/番剧/宫崎骏动画合集 蓝光BDREMUX原盘/"
+            "The.Tale.of.the.Princess.Kaguya.1080p.BluRay.REMUX.AVC."
+            "DTS-HD.MA.5.1.3Audio.mkv"
+        )
+        assert md.get("tmdb_id") == 149871, md
+        assert not any("番剧" in t for t in searched), searched

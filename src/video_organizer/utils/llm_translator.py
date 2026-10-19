@@ -41,8 +41,13 @@ class LLMProvider:
     reasoning_content_path: str = "choices[0].message.reasoning_content"
 
     def __post_init__(self):
+        # ⚙ api_key 可空：内网/网关类 Provider（如 139 云盘）常不校验 token，
+        # 空 key 时 `_call_api` 会自动省略 Authorization 头。此前强制
+        # enabled=False 会让空 token 的 Provider 永远无法加载（LLM 兜底失效）。
         if not self.api_key:
-            self.enabled = False
+            logger.debug(
+                f"LLMProvider '{self.name}': api_key 为空，调用时不发送 Authorization 头"
+            )
 
 
 class ResponseParser:
@@ -199,7 +204,11 @@ class LLMTranslator:
                 ),
             )
 
-            if provider.enabled and provider.api_key and provider.api_url:
+            # ⚙ api_key 可空：内网/网关类 Provider（如 139 云盘）常不校验
+            # token，空 key 时 `_call_api` 会自动省略 Authorization 头。
+            # 此前要求 api_key 非空才加载，空 token 的 Provider 会被静默过滤
+            # （`_enabled=False`），LLM 兜底完全不工作。
+            if provider.enabled and provider.api_url:
                 self.providers.append(provider)
                 logger.debug(
                     f"LLMTranslator: 添加Provider '{provider.name}' (model={provider.model})"

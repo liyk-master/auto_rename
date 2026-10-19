@@ -69,3 +69,21 @@ class TestFormatMatrix:
     # 电影标题数字（4 位在中文标题末尾）不得误判
     def test_tang_tan_1900_not_episode(self):
         assert _parse("唐探1900.mkv") == {}
+
+    # H 组：片名以数字开头 + 点分英文标题 + 年份（数字属于片名，不是集号）
+    def test_H1_leading_number_of_dotted_latin_title_not_episode(self):
+        """``3.ldiots.2009...`` 的 3 是片名（3 Idiots），不是第 3 集；
+        误当集号会连带把整条判成 tv 剧集，后续永远搜不到条目
+        （父目录中文名兜底也因带错类型而失效）。"""
+        assert (
+            _parse(
+                "三傻大闹宝莱坞/3.ldiots.2009.1080p.BluRay.REMUX.AVC.DTS-HD.MA.5.1.mkv"
+            )
+            == {}
+        )
+
+    def test_H2_dotted_chinese_subtitle_still_episode(self):
+        """中文副标题的点分文件名不受 H1 影响（01.开端... 的 01 仍是集号）。"""
+        md = _parse("狂飙/01.开端.2023.1080p.WEB-DL.mp4")
+        assert md["episode"] == 1
+        assert md["media_type"] == "tv"
