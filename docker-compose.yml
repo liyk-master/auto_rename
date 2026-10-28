@@ -5,6 +5,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # 构建加速（可选，取消注释即可）。HTTP_PROXY/HTTPS_PROXY 是 Docker 预定义
+      # build arg，不需要在 Dockerfile 里声明；apt/pip 走代理比直连快很多。
+      # args:
+      #   HTTP_PROXY: http://192.168.1.2:7890
+      #   HTTPS_PROXY: http://192.168.1.2:7890
     image: video-organizer:latest
     container_name: video-organizer
     restart: unless-stopped
@@ -66,7 +71,9 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./src:/app/src:ro
+      # 源码直接挂载进容器：改完代码 restart 即生效（不加 :ro，
+      # 因为数据库 src/video_organizer/data/video_organizer.db 也在这个目录下要写）
+      - ./src:/app/src
       - ./data/config.ini:/app/config.ini
       - ./data:/app/data
       - ./logs:/app/logs

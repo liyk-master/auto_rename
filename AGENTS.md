@@ -3,7 +3,7 @@
 ## 构建/测试/格式化
 
 - **运行全部可用测试（推荐）:** `pytest tests/unit tests/test_emya_models.py tests/test_organizer.py`
-  （当前 296 passed / 1 failed）
+  （当前 330 passed / 1 failed）
 - **裸跑 `pytest` 会失败:** `tests/integration/test_integration.py` 在收集阶段就 ImportError
   （见「已知问题」），必须先 `--ignore` 或按上面的方式指定路径
 - **运行单个测试文件:** `pytest tests/unit/test_core/test_renamer.py`
@@ -38,7 +38,16 @@
   - `file_handler/handler.py` — `VideoFileHandler` 文件处理主循环（原 `core/video_file_handler.py` 已迁移）
   - `monitor/monitor.py` — `FileSystemMonitor` 目录监控
   - `downloader/` — `base.py` + `qbittorrent_monitor.py` + `aria2_monitor.py` + `factory.py`
-  - `guessit_parser/parser.py` — `GuessItParser`，GuessIt 集成 + 中文文件名预处理
+  - `filename_parser/` — `FilenameParser` 确定性解析器（已替代 GuessIt，guessit 已移除）；
+    分层：L2 路径上下文 / L3 紧凑格式 / L4 PT 命名法 / L5 方括号集号 /
+    L6 数字标题保护（1917.mkv→movie）/ L7 电影续集号（Spider-Man.2.2014→续集）；
+    解析链 = `_extract_with_regex`（显式标记/英文 SxxExx/中文集号）+ FilenameParser（L2-L7），
+    猜不到留空交给 TMDB/LLM；格式清单测试 `test_format_matrix.py` 锁分层覆盖；
+    ⚙ L2「中文剧名目录 + 数字开头 = 集号」不适用于「`数字.英文标题.年份`」点分
+    形态（`三傻大闹宝莱坞/3.ldiots.2009.1080p...` 的 3 是片名 3 Idiots 而非第 3 集，
+    误当集号会连带判成 tv 而使后续搜索全部落空；中文副标题点分如
+    `狂飙/01.开端.2023.1080p.mp4` 仍提取 episode=1）；
+    分层设计见 `core/filename_parser/README.md`
   - `emya/` — emya 媒体库入库（`api.py` / `models.py` / `service.py`）
   - `config_loader.py` — 配置加载/保存/验证（支持 frozen 打包环境路径）
   - `tmdb_client.py` — TMDB API 客户端
@@ -71,11 +80,21 @@
   - `routers/` — `auth.py`, `apikeys.py`, `config.py`, `tasks.py`, `logs.py`,
     `manual.py`, `downloaders.py`, `strm.py`, `organize.py`, `recycle.py`；
     `strm.py` 的 123 秒传代理会先建临时文件再取直链，**所有提前返回路径**都必须走
-    `_p123_trash_temp()` 清理（已重试一次并校 code），否则文件残留在网盘目录里
+    `_p123_trash_temp()` 清理（已重试一次并校 code），否则文件残留在网盘目录里；
+    秒传响应的两个 FileId 语义不同（见 `_p123_collect_trash_ids` 注释）：取直链要
+    按 `_p123_download_id_candidates()` 的候选顺序逐个试（`Info.FileId` 真实条目
+    优先、顶层会话 id 兜底），线上出现过顶层 id 直接 `code=5066 文件不存在`
   - `services/state.py` — `StateManager` 单例
   - `static/` — 原生 JS 前端（`index.html`, `app.js`, `ui.js`, `api.js`, `app.css`）
 - **上传/整理模块** (`src/video_organizer/upload/`):
   - `base.py` — 上传基类（进度追踪、断点续传、Telegram 通知）
+  - 字幕上传（`p123_uploader.py` / `yun139_uploader.py` 的 `upload_subtitles`）统一走
+    `core/subtitle_handler.py` 的 `is_hls_segment_subtitle()` / `plan_subtitle_uploads()`：
+    ⚙ m3u8/HLS 下载会留下几十上百个 `playlist1.vtt`、`segment3.vtt` 分片（内容带
+    `X-TIMESTAMP-MAP`），旧逻辑把它们当字幕、且无语言标识时全部重命名成同一个
+    `<视频名>.srt` 逐个上传（互相覆盖、进度像卡死）。现在按文件名模式 + VTT 内容头
+    识别分片直接跳过，并按目标名去重（优先与视频同名者、其次体积大的）；
+    `file_handler/handler.py:_process_subtitle_file` 同样不再把分片改名成本地视频字幕
   - `emos_uploader.py` — emos 上传 + 重复资源识别
   - `cloud189_uploader.py` / `cloud189_client.py` — 天翼云盘
   - `p123_uploader.py` / `p123_client.py` / `pan123_client.py` — 123 云盘（`pan123_client.py` 是
@@ -99,7 +118,7 @@
   frozen 环境用 exe 同级目录；否则 **cwd 下 `config.ini` → 项目根 `config.ini` → 包内 `config.ini`**。
   注意「配置文件为空」不等于「不可用」，真实密钥常在项目根 `config.ini`
 - 主要 section: `[monitoring]` `[naming]` `[tmdb]` `[llm_fallback]` `[llm_provider_1..3]`
-  `[guessit]` `[emos]` `[emos_recognition]` `[processing]` `[logging]` `[telegram]`
+  `[guessit]` `[parser]` `[emos]` `[emos_recognition]` `[processing]` `[logging]` `[telegram]`
   `[emya_db]` `[yun139]` `[media_tracker]` `[p123]` `[recycle_clean]`；`[downloader.aria2]` / `[downloader.qbittorrent]` 模板中注释示例
 - **回收站清理配置** (`[recycle_clean]`，默认 `enabled = False`):
   - `providers` — 逗号分隔（当前仅 `p123`）、`daily_at` — `HH:MM`，可配多个如 `04:00,16:00`
@@ -120,11 +139,21 @@
     （`entry_year`，识别过程中 year 会被 TMDB 首播年份覆盖，反推必须用入口值）
     反查 TMDB 剧集季列表的 `air_date`，恰一个季匹配则采用（`_infer_season_from_year`），
     否则默认第 1 季（`_ensure_season` 统一兜底，所有识别路径共用）；
-    GuessIt 给裸集号文件名补的默认 season=1 不被信任——
+    解析器给裸集号文件名补的默认 season=1 不被信任——
     无显式季标记（S01/第1季/Season 1）且带目录年份时也允许反推覆盖
     （`_has_explicit_season`，`TestDefaultSeasonNotTrusted` 覆盖）
-  - ⚙ **电影续集号不回吞**：`The.Amazing.Spider-Man.2.2014…` 的续集号 2 会被
-    GuessIt 解析成 season，movie + season 时把续集号合并回搜索词（`The Amazing Spider Man 2`）；
+  - ⚙ **同名「电视剧/动漫」双条目按集号容量判定**：TMDB 常有同名双条目
+    （《凡人修仙传》2020 动画 206 集 / 2025 真人剧 30 集），目录年份 2025 触发的
+    季年份加分会把 `S01E194` 选进只更新到 30 集的真人剧。识别时在年份/热度
+    打分前用 `_filter_candidates_by_episode_capacity()` 剔除集数容不下文件集号的
+    tv 候选（有显式季标记看该季集数，否则看总集数）。⚠️ **只做 tv 候选之间的
+    消歧**：只有一个 tv 候选或没有任何 tv 候选能容纳集号时不剔除（TMDB 对在播剧
+    常只收录很少集数，如《真男人》S02 仅收录 1 集而文件是 S02E05）——否则唯一
+    标题精确匹配的 tv 会出局、退化成同名 movie；movie 等非 tv 候选也不受益。
+    容量未知（详情缺失/集数 0）不剔除；`_tv_episode_capacity_cache` 按 tmdb_id
+    缓存容量，失败结果不缓存（`tests/unit/test_core/test_episode_capacity.py` 覆盖）
+  - ⚙ **电影续集号不回吞**：`The.Amazing.Spider-Man.2.2014…` 的续集号 2
+    由 native L7 合并回搜索词（`The Amazing Spider Man 2`）；
     同时 `has_exact_match` 对标题做连字符/下划线归一化（`Spider-Man` == `Spider Man`），
     否则 TMDB 收录名带连字符永远匹配不上、退化为按人气选错条目；
     movie 搜索命中后立即落 `tmdb_id`（不依赖 external_ids）
@@ -137,10 +166,66 @@
     `renamer._parse_filename_with_cache()` 按「父目录 + 原始剧名」缓存并做 single-flight
     并发合并（等待者不占并发槽）；纠正后的剧名会作为「搜索别名」写入
     `_tmdb_cache` / `_tmdb_name_to_id`，否则下一集仍按未纠正名查找而永远 miss
+  - ⚙ **media_type 未知时兜底搜索照常发出**：`_search_with_language()` 在
+    `media_type_hint` 为空时改走通用 `search_video_show`（早期版本直接
+    `return []`）。cleaned_name / 父目录名 / 截断 / LLM 四个兜底全复用该方法，
+    而它们恰恰最常发生在类型判不出来时（纯英文文件名 + 中文目录名，如
+    `影视/西西里的美丽传说/Melina.2000.UNCUT...`），否则父目录名兜底与 LLM 兜底
+    静默失效、识别必然失败；也让「同名多版本」能被父目录中文名纠正
+    （`傲慢与偏见/Pride.And.Prejudice.2005` 由 1995 剧集改为 2005 电影 4348）
+    （`test_renamer.py::TestUnknownMediaTypeParentDirFallback` 覆盖）
+  - ⚙ **片名以年份样数字开头时年份取后一个**：`2001 A Space Odyssey 1968 USA
+    BluRay Remux ...` 的首个 2001 属于片名本体（TMDB 收录名
+    `2001: A Space Odyssey`），取 2001 会把标题砍成 `A Space Odyssey`/父目录的
+    `太空漫游`，且所有搜索都带 year=2001 → 年份噪音过滤把整批候选判为噪音
+    （`TestLeadingTitleYear` 覆盖；`2012.mkv` 这类只有一个年份的不受影响）
+  - ⚙ **无有效扩展名的条目不识别**：后缀不是「`.` + 字母数字」时
+    （139 秒传/网盘清单里的 0 字节说明文本或目录名，如
+    `影视/双子杀手/1.本片可做为设备测试片使用`——注意 `Path().suffix` 会把整个
+    中文串当后缀，看似「有后缀」）直接返回 `{}`，否则会被 L2 当集号、
+    误配成父目录电影的第 1/2 集（`TestNonVideoEntrySkipped` 覆盖）
+  - ⚙ **父目录兜底禁止拿垃圾目录当剧名**（ACG 秒传高发）：
+    - 季节目录带修饰词（`第一季 蓝光原盘REMUX 内封…字幕 年糕`、`S01 4K`、
+      `Season 2 2025`）不是剧名，`_is_garbage_show_candidate` 对
+      `^(第[一二三四五六七八九十百千\d]+季|SEASON\s*\d+|S\d{1,2}(?:E\d+)?)`
+      开头的目录一律判垃圾；否则会被当 show_name 填进 metadata，主搜索
+      拿「第一季」类词汇导出 90 条任意剧按人气误配（实测胆大党→土豆逗严肃
+      科普/魔法使莎莉，`TestJunkParentDirNotUsedAsShowName` 覆盖）
+    - 目录名末尾的冗余词「系列」剥离后再用（`胆大党系列`→`胆大党`，TMDB
+      搜「胆大党系列」命中率为 0；`进击的巨人系列`→`进击的巨人`）
+    - `番剧/新番/日漫/国漫/美漫/港漫` 补进分类词表（fragment_keywords +
+      garbage 判定）：无剧名的英文文件名（正则收不出 show_name）向上兜底到
+      分类层后会拿「番剧」当搜索词，返回热门电影随手误配（实测辉夜姬物语被
+      配成 The Jogger / 名侦探柯南）
+    - 截断搜索词不允许截成纯季节词（`第一季`/`S01`/`Season 1`），与
+      「不做数字季号截断」配套
+  - ⚙ **电影目录硬规则让位于显式剧集证据**：`_tv_candidate_inadmissible`
+    此前对路径含「电影/Movies」目录段的文件**无条件剔除 tv 候选**（电影目录
+    即电影语义），但用户可能把剧集放进「电影/H/」等首字母分类目录
+    （`影视库/电影/H/黑礁 Black Lagoon (2006)/Season 1/黑礁.Black.Lagoon.
+    S01E04.2006…mkv`）——S01E04 是比目录语义更强的 tv 证据，旧逻辑把
+    主搜索 tv 候选剔空导致识别失败。现在先过 `_tv_candidate_admissible`
+    （SxxExx/第N集/Season 标记、Season 1/第X季 布局目录），有剧集证据才
+    放行；无证据仍按「电影目录 = 电影语义」排除（宁失败不误配）
+    （`TestMovieDirAllowsExplicitTvEvidence` 正反两向覆盖）
+  - ⚙ **「中文剧名.数字」点分形态提取集号**（`遮天.186.4K.mkv`、
+    `火影忍者.115[www.xxx].mkv.iso`）：国产剧/国漫常用「剧名.集号」命名，
+    旧逻辑把点分数字混进 show_name（`遮天 186`）且 cleaned_name 又把数字剥掉
+    → media_type 落回 movie，搜「遮天 186」失败后兜底搜「遮天」电影池错配成
+    「遮蔽的天空」(1990)。`_extract_with_regex` 在正则链前基于原始文件名
+    提取集号（`^中文\.(\d{2,10})(?![0-9pPkK])`），安全约束：1 位数字不提取
+    （电影续集号 `复仇者联盟.2.2015`）、4 位年份形状（1850-2035）不提取
+    （`让子弹飞.2010`）、后随 p/P/k/K 分辨率不提取（`特工迷阵.1080p`）；
+    年份范围外的 4 位数仍是集号（`海贼王.1045`）
+    （`TestChineseTitleDotNumberEpisode` 覆盖；顺带修好火影 220 条
+    `.mkv.iso` 镜像被误配成剧场版的问题）
   - LLM 只贡献剧名级信息（show_name / tmdb_corrected_title / year / media_type），
     episode/season 一律由文件名解析决定，不取 LLM 的猜测
 - **LLM Provider 配置** (`[llm_provider_N]`):
-  - `api_url`, `api_key`, `model`, `name` — 基本连接参数
+  - `api_url`, `api_key`, `model`, `name` — 基本连接参数；
+    ⚙ `api_key` 可空：内网/网关类 Provider（如 139 云盘）常不校验 token，
+    空 key 时 `_call_api` 自动省略 Authorization 头，`_init_providers` 与
+    `LLMProvider.__post_init__` 均不再因空 key 过滤/禁用 Provider
   - `max_tokens` — 最大输出 token（默认 4096，推理模型需更大预算）
   - `max_tokens_cap` — 截断时自动翻倍上限（默认 16384）
   - `timeout`, `max_retries`, `weight`, `enabled` — 控制参数
@@ -160,11 +245,23 @@
 - 正式镜像: `Dockerfile` — 无 ENTRYPOINT，`CMD ["python","run_organizer.py","--web",
   "--web-host","0.0.0.0","--web-port","8080"]`（监控 + Web），带 `/api/health` healthcheck，
   非 root `appuser` 运行，`config_template.ini` 拷为 `/app/config.ini`
-- 轻量镜像: `Dockerfile.run` — 默认 `python run_organizer.py`，无 healthcheck
+- 轻量镜像: `Dockerfile.run` — 默认 `python run_organizer.py`，无 healthcheck；
+  ⚙ **基础镜像是 `python:3.12-slim` 多阶段（不是 alpine）**：alpine 是 musl，依赖无预编译
+  wheel 就得现场编译，必须先 `apk add build-base gcc`，国内源上 600s+；slim 直接吃
+  manylinux wheel。`COPY` 只拿 `src/` + `run_organizer.py` + `config_template.ini`，
+  pip 层用 `RUN --mount=type=cache,target=/root/.cache/pip`（需 BuildKit），
+  支持 `build.args` 的 `APT_MIRROR` / `PIP_INDEX` 与预定义代理参数 `HTTP_PROXY`/`HTTPS_PROXY`
 - 遗留镜像: `Dockerfile.legacy`
 - `docker-compose.yml` 三个 service: `video-organizer`、`video-organizer-web-only`
-  （需 `--profile web-only`，命令覆盖为 `--web-only`）、`video-organizer-dev`（热重载）
-- 配置挂载在 `./data/config.ini:/app/config.ini`
+  （需 `--profile web-only`，命令覆盖为 `--web-only`）、`video-organizer-dev`（同样只挂
+  `./src`，改完代码 `restart`；⚠️ 没用 `--web-reload`：`uvicorn.run(app, reload=True)`
+  传的是 app 对象而不是 import string，reload 子进程会跑不起来，`--web-only` 分支同此限制）
+- ⚙ **改代码不用重建镜像**：绑挂 `./src:/app/src`（**不要加 `:ro`**，数据库在
+  `src/video_organizer/data/video_organizer.db` 要写），改完 `docker compose restart` 即可；
+  只有 `requirements.txt` / Dockerfile 变了才 `docker compose build`
+- 配置挂载在 `./data/config.ini:/app/config.ini`；线上机器另有 `docker-compose.yml.tmp`
+  （Dockerfile.run + `./src` 挂载 + 构建代理），`.dockerignore` 必须继续排除
+  `logs/ data/ strm/ build/ dist/ .git/`（历史上 logs/ 就有 292MB，直接拖慢上下文）
 
 ## 已知问题
 

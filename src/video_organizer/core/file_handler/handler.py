@@ -17,7 +17,7 @@ from ...upload.emos_uploader import RobustEmosVideoUploader
 
 from ..renamer import VideoRenamer
 from ..tmdb_client import TMDBClient
-from ..subtitle_handler import SubtitleHandler
+from ..subtitle_handler import SubtitleHandler, is_hls_segment_subtitle
 from ..downloader import decode_file_path
 from ...utils.logging_utils import (
     get_logger,
@@ -2106,6 +2106,16 @@ class VideoFileHandler:
         """
         if not self.subtitle_handler:
             self.logger.warning("字幕处理器未初始化，跳过字幕文件处理")
+            return False
+
+        if not subtitle_path:
+            return False
+
+        # HLS/DASH 分片（playlistN.vtt 等）不是字幕，不得当成视频字幕改名，
+        # 否则会把一个几百字节的分片命名成 <视频名>.srt 并随视频一起上传
+        if is_hls_segment_subtitle(subtitle_path):
+            console_log(f"   ⏭️  跳过 HLS 分片/播放列表文件: {os.path.basename(subtitle_path)}")
+            self.logger.info(f"跳过 HLS 分片/播放列表文件: {subtitle_path}")
             return False
 
         try:

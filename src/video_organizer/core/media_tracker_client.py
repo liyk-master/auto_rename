@@ -519,7 +519,11 @@ class MediaTrackerClient:
             return
         logger.info("\u5904\u7406 media_deleted: sha256=%s...", sha256[:16])
         if self.emya_import and self.emya_controller:
-            result = self.emya_controller.delete_media_by_sha256(sha256)
+            result = self.emya_controller.delete_media_by_sha256(
+                sha256,
+                file_name=payload.get("file_name"),
+                file_size=payload.get("file_size"),
+            )
             if result.success:
                 logger.info("emya \u5220\u9664\u6210\u529f: %s", result.message)
             else:
@@ -568,7 +572,11 @@ class MediaTrackerClient:
 
         # Step 2: \u5220\u9664\u65e7 media\uff08\u786c\u5220\u9664\u94fe\uff09
         if self.emya_import and self.emya_controller:
-            delete_result = self.emya_controller.delete_media_by_sha256(sha256)
+            delete_result = self.emya_controller.delete_media_by_sha256(
+                sha256,
+                file_name=file_name,
+                file_size=file_size or None,
+            )
             if delete_result.success:
                 logger.info("emya \u65e7\u8bb0\u5f55\u5220\u9664\u6210\u529f: %s", delete_result.message)
             else:

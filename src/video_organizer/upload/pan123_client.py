@@ -72,6 +72,8 @@ _TOKEN_EXPIRE_KEYWORDS = (
     "token",
     "expired",
     "过期",
+    "未登录",
+    "未登陆",
     "未授权",
     "authorization",
     "401",
@@ -79,10 +81,19 @@ _TOKEN_EXPIRE_KEYWORDS = (
 
 
 def _is_token_expired(code: int, message: str) -> bool:
+    """判断接口错误是否代表凭据失效（需要触发自动重登）
+
+    123 云盘对未登录/登录失效的表达不统一：有时 code=401，
+    有时用其他业务码配「未登录」「请先登录」等措辞，
+    因此 message 里明确提到登录态时也按 token 失效处理。
+    """
     if code == 401:
         return True
     msg = (message or "").lower()
-    return any(k in msg for k in _TOKEN_EXPIRE_KEYWORDS)
+    if any(k in msg for k in _TOKEN_EXPIRE_KEYWORDS):
+        return True
+    # 兜底：明确提到登录态的错误（未登录/请先登录/登录已失效…）
+    return "登录" in msg or "登陆" in msg or "login" in msg
 
 
 _VERIFY_KEYWORDS = ("验证", "verify", "captcha", "geetest", "人机")
@@ -580,8 +591,12 @@ class Pan123Client:
         while True:
             resp = self.recycle_list(limit=limit, next_cursor=cursor)
             if resp.get("code") != 0:
+                # 失败必须抛错向上传播，不能静默当作「回收站为空」，
+                # 否则未登录/token 失效会被误报成没有垃圾可清
                 logger.warning(f"读取回收站列表失败: {resp.get('message')}")
-                return
+                raise RuntimeError(
+                    f"读取回收站列表失败: {resp.get('message')}（code={resp.get('code')}）"
+                )
             data = resp.get("data") or {}
             items = data.get("InfoList") or []
             if not items:

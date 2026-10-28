@@ -1444,8 +1444,20 @@ function editDownloaderConfig(data) {
         if (rpc) { values.rpc_url = rpc; }
         else if (host && port) { values.rpc_url = `http://${host}:${port}${RPC_PATHS[newType] || ''}`; }
         try {
-            await saveConfigToApi('downloader.' + newType, values);
-            if (newType !== type) await deleteConfigSectionApi(section);
+            const newSection = 'downloader.' + newType;
+            await saveConfigToApi(newSection, values);
+            // 仅在「改类型」且原配置节确实存在时才删除旧节（添加流程 section 为空，
+            // 删除空 section 会打出 /config/section/ 并触发 405 Method Not Allowed）
+            if (section && section !== newSection) {
+                try {
+                    await deleteConfigSectionApi(section);
+                } catch (e) {
+                    showToast(`配置已保存，但删除旧配置节「${section}」失败: ${e.message}`, 'error');
+                    hideModal();
+                    await loadDownloaderConfigs();
+                    return;
+                }
+            }
             showToast('下载器配置已保存', 'success');
             hideModal();
             await loadDownloaderConfigs();

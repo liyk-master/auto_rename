@@ -1,29 +1,92 @@
-# Dockerfile - 直接运行模式
-FROM python:3.12-alpine
+# Dockerfile.run —— 运行镜像（Web + 监控一体），可增量构建
+#
+# 为什么不再用 python:3.12-alpine：
+#   alpine 是 musl，pip 找不到预编译 wheel 就得现场编译，因此必须先装 build-base/gcc；
+#   而 `apk add --no-cache build-base wget git` 在国内源上经常要 600s+
+#   （线上日志：=> [2/7] RUN apk add ... 620.1s）。
+#   requirements.txt 里的依赖（cryptography / pydantic-core / uvloop / watchfiles /
+#   sqlalchemy / websockets / grpcio 之类）在 glibc 上都有 manylinux cp312 wheel，
+#   换 slim 后整段 apk + 源码编译时间直接消失。
+#
+# 构建加速开关（可选，用 build.args 传，不传就走官方源/直连）：
+#   HTTP_PROXY / HTTPS_PROXY   让 apt/pip 走代理（Docker 预定义 build arg，无需声明）
+#   APT_MIRROR=mirrors.aliyun.com / mirrors.tuna.tsinghua.edu.cn   换 Debian apt 源
+#   PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple              换 pip 源
+#
+# 分层策略：requirements.txt → 依赖层 → 源码层。只改代码时依赖层命中缓存，
+# 改依赖时才重跑 pip（配合 cache mount 也不会重新下载）。
 
-# 安装系统依赖
-RUN apk add --no-cache \
-    build-base \
-    wget \
-    git
+FROM python:3.12-slim AS builder
 
-# 设置工作目录
+ARG APT_MIRROR=""
+ARG PIP_INDEX=""
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# 构建工具只在 builder 里装：留作"某个依赖没有 wheel 时"的兜底，不进最终镜像
+RUN set -eux; \
+    if [ -n "$APT_MIRROR" ]; then \
+        if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+            sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+        fi; \
+        if [ -f /etc/apt/sources.list ]; then \
+            sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list; \
+        fi; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends gcc g++; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY requirements.txt ./requirements.txt
+
+# cache mount：pip 的下载缓存在 Docker 构建器里持久化，即使依赖层被 rebuild
+# 也不会重新下载（docker builder prune 才会清掉）。需要 BuildKit（Docker 23+ 默认开启）
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -eux; \
+    if [ -n "$PIP_INDEX" ]; then PIP_ARGS="--index-url $PIP_INDEX"; else PIP_ARGS=""; fi; \
+    pip install $PIP_ARGS -r requirements.txt
+
+
+FROM python:3.12-slim
+
+ARG APT_MIRROR=""
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    TZ=Asia/Shanghai
+
+# tzdata 让 TZ=Asia/Shanghai 真正生效（slim 默认没有时区库）；
+# wget 供健康检查使用，其余运行时依赖全是 python 包
+RUN set -eux; \
+    if [ -n "$APT_MIRROR" ]; then \
+        if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+            sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+        fi; \
+        if [ -f /etc/apt/sources.list ]; then \
+            sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list; \
+        fi; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates wget tzdata; \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# 复制依赖文件
-COPY requirements.txt .
+# 复用 builder 装好的 site-packages，最终镜像里没有 gcc
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
-# 安装Python依赖
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# 只复制运行所需内容（配合 .dockerignore，构建上下文不再包含 logs/ build/ dist/）
+COPY src/ ./src/
+COPY run_organizer.py ./run_organizer.py
+COPY config_template.ini ./config.ini
 
-# 复制项目文件
-COPY . .
+RUN mkdir -p /app/data /app/logs /app/strm
 
-# 转换换行符
-RUN find . -name "*.py" -exec sed -i 's/\r$//' {} \; && \
-    find . -name "*.sh" -exec sed -i 's/\r$//' {} \; && \
-    chmod +x build.sh 2>/dev/null || true
+EXPOSE 8080
 
 # 默认命令 - 运行主程序
 CMD ["python", "run_organizer.py"]

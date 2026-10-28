@@ -179,6 +179,8 @@ class RecycleCleaner:
         self.running = False
         self.last_run_at: Optional[datetime] = None
         self.next_run_at: Optional[datetime] = None
+        #: 最近一次已执行的定时时间点（精确到分钟），防止执行窗口内重复触发
+        self._last_fired_slot: Optional[datetime] = None
         self.last_results: List[Dict[str, Any]] = []
         self.history: List[Dict[str, Any]] = []
         self._config_fp = self._credentials_fingerprint(config)
@@ -304,14 +306,32 @@ class RecycleCleaner:
         if self.run_on_start:
             logger.info("回收站清理：run_on_start 已开启，启动后立即执行一次")
             self.clean_all(reason="on_start")
+            # 启动已实际执行过本时间点窗口则记账，避免紧接着重复触发
+            self._mark_slot_fired(now)
         elif self.catch_up_on_start and has_missed_slot(
             now, self.slots, self.last_run_at
         ):
             logger.info("回收站清理：今天的时间点已过且未执行，补跑一次")
             self.clean_all(reason="catch_up")
+            self._mark_slot_fired(now)
 
         while not self._stop.is_set():
             now = datetime.now()
+
+            # 执行窗口：本日时间点起 60 秒内触发。
+            # 不能只靠 next_slot_time + wait：线程从 wait 醒来时通常已过
+            # 04:00:00.000，next_slot_time 会把时间点推到明天，导致当天永远错过。
+            slot_dt = self._current_slot_dt(now)
+            if slot_dt is not None:
+                if self._last_fired_slot != slot_dt:
+                    self._last_fired_slot = slot_dt
+                    self.clean_all(
+                        reason=f"scheduled:{self._fmt_slot((slot_dt.hour, slot_dt.minute))}"
+                    )
+                if self._stop.wait(_TICK * 5):
+                    break
+                continue
+
             upcoming, slot = next_slot_time(now, self.slots)
             with self._state_lock:
                 self.next_run_at = upcoming
@@ -319,12 +339,20 @@ class RecycleCleaner:
             if wait_seconds > 0:
                 if self._stop.wait(min(wait_seconds, _TICK * 30)):
                     break
-                continue
 
-            self.clean_all(reason=f"scheduled:{self._fmt_slot(slot)}")
-            # 避免同一分钟重复触发
-            if self._stop.wait(_TICK * 5):
-                break
+    def _current_slot_dt(self, now: datetime) -> Optional[datetime]:
+        """当前是否落在某个时间点的执行窗口内（时间点起 60 秒），是则返回该时间点"""
+        for hour, minute in self.slots:
+            slot_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if slot_dt <= now < slot_dt + timedelta(minutes=1):
+                return slot_dt
+        return None
+
+    def _mark_slot_fired(self, now: datetime) -> None:
+        """启动补跑/立即执行后，若恰好落在执行窗口内则记账，避免同一窗口重复触发"""
+        slot_dt = self._current_slot_dt(now)
+        if slot_dt is not None:
+            self._last_fired_slot = slot_dt
 
     @staticmethod
     def _fmt_slot(slot: Tuple[int, int]) -> str:

@@ -272,9 +272,23 @@ class TestPan123RecycleApi:
         assert stats["count"] == 5
         assert stats["truncated"] is True
 
-    def test_iter_recycle_stops_on_error_code(self):
+    def test_iter_recycle_raises_on_error_code(self):
+        """回收站列表失败必须抛错传播，不能静默当作「回收站为空」"""
         client = StubClient({"/file/list/new": {"code": 401, "message": "token 过期"}})
-        assert list(client.iter_recycle()) == []
+        with pytest.raises(RuntimeError, match="token 过期"):
+            list(client.iter_recycle())
+
+    def test_is_token_expired_detects_not_logged_in(self):
+        """「未登录」等非 401 措辞也应判定为凭据失效，触发自动重登"""
+        from video_organizer.upload.pan123_client import _is_token_expired
+
+        assert _is_token_expired(0, "未登录") is True
+        assert _is_token_expired(0, "请先登录") is True
+        assert _is_token_expired(0, "未登陆") is True
+        assert _is_token_expired(0, "登录已失效") is True
+        assert _is_token_expired(0, "token 已过期") is True
+        assert _is_token_expired(0, "文件不存在") is False
+        assert _is_token_expired(401, "whatever") is True
 
     def test_recycle_clear_payload(self):
         client = StubClient({"/file/trash_delete_all": {"code": 0, "message": "ok"}})
@@ -663,6 +677,76 @@ class TestRecycleCleanerLifecycle:
         assert len(seen_configs) == 2
         assert seen_configs[0]["p123"]["token"] == "old"
         assert seen_configs[1]["p123"]["token"] == "new"
+
+
+# ========== 定时触发执行窗口 ==========
+
+
+class TestRecycleCleanerLoopWindow:
+    """覆盖修复：线程在时间点后醒来也必须触发，不能把当天的时间点推到明天"""
+
+    def test_window_opens_exactly_at_slot(self):
+        cleaner = make_cleaner()
+        assert cleaner._current_slot_dt(datetime(2026, 9, 30, 4, 0, 0, 0)) == datetime(
+            2026, 9, 30, 4, 0
+        )
+
+    def test_window_covers_post_slot_wake(self):
+        """旧实现：04:00:00.000 之后醒来会被 next_slot_time 推到明天而永远错过"""
+        cleaner = make_cleaner()
+        assert cleaner._current_slot_dt(
+            datetime(2026, 9, 30, 4, 0, 0, 500000)
+        ) == datetime(2026, 9, 30, 4, 0)
+        assert cleaner._current_slot_dt(datetime(2026, 9, 30, 4, 0, 59)) == datetime(
+            2026, 9, 30, 4, 0
+        )
+
+    def test_window_closed_after_one_minute(self):
+        cleaner = make_cleaner()
+        assert cleaner._current_slot_dt(datetime(2026, 9, 30, 4, 1, 0)) is None
+        assert cleaner._current_slot_dt(datetime(2026, 9, 30, 3, 59, 59)) is None
+
+    def test_multiple_slots_each_have_own_window(self):
+        cleaner = make_cleaner(section={"daily_at": "04:00,16:30"})
+        assert cleaner._current_slot_dt(datetime(2026, 9, 30, 16, 30, 20)) == datetime(
+            2026, 9, 30, 16, 30
+        )
+        assert cleaner._current_slot_dt(datetime(2026, 9, 30, 16, 29, 59)) is None
+
+    def test_fire_within_window_and_no_double_fire(self):
+        """窗口内触发一次后，同一窗口不得重复触发"""
+        cleaner = make_cleaner()
+        provider = FakeProvider(
+            stats=RecycleStats(provider="fake", count=1, size=10),
+            clear_result=(True, "ok"),
+        )
+        cleaner.use_provider("fake", provider)
+        slot_dt = datetime(2026, 9, 30, 4, 0)
+        assert cleaner._last_fired_slot is None
+
+        # 模拟线程在 04:00:00.500 醒来（旧实现此时已错过当天）
+        if cleaner._current_slot_dt(datetime(2026, 9, 30, 4, 0, 0, 500000)) == slot_dt:
+            if cleaner._last_fired_slot != slot_dt:
+                cleaner._last_fired_slot = slot_dt
+                cleaner.clean_all(reason="scheduled:04:00")
+        assert provider.clear_calls == 1
+
+        # 同一窗口内再次醒来 → 不再触发
+        if cleaner._current_slot_dt(datetime(2026, 9, 30, 4, 0, 30)) == slot_dt:
+            if cleaner._last_fired_slot != slot_dt:
+                cleaner._last_fired_slot = slot_dt
+                cleaner.clean_all(reason="scheduled:04:00")
+        assert provider.clear_calls == 1
+
+    def test_mark_slot_fired_after_catch_up(self):
+        """启动补跑若落在窗口内，需记账避免紧接着重复触发"""
+        cleaner = make_cleaner()
+        now = datetime(2026, 9, 30, 4, 0, 20)
+        cleaner._mark_slot_fired(now)
+        assert cleaner._last_fired_slot == datetime(2026, 9, 30, 4, 0)
+        # 不在窗口内则不记账，不影响后续定时触发
+        cleaner._mark_slot_fired(datetime(2026, 9, 30, 10, 0))
+        assert cleaner._last_fired_slot == datetime(2026, 9, 30, 4, 0)
 
     def test_apply_config_can_disable_running_thread(self):
         cleaner = RecycleCleaner(

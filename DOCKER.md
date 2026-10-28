@@ -33,10 +33,13 @@ docker compose logs -f
 docker compose --profile web-only up -d video-organizer-web-only
 ```
 
-### 3. 开发模式（代码热重载）
+### 3. 开发模式（源码挂载，改完 restart 即生效）
 
 ```bash
-docker compose --profile dev up -d video-organizer-dev
+# 首次：构建镜像 + 启动（镜像里的源码会被 ./src 挂载覆盖）
+docker compose --profile dev up -d video-organizer-dev --build
+# 之后改代码只需重启进程，不用 build
+docker compose restart video-organizer-dev
 ```
 
 ## 使用 Docker 命令
@@ -206,18 +209,65 @@ RUN useradd -m -u YOUR_UID appuser
 
 ## 更新
 
-### 更新镜像
+### 只改了 Python 代码：不用重新构建
+
+把源码目录挂进容器（`docker-compose.yml` 的 `video-organizer-dev`、线上 `docker-compose.yml.tmp`
+都已经这么配了），容器跑的就是宿主机上的 `src/`：
+
+```yaml
+    volumes:
+      - ./src:/app/src        # 关键：覆盖镜像里 COPY 进去的源码
+```
 
 ```bash
-# 拉取最新代码
-git pull
-
-# 重新构建镜像
-docker compose build
-
-# 重启服务
-docker compose up -d
+# 改完代码只需重启进程，秒级生效，完全不碰 build
+docker compose restart video-organizer
+# 看日志确认起来了
+docker compose logs -f --tail=50 video-organizer
 ```
+
+仅当**依赖或 Dockerfile 变化**（`requirements.txt` 加了包）时才需要重建：
+
+```bash
+docker compose build video-organizer && docker compose up -d video-organizer
+```
+
+> 不要用 `:ro` 挂 `./src`：数据库文件在 `src/video_organizer/data/video_organizer.db`，
+> 只读挂载会让程序无法写库。
+
+### 构建慢（`apk add ...` 600s+ / pip 拉不下来）
+
+`Dockerfile.run` 已从 `python:3.12-alpine` 换成 **`python:3.12-slim` 多阶段**：alpine 是 musl，
+依赖没有预编译 wheel 就得现场编译，所以必须先 `apk add build-base gcc`，而这一步在国内源上
+经常 600 秒起；换成 glibc 的 slim 后绝大多数依赖直接下 manylinux wheel，编译与 apk 全部消失。
+
+如果还是要重建依赖层，再加两个开关（`docker-compose.yml` 的 `build.args`）：
+
+```yaml
+    build:
+      context: .
+      dockerfile: Dockerfile.run
+      args:
+        # Docker 预定义 build arg，不用在 Dockerfile 里声明；让 apt/pip 走代理
+        HTTP_PROXY: http://192.168.1.2:7890
+        HTTPS_PROXY: http://192.168.1.2:7890
+        # 换国内源（代理可用时一般不需要）
+        # APT_MIRROR: mirrors.aliyun.com
+        # PIP_INDEX: https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+另外 `Dockerfile.run` 的 pip 层用了 BuildKit cache mount：`pip` 下载过的包会留在构建器里，
+即使依赖层被 invalidate 也不会重新下载（`docker builder prune` 才会清掉）。
+需要 Docker 23+（BuildKit 默认开启）；老版本加 `DOCKER_BUILDKIT=1 docker compose build`。
+
+构建日志里如果看到 `load metadata for docker.io/docker/dockerfile`，说明 Dockerfile 首行有
+`syntax=` 指令在拉外部 frontend，网络不通时删掉该行即可（本项目已不再使用）。
+
+### 其他提速点
+
+- `.dockerignore` 已经排掉 `logs/ data/ strm/ build/ dist/ .git/`，构建上下文从几百 MB 降到几 MB
+- 依赖层与代码层分离：`COPY requirements.txt` → `pip install` → 再 `COPY src/`，只改代码时依赖层命中缓存
+- `docker compose down` 不影响构建缓存；真要让磁盘回到干净状态用 `docker system prune`
 
 ### 备份数据
 

@@ -455,9 +455,11 @@ def _p123_collect_trash_ids(data: dict) -> list:
 
     123 的 `file/upload_request` 秒传响应里会同时出现**两个不同含义的 id**：
 
-    - 顶层 ``data["FileId"]``：秒传会话/记录 id（实测 VIP 账号为 85144550215580
-      这种大数；有时又为 0），用于 ``get_download_info`` 取直链是有效的
-    - ``data["Info"]["FileId"]``：网盘里**真实的文件条目 id**（带 ParentFileId/CreateAt）
+    - 顶层 ``data["FileId"]``：秒传会话/记录 id（实测 VIP 账号为 85144550215580、
+      169665180427348 这种大数；有时又为 0）。它对 ``get_download_info`` **不一定有效**
+      （线上出现过 ``code=5066 文件不存在``），所以取直链时只能当兜底候选
+    - ``data["Info"]["FileId"]``：网盘里**真实的文件条目 id**（带 ParentFileId/CreateAt），
+      取直链、删除都应该优先用它
 
     只拿顶层 id 去调 ``file/trash`` 会删一个不存在的条目，而接口照样返回成功，
     导致秒传临时文件永久残留在网盘目录里。两个 id 都发一遗删除，谁不存在谁
@@ -516,6 +518,89 @@ def _p123_trash_temp(client, file_id, file_name: str) -> bool:
         f"已跳出回收站清理范围，需手动删除"
     )
     return False
+
+
+def _p123_download_id_candidates(data: dict) -> list:
+    """取直链时应依次尝试的 FileId 候选（真实条目 id 优先）
+
+    秒传响应里的两个 id 语义不同（见 ``_p123_collect_trash_ids``），且**哪个能被
+    ``get_download_info`` 接受取决于账号/接口版本**：
+
+    - 有的账号顶层会话 id 能取到直链（此时 Info.FileId 同样能用，它是条目本体）
+    - 线上又出现过顶层会话 id 直接 ``code=5066 文件不存在``，而 Info.FileId 才是
+      真正落在网盘目录里的条目 → 只拿顶层 id 会取不到直链、播放 500
+
+    因此这里返回 ``[Info.FileId, 顶层 FileId]``（去重、忽略 0/None），由调用方逐个试。
+
+    Args:
+        data: 秒传响应中的 ``data`` 字段
+
+    Returns:
+        去重后的 FileId 列表，无有效 id 时返回空列表
+    """
+    info = data.get("Info") or {}
+    result = []
+    for fid in (info.get("FileId"), data.get("FileId")):
+        try:
+            fid_int = int(fid)
+        except (TypeError, ValueError):
+            continue
+        if fid_int > 0 and fid_int not in result:
+            result.append(fid_int)
+    return result
+
+
+def _p123_resolve_download_url(
+    client,
+    data: dict,
+    etag: str,
+    file_size: int,
+    file_name: str,
+    s3keyflag: str,
+) -> tuple:
+    """按候选 FileId 逐个尝试取直链
+
+    Args:
+        client: Pan123Client 实例
+        data: 秒传响应的 ``data`` 字段
+        etag: 文件 MD5
+        file_size: 文件大小
+        file_name: 文件名
+        s3keyflag: 秒传响应里的 S3KeyFlag
+
+    Returns:
+        ``(download_url, used_file_id)``，全部候选失败时返回 ``(None, None)``
+    """
+    candidates = _p123_download_id_candidates(data)
+    logger.info(
+        f"123 获取下载链接: 候选 FileId={candidates}, etag={etag}, "
+        f"s3keyflag={s3keyflag}"
+    )
+    last_error: Optional[Exception] = None
+    for candidate in candidates:
+        file_info = {
+            "FileId": candidate,
+            "Etag": etag,
+            "FileName": file_name,
+            "S3KeyFlag": s3keyflag,
+            "Size": file_size,
+            "Type": 0,
+        }
+        try:
+            download_url = client.get_download_info(file_info)
+        except Exception as e:  # 单个候选失败不影响其它候选
+            logger.error(f"123 获取直链异常: FileId={candidate}, {e}", exc_info=True)
+            last_error = e
+            continue
+        if download_url:
+            if candidate != candidates[0]:
+                logger.info(f"123 取直链改用兜底 FileId={candidate}")
+            return download_url, candidate
+
+    # 全部候选都失败：把异常留给调用方决定返回 500 还是抛出去
+    if last_error and len(candidates) == 1:
+        raise last_error
+    return None, None
 
 
 def _p123_handle_redirect(
@@ -592,20 +677,18 @@ def _p123_handle_redirect(
             "S3KeyFlag", ""
         )
 
-    # 获取直链
-    file_info = {
-        "FileId": file_id,
-        "Etag": etag,
-        "FileName": decoded_name,
-        "S3KeyFlag": s3keyflag,
-        "Size": file_size,
-        "Type": 0,
-    }
-    logger.info(
-        f"123 获取下载链接: FileId={file_id}, etag={etag}, s3keyflag={s3keyflag}"
-    )
+    # 获取直链（Info.FileId 优先，顶层会话 id 兜底）
     try:
-        download_url = client.get_download_info(file_info)
+        download_url, used_file_id = _p123_resolve_download_url(
+            client,
+            data=data,
+            etag=etag,
+            file_size=file_size,
+            file_name=decoded_name,
+            s3keyflag=s3keyflag,
+        )
+        if used_file_id:
+            file_id = used_file_id
     except Exception as e:
         logger.error(f"获取直链异常: {e}", exc_info=True)
         # 取不到直链也要清理，否则临时文件残留在网盘目录中
