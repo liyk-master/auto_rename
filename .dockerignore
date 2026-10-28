@@ -1,4 +1,4 @@
-# .dockerignore - 排除不需要的文件，优化构建
+# .dockerignore - 排除不需要的文件，优化构建（上下文越小，--build 越快）
 
 # Git
 .git
@@ -14,12 +14,20 @@ __pycache__
 .venv
 env/
 venv/
+**/__pycache__/
 
-# IDE
+# IDE / Agent 工具目录
 .idea
 .vscode
 *.swp
 *.swo
+.pi
+.agents
+.opencode
+.trae
+.deveco
+.mypy_cache
+.ruff_cache
 
 # 构建产物
 build/
@@ -36,7 +44,17 @@ tests/
 *.md
 docs/
 
-# 其他
+# 运行时数据（不进镜像，容器里都是挂载出来的）
+logs/
+data/
+strm/
+cas/
+**/data/
+*.db
 *.log
+
+# 其他
 .DS_Store
 Thumbs.db
+docker-compose*.yml
+Dockerfile*

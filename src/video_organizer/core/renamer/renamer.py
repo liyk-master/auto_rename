@@ -2718,6 +2718,33 @@ class VideoRenamer:
 
                 metadata["show_name"] = show_name.strip()
 
+        # ⚙ 中文剧名.数字 = 集号（"遮天.186.4K.mkv" / "狂飙.01.开端.2023" /
+        # "火影忍者.115[www.xxx].mkv"）：国产剧/国漫常用「中文剧名.集号」点分
+        # 命名，但 cleaned_name 会把点分数字当噪音剥掉（下方正则链匹配不到），
+        # 必须在 cleaned_name 解析之前基于原始文件名提取。安全约束：
+        #   * 1 位数字不提取——电影系列续集号（"复仇者联盟.2.2015.1080p" 的 2）
+        #   * 4 位年份形状不提取（"让子弹飞.2010.1080p" 的 2010）；年份范围外
+        #     的 4 位数仍是集号（"海贼王.1045.4K" 的 1045）
+        #   * 数字后跟 p/P/k/K（分辨率）不提取（"特工迷阵.1080p.HD中英双字"）
+        m_cn_num = re.match(
+            r"^(?P<show_name>[\u4e00-\u9fff]{2,})\.(?P<episode>\d{2,10})(?![0-9pPkK])",
+            base_name,
+        )
+        if m_cn_num:
+            _cn_show = m_cn_num.group("show_name")
+            _cn_ep_raw = m_cn_num.group("episode")
+            _cn_ep = int(_cn_ep_raw)
+            # 4 位且处于常见年份范围（1850-2035）→ 是年份，不提取
+            # （"让子弹飞.2010.1080p" 的 2010）；范围外（"海贼王.1045.4K"
+            # 的 1045）仍是集号
+            _is_year_shape = len(_cn_ep_raw) == 4 and 1850 <= _cn_ep <= 2035
+            # 与 is_tv 校验一致：集号超过 1000 视为误识别
+            if not _is_year_shape and _cn_ep <= 1000:
+                metadata["show_name"] = _cn_show
+                metadata["episode"] = str(_cn_ep)
+                match_found = True
+                logger.debug(f"中文剧名.数字提取集号: '{_cn_show}' episode={_cn_ep}")
+
         # 如果直接从原始文件名中没有匹配到，再尝试从清理后的文件名中匹配
         if not match_found:
             # 电影上下文：带年份且无剧集标记（或完整电影技术链）时，
@@ -4278,6 +4305,13 @@ class VideoRenamer:
             r"(?:^|[/\\])(?:电影|Movies)(?:[/\\]|$)",
             str(metadata.get("original_filename", "")).replace("\\", "/"),
         ):
+            # ⚙ 电影目录硬规则让位于显式剧集证据：文件自带 SxxExx / 第N集 /
+            # Season 标记（或位于 Season 1 / 第X季 剧集布局目录）时，剧集证据
+            # 强于目录语义——用户可能把剧集误放进「电影/H/」首字母分类目录
+            # （如 黑礁.Black.Lagoon.S01E04.2006…mkv），不得按电影语义误杀；
+            # 无任何剧集证据时才认定「电影目录 = 电影语义」排除 tv 候选
+            if self._tv_candidate_admissible(metadata):
+                return False
             return True
         return not self._tv_candidate_admissible(metadata)
 

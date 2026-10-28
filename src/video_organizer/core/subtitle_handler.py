@@ -7,9 +7,102 @@ import os
 import re
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# 字幕文件扩展名
+SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".sub", ".vtt"}
+
+# HLS/DASH 下载留下的分片命名：playlist12.vtt / segment3.vtt / chunk_07.vtt ...
+# 这些是视频流切片的字幕片段，不是独立字幕文件
+_HLS_SEGMENT_STEM_RE = re.compile(
+    r"^(?:playlist|segment|seg|chunk|frag|fragment|media|index|part|out)[-_]?\d+$",
+    re.IGNORECASE,
+)
+
+
+def is_hls_segment_subtitle(file_path) -> bool:
+    """判断是否为 HLS/DASH 分片或播放列表（不是真正的字幕文件）
+
+    典型来源：用 m3u8/HLS 方式下载剧集后，目录里会留下几十上百个
+    playlist1.vtt、playlist2.vtt ...；若当成字幕上传，会被逐个重命名成
+    同一个目标文件名（互相覆盖），看起来像"卡住不动"。
+
+    Args:
+        file_path: 待判断的文件路径
+
+    Returns:
+        True 表示应当跳过
+    """
+    path = Path(file_path)
+
+    if _HLS_SEGMENT_STEM_RE.match(path.stem):
+        return True
+
+    # HLS 打包的 WebVTT 片段头部带 X-TIMESTAMP-MAP，独立字幕文件一般没有
+    if path.suffix.lower() == ".vtt":
+        try:
+            with path.open("rb") as f:
+                head = f.read(4096).lower()
+        except OSError:
+            return False
+        return b"x-timestamp-map" in head
+
+    return False
+
+
+def plan_subtitle_uploads(
+    subtitle_files: List[Path],
+    video_filename: str,
+    build_target_name: Callable[[Path], str],
+) -> Tuple[List[Tuple[Path, str]], List[Path], List[Path]]:
+    """生成字幕上传计划，剔除分片并按目标文件名去重
+
+    同一目标文件名只保留一个字幕（优先与视频同名的、其次体积更大的），
+    否则多个无语言标识的字幕会互相覆盖，重复上传同一个远端文件。
+
+    Args:
+        subtitle_files: 候选字幕文件列表
+        video_filename: 整理后的视频文件名（用于目标名生成与优先级判断）
+        build_target_name: 由字幕文件生成目标文件名的回调
+
+    Returns:
+        (上传计划 [(源文件, 目标文件名)], 被跳过的分片列表, 被跳过的重名列表)
+    """
+    video_stem = Path(video_filename).stem
+
+    def _score(path: Path) -> Tuple[int, int]:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        # 与视频同名的字幕优先，其次体积大的（真实字幕远大于分片）
+        return (1 if path.stem == video_stem else 0, size)
+
+    chosen: Dict[str, Tuple[Path, str, Tuple[int, int]]] = {}
+    junk_files: List[Path] = []
+    dup_files: List[Path] = []
+
+    for subtitle_file in subtitle_files:
+        if is_hls_segment_subtitle(subtitle_file):
+            junk_files.append(subtitle_file)
+            continue
+
+        target_name = build_target_name(subtitle_file)
+        score = _score(subtitle_file)
+        current = chosen.get(target_name)
+
+        if current is None:
+            chosen[target_name] = (subtitle_file, target_name, score)
+        elif score > current[2]:
+            dup_files.append(current[0])
+            chosen[target_name] = (subtitle_file, target_name, score)
+        else:
+            dup_files.append(subtitle_file)
+
+    plans = [(path, target) for path, target, _score_value in chosen.values()]
+    return plans, junk_files, dup_files
 
 
 class SubtitleHandler:
@@ -300,6 +393,11 @@ class SubtitleHandler:
         """
         if not self.is_subtitle_file(subtitle_path):
             self.logger.warning(f"文件不是字幕文件: {subtitle_path}")
+            return None
+
+        # HLS/DASH 分片（playlistN.vtt 等）不是字幕，不能当成视频的字幕重命名
+        if is_hls_segment_subtitle(subtitle_path):
+            self.logger.info(f"跳过 HLS 分片/播放列表文件: {subtitle_path}")
             return None
 
         # 解析字幕文件信息

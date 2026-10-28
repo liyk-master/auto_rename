@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from colorama import Fore, init
 
+from ..core.subtitle_handler import plan_subtitle_uploads
+
 # 初始化 colorama
 init(autoreset=True)
 
@@ -441,12 +443,12 @@ class P123Uploader:
 
             print(f"\n📝 扫描字幕文件: {video_dir}")
 
-            # 扫描同目录下的所有字幕文件
-            subtitle_files = [
+            # 扫描同目录下的所有字幕文件（排序保证输出顺序稳定）
+            subtitle_files = sorted(
                 f
                 for f in video_dir.iterdir()
                 if f.is_file() and f.suffix.lower() in subtitle_extensions
-            ]
+            )
 
             if not subtitle_files:
                 print(f"   未找到字幕文件")
@@ -454,18 +456,31 @@ class P123Uploader:
 
             print(f"   找到 {len(subtitle_files)} 个字幕文件")
 
-            for subtitle_file in subtitle_files:
+            # 剔除 HLS/DASH 分片（playlistN.vtt 等）并按目标名去重，
+            # 否则 m3u8 下载留下的几十上百个分片会被逐个上传成同一个文件名
+            plans, junk_files, dup_files = plan_subtitle_uploads(
+                subtitle_files,
+                video_filename,
+                lambda f: self._generate_subtitle_name(
+                    video_filename, self._parse_subtitle_info(f.name)
+                ),
+            )
+            if junk_files:
+                print(
+                    f"   ⏭️  跳过 {len(junk_files)} 个 HLS 分片/播放列表文件（非字幕）: "
+                    f"{', '.join(f.name for f in junk_files[:3])}"
+                    f"{' ...' if len(junk_files) > 3 else ''}"
+                )
+            if dup_files:
+                print(
+                    f"   ⏭️  跳过 {len(dup_files)} 个目标名重复的字幕文件（避开覆盖）: "
+                    f"{', '.join(f.name for f in dup_files[:3])}"
+                    f"{' ...' if len(dup_files) > 3 else ''}"
+                )
+
+            for subtitle_file, new_subtitle_name in plans:
                 try:
                     print(f"\n   处理字幕: {subtitle_file.name}")
-
-                    # 解析字幕文件名，提取语言和类型信息
-                    subtitle_info = self._parse_subtitle_info(subtitle_file.name)
-
-                    # 生成新的字幕文件名：使用视频文件名 + 字幕语言/类型信息
-                    new_subtitle_name = self._generate_subtitle_name(
-                        video_filename, subtitle_info
-                    )
-
                     print(f"   重命名为: {new_subtitle_name}")
 
                     # 上传字幕文件
@@ -486,7 +501,7 @@ class P123Uploader:
                     traceback.print_exc()
 
             print(
-                f"\n📝 字幕上传完成: 成功 {len(uploaded_subtitles)}/{len(subtitle_files)} 个"
+                f"\n📝 字幕上传完成: 成功 {len(uploaded_subtitles)}/{len(plans)} 个"
             )
 
         except Exception as e:

@@ -1958,3 +1958,218 @@ class TestJunkParentDirNotUsedAsShowName:
         )
         assert md.get("tmdb_id") == 149871, md
         assert not any("番剧" in t for t in searched), searched
+
+
+class TestMovieDirAllowsExplicitTvEvidence:
+    """回归：电影目录硬规则不得误杀带显式剧集证据的文件。
+
+    用户可能把剧集放进「电影/H/」等首字母分类目录（路径含「电影」目录段，
+    如 ``黑礁.Black.Lagoon.S01E04.2006…mkv``）。旧逻辑一见到电影目录就
+    无条件剔除 tv 候选——主搜索被剔空，识别失败。
+    """
+
+    def test_tv_with_explicit_episode_in_movie_dir(self):
+        """电影目录 + S01E04：tv 证据强于目录语义，应命中黑礁。"""
+
+        def _cand():
+            return {
+                "id": 12598,
+                "name": "黑礁",
+                "title": "黑礁",
+                "media_type": "tv",
+                "first_air_date": "2006-10-02",
+                "release_date": "2006-10-02",
+                "popularity": 31.0,
+                "original_language": "ja",
+                "genre_ids": [16, 10759],
+                "vote_average": 8.0,
+                "vote_count": 20,
+            }
+
+        class StubTMDB:
+            def __getattr__(self, name):
+                return lambda *a, **k: []
+
+            def search_all_pages(self, method, term, **k):
+                if str(term).startswith("黑礁"):
+                    return [_cand()]
+                return []
+
+            def get_tv_details(self, tv_id, **k):
+                return dict(id=tv_id, name="黑礁", overview="x")
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        renamer.tmdb_client = StubTMDB()
+        renamer._llm_fallback_enabled = False
+        md = renamer.extract_metadata(
+            "Q:/影视库/电影/H/黑礁 Black Lagoon (2006)/Season 1/"
+            "黑礁.Black.Lagoon.S01E04.2006.1080p.Blu-ray.Remux.AVC."
+            "LPCM 2.0-LuckAni.mkv"
+        )
+        assert md.get("tmdb_id") == 12598, md
+        assert md.get("media_type") == "tv", md
+        assert md.get("season") == "01" and md.get("episode") == "04", md
+
+    def test_movie_dir_without_episode_evidence_still_blocks_tv(self):
+        """电影目录 + 无剧集证据的单文件：tv 候选仍被排除（宁失败不误配）。"""
+
+        def _cand():
+            return {
+                "id": 12598,
+                "name": "黑礁",
+                "title": "黑礁",
+                "media_type": "tv",
+                "first_air_date": "2006-10-02",
+                "popularity": 31.0,
+                "original_language": "ja",
+                "genre_ids": [16],
+            }
+
+        class StubTMDB:
+            def __getattr__(self, name):
+                return lambda *a, **k: []
+
+            def search_all_pages(self, method, term, **k):
+                if str(term).startswith("黑礁"):
+                    return [_cand()]
+                return []
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        renamer.tmdb_client = StubTMDB()
+        renamer._llm_fallback_enabled = False
+        md = renamer.extract_metadata(
+            "Q:/影视库/电影/H/黑礁 Black Lagoon (2006)/黑礁.2006.1080p.mkv"
+        )
+        # 唯一 tv 候选因「电影目录 + 无剧集证据」被排除 → 宁识别失败
+        assert md.get("tmdb_id") in ("", None), md
+
+
+class TestChineseTitleDotNumberEpisode:
+    """回归：「中文剧名.数字」点分形态的集号提取。
+
+    ``遮天.186.4K.mkv`` / ``火影忍者.115[www.haimianxz.com].mkv.iso`` 是
+    国产剧/国漫/网盘常见命名。旧逻辑把点分数字当 show_name 的一部分
+    （``遮天 186``）或噪音剥掉（cleaned_name），media_type 落回 movie 后
+    搜「遮天 186」失败、兜底搜「遮天」电影池错配成「遮蔽的天空」(1990)
+    （The Sheltering Sky）。
+    """
+
+    def test_chinese_title_dot_number_extracts_episode(self):
+        md = VideoRenamer("your_tmdb_api_key")._extract_with_regex("遮天.186.4K.mkv")
+        assert md["show_name"] == "遮天", md
+        assert md["episode"] == "186", md
+
+    def test_dotted_number_with_watermark_extracts_episode(self):
+        md = VideoRenamer("your_tmdb_api_key")._extract_with_regex(
+            "火影忍者.115[www.haimianxz.com].mkv.iso"
+        )
+        assert md["show_name"] == "火影忍者", md
+        assert md["episode"] == "115", md
+
+    def test_chinese_dot_number_subtitle_title_still_episode(self):
+        """狂飙.01.开端.2023 → 狂飙 + E1（中文副标题点分）。"""
+        md = VideoRenamer("your_tmdb_api_key")._extract_with_regex(
+            "狂飙.01.开端.2023.1080p.mp4"
+        )
+        assert md["show_name"] == "狂飙", md
+        assert md["episode"] == "1", md
+
+    def test_year_shape_not_episode(self):
+        """让子弹飞.2010：4 位年份不提取为集号。"""
+        md = VideoRenamer("your_tmdb_api_key")._extract_with_regex(
+            "让子弹飞.2010.1080p.mkv"
+        )
+        assert md["episode"] in (None, ""), md
+        assert md.get("year") == "2010", md
+
+    def test_single_digit_sequel_number_not_episode(self):
+        """复仇者联盟.2.2015：1 位续集号不提取为集号。"""
+        md = VideoRenamer("your_tmdb_api_key")._extract_with_regex(
+            "复仇者联盟.2.2015.1080p.mkv"
+        )
+        assert md["episode"] in (None, ""), md
+
+    def test_resolution_not_episode(self):
+        """特工迷阵.1080p：分辨率数字不提取为集号。"""
+        md = VideoRenamer("your_tmdb_api_key")._extract_with_regex(
+            "特工迷阵.1080p.HD中英双字[最新电影www.5266ys.com].mp4"
+        )
+        assert md["episode"] in (None, ""), md
+        assert md["show_name"] == "特工迷阵", md
+
+    def test_e2e_zhetian_matches_tv(self):
+        """E2E：遮天.186.4K → 搜「遮天」tv 命中 224839。"""
+
+        def _cand():
+            return {
+                "id": 224839,
+                "name": "遮天",
+                "title": "遮天",
+                "media_type": "tv",
+                "first_air_date": "2023-05-27",
+                "popularity": 20.0,
+                "original_language": "zh",
+                "genre_ids": [16, 10759],
+                "vote_average": 7.0,
+                "vote_count": 10,
+            }
+
+        class StubTMDB:
+            def __getattr__(self, name):
+                return lambda *a, **k: []
+
+            def search_all_pages(self, method, term, **k):
+                if str(term).startswith("遮天"):
+                    return [_cand()]
+                return []
+
+            def get_tv_details(self, tv_id, **k):
+                return dict(id=tv_id, name="遮天", overview="x")
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        renamer.tmdb_client = StubTMDB()
+        renamer._llm_fallback_enabled = False
+        md = renamer.extract_metadata("Q:/番剧/遮天/遮天.186.4K.mkv")
+        assert md.get("tmdb_id") == 224839, md
+        assert md.get("media_type") == "tv", md
+        assert md.get("episode") == "186", md
+
+    def test_e2e_naruto_watermark_matches_tv(self):
+        """E2E：火影忍者.115[水印].mkv.iso → 搜「火影忍者」tv 命中 46260。"""
+
+        def _cand():
+            return {
+                "id": 46260,
+                "name": "火影忍者",
+                "title": "火影忍者",
+                "media_type": "tv",
+                "first_air_date": "2002-10-03",
+                "popularity": 100.0,
+                "original_language": "ja",
+                "genre_ids": [16, 10759],
+                "vote_average": 8.5,
+                "vote_count": 200,
+            }
+
+        class StubTMDB:
+            def __getattr__(self, name):
+                return lambda *a, **k: []
+
+            def search_all_pages(self, method, term, **k):
+                if str(term).startswith("火影忍者"):
+                    return [_cand()]
+                return []
+
+            def get_tv_details(self, tv_id, **k):
+                return dict(id=tv_id, name="火影忍者", overview="x")
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        renamer.tmdb_client = StubTMDB()
+        renamer._llm_fallback_enabled = False
+        md = renamer.extract_metadata(
+            "Q:/番剧/火影忍者TV/火影忍者（1-220）/火影忍者.001-050_[252.02GB]/"
+            "火影忍者.115[www.haimianxz.com].mkv.iso"
+        )
+        assert md.get("tmdb_id") == 46260, md
+        assert md.get("media_type") == "tv", md
+        assert md.get("episode") == "115", md

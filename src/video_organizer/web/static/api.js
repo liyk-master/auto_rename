@@ -129,7 +129,11 @@ async function saveConfigToApi(section, values) {
 }
 
 async function deleteConfigSectionApi(section) {
-    return await apiRequest(`/config/section/${encodeURIComponent(section)}`, { method: 'DELETE' });
+    // 空 section 会拼出 /config/section/，服务端 307 重定向到只支持 PUT 的
+    // /config/section 并返回 405 Method Not Allowed，这里直接拦住
+    const name = (section || '').trim();
+    if (!name) throw new Error('配置节名称不能为空');
+    return await apiRequest(`/config/section/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }
 
 async function loadLogFilesFromApi() {

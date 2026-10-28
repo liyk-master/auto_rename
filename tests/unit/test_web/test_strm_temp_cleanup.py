@@ -8,7 +8,9 @@ import pytest
 
 from video_organizer.web.routers.strm import (
     _p123_collect_trash_ids,
+    _p123_download_id_candidates,
     _p123_handle_redirect,
+    _p123_resolve_download_url,
     _p123_trash_temp,
 )
 
@@ -25,6 +27,23 @@ PRODUCTION_DATA = {
         "Etag": "4070d9632753b2400d242d5af4b9f384",
         "S3KeyFlag": "1831380981-0",
         "CreateAt": "2026-09-08T18:08:22+08:00",
+        "Trashed": False,
+    },
+}
+
+# 第二次线上响应：顶层会话 id 调 file/download_info 直接 5066 文件不存在
+PRODUCTION_DATA_SESSION_ID_REJECTED = {
+    "FileId": 169665180427348,
+    "Reuse": True,
+    "Key": "5b4f8c01/1815144622-0/5b4f8c0167e16c3cf7d5b0a210461068",
+    "Info": {
+        "FileId": 46103661,
+        "FileName": "冷淡的佐藤同学只对我撒娇 (2026) S01E01 1080p.mkv",
+        "Size": 579373219,
+        "ParentFileId": 25701165,
+        "Etag": "5b4f8c0167e16c3cf7d5b0a210461068",
+        "S3KeyFlag": "1815144622-0",
+        "CreateAt": "2026-10-27T15:24:01+08:00",
         "Trashed": False,
     },
 }
@@ -168,6 +187,111 @@ class TestTrashTemp:
     def test_code_200_counts_as_success(self):
         client = make_client(results=[{"code": 200}])
         assert _p123_trash_temp(client, 666, "a.mkv") is True
+
+
+# ========== _p123_download_id_candidates ==========
+
+
+class TestDownloadIdCandidates:
+    def test_info_id_first(self):
+        assert _p123_download_id_candidates(PRODUCTION_DATA) == [
+            40376421,
+            85144550215580,
+        ]
+
+    def test_session_id_rejected_payload(self):
+        assert _p123_download_id_candidates(PRODUCTION_DATA_SESSION_ID_REJECTED) == [
+            46103661,
+            169665180427348,
+        ]
+
+    def test_dedup_and_zero_filtered(self):
+        assert _p123_download_id_candidates(
+            {"FileId": 777, "Info": {"FileId": 777}}
+        ) == [777]
+        assert _p123_download_id_candidates({"FileId": 0, "Info": {"FileId": 9}}) == [9]
+        assert _p123_download_id_candidates({"FileId": "5"}) == [5]
+
+    def test_invalid_returns_empty(self):
+        assert _p123_download_id_candidates({}) == []
+        assert _p123_download_id_candidates({"FileId": -1, "Info": {}}) == []
+
+
+# ========== _p123_resolve_download_url ==========
+
+
+class TestResolveDownloadUrl:
+    def test_returns_url_and_used_id(self):
+        class Spy:
+            def get_download_info(self, file_info):
+                return "https://cdn.example.com/a.mkv"
+
+        url, fid = _p123_resolve_download_url(
+            Spy(),
+            data=PRODUCTION_DATA,
+            etag="e",
+            file_size=1,
+            file_name="a.mkv",
+            s3keyflag="k",
+        )
+        assert (url, fid) == ("https://cdn.example.com/a.mkv", 40376421)
+
+    def test_second_candidate_used_when_first_empty(self):
+        class Spy:
+            def __init__(self):
+                self.calls = []
+
+            def get_download_info(self, file_info):
+                self.calls.append(file_info["FileId"])
+                if file_info["FileId"] == 40376421:
+                    return None
+                return "https://cdn.example.com/b.mkv"
+
+        spy = Spy()
+        url, fid = _p123_resolve_download_url(
+            spy,
+            data=PRODUCTION_DATA,
+            etag="e",
+            file_size=1,
+            file_name="b.mkv",
+            s3keyflag="k",
+        )
+        assert (url, fid) == ("https://cdn.example.com/b.mkv", 85144550215580)
+        assert spy.calls == [40376421, 85144550215580]
+
+    def test_propagates_request_payload_fields(self):
+        seen = {}
+
+        class Spy:
+            def get_download_info(self, file_info):
+                seen.update(file_info)
+                return "https://cdn.example.com/c.mkv"
+
+        _p123_resolve_download_url(
+            Spy(),
+            data=PRODUCTION_DATA,
+            etag="etag-x",
+            file_size=42,
+            file_name="c.mkv",
+            s3keyflag="1831380981-0",
+        )
+        assert seen == {
+            "FileId": 40376421,
+            "Etag": "etag-x",
+            "FileName": "c.mkv",
+            "S3KeyFlag": "1831380981-0",
+            "Size": 42,
+            "Type": 0,
+        }
+
+    def test_none_when_no_candidates(self):
+        class Spy:
+            def get_download_info(self, file_info):  # pragma: no cover - 不应被调用
+                raise AssertionError("无候选时不应发请求")
+
+        assert _p123_resolve_download_url(
+            Spy(), data={}, etag="e", file_size=1, file_name="d.mkv", s3keyflag=""
+        ) == (None, None)
 
 
 # ========== _p123_handle_redirect 的清理路径 ==========
@@ -321,13 +445,13 @@ class TestHandleRedirectCleanup:
         assert client.trash_calls[0] == 40376421
         assert set(client.trash_calls) == {40376421, 85144550215580}
 
-    def test_download_info_still_uses_top_level_id(self, p123_state):
-        """取直链仍用顶层 id，不改变现有播放行为"""
+    def test_download_info_prefers_info_file_id(self, p123_state):
+        """取直链优先用 Info.FileId（网盘里的真实条目）"""
         seen = {}
 
         class IdAwareSpy(TrashSpy):
             def get_download_info(self, file_info):
-                seen["file_id"] = file_info.get("FileId")
+                seen.setdefault("file_ids", []).append(file_info.get("FileId"))
                 return "https://cdn.example.com/x.mkv"
 
         p123_state(IdAwareSpy(upload_response={"code": 0, "data": PRODUCTION_DATA}))
@@ -341,7 +465,82 @@ class TestHandleRedirectCleanup:
             ).status_code
             == 302
         )
-        assert seen["file_id"] == 85144550215580
+        assert seen["file_ids"] == [40376421]
+
+    def test_download_info_falls_back_when_info_id_rejected(self, p123_state):
+        """回归线上场景：真实条目 id 被拒时还有其它候选可试
+
+        线上出现顶层会话 id 报 5066 文件不存在，只拿顶层 id 取直链会播放失败。
+        """
+        seen = []
+
+        class RejectInfoSpy(TrashSpy):
+            def get_download_info(self, file_info):
+                seen.append(file_info.get("FileId"))
+                # 枚举顺序 Info 优先 → 这里只放行顶层会话 id
+                return (
+                    "https://cdn.example.com/y.mkv"
+                    if file_info.get("FileId") == PRODUCTION_DATA["FileId"]
+                    else None
+                )
+
+        p123_state(RejectInfoSpy(upload_response={"code": 0, "data": PRODUCTION_DATA}))
+        response = _p123_handle_redirect(
+            file_size=2355105503,
+            etag="etag-dl-2",
+            file_name="y.mkv",
+            client_ip="10.0.0.11",
+            s3keyflag="1831380981-0",
+        )
+        assert response.status_code == 302
+        assert seen == [40376421, 85144550215580]
+
+    def test_session_id_rejected_still_plays_via_info_id(self, p123_state):
+        """线上日志复现：顶层 169665180427348 报 5066，用 Info.FileId 取直链成功"""
+        seen = []
+
+        class SessionIdRejectedSpy(TrashSpy):
+            def get_download_info(self, file_info):
+                fid = file_info.get("FileId")
+                seen.append(fid)
+                if fid == 169665180427348:
+                    return None  # 模拟 code=5066 文件不存在
+                return "https://cdn.example.com/z.mkv"
+
+        p123_state(
+            SessionIdRejectedSpy(
+                upload_response={"code": 0, "data": PRODUCTION_DATA_SESSION_ID_REJECTED}
+            )
+        )
+        response = _p123_handle_redirect(
+            file_size=579373219,
+            etag="5b4f8c0167e16c3cf7d5b0a210461068",
+            file_name="冷淡的佐藤同学只对我撒娇 (2026) S01E01 1080p.mkv",
+            client_ip="10.0.0.12",
+            s3keyflag="1815144622-0",
+        )
+        assert response.status_code == 302
+        assert seen == [46103661], "Info.FileId 优先，一次即命中"
+
+    def test_all_candidates_fail_returns_500_and_cleans(self, p123_state):
+        client = p123_state(
+            TrashSpy(
+                upload_response={
+                    "code": 0,
+                    "data": PRODUCTION_DATA_SESSION_ID_REJECTED,
+                },
+                download_url="",
+            )
+        )
+        response = _p123_handle_redirect(
+            file_size=579373219,
+            etag="etag-dl-3",
+            file_name="z.mkv",
+            client_ip="10.0.0.13",
+            s3keyflag="1815144622-0",
+        )
+        assert response.status_code == 500
+        assert set(client.trash_calls) == {46103661, 169665180427348}
 
     def test_cached_url_skips_second_upload(self, p123_state):
         """同一 IP + etag 命中缓存时不再秒传，也就不再产生新的临时文件"""

@@ -1,8 +1,16 @@
 # Multi-stage build for optimized production image
 FROM python:3.12-slim AS builder
 
+# 构建加速（可选，compose 的 build.args 可传；HTTP_PROXY/HTTPS_PROXY 是预定义参数）
+ARG APT_MIRROR=""
+ARG PIP_INDEX=""
+
 # 安装构建依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN set -eux; \
+    if [ -n "$APT_MIRROR" ]; then \
+        sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || true; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     && rm -rf /var/lib/apt/lists/*
@@ -11,8 +19,11 @@ WORKDIR /build
 
 # 先安装依赖（利用缓存）
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -eux; \
+    if [ -n "$PIP_INDEX" ]; then PIP_ARGS="--index-url $PIP_INDEX"; else PIP_ARGS=""; fi; \
+    pip install $PIP_ARGS --upgrade pip && \
+    pip install $PIP_ARGS -r requirements.txt
 
 # 生产环境镜像
 FROM python:3.12-slim

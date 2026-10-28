@@ -80,11 +80,21 @@
   - `routers/` — `auth.py`, `apikeys.py`, `config.py`, `tasks.py`, `logs.py`,
     `manual.py`, `downloaders.py`, `strm.py`, `organize.py`, `recycle.py`；
     `strm.py` 的 123 秒传代理会先建临时文件再取直链，**所有提前返回路径**都必须走
-    `_p123_trash_temp()` 清理（已重试一次并校 code），否则文件残留在网盘目录里
+    `_p123_trash_temp()` 清理（已重试一次并校 code），否则文件残留在网盘目录里；
+    秒传响应的两个 FileId 语义不同（见 `_p123_collect_trash_ids` 注释）：取直链要
+    按 `_p123_download_id_candidates()` 的候选顺序逐个试（`Info.FileId` 真实条目
+    优先、顶层会话 id 兜底），线上出现过顶层 id 直接 `code=5066 文件不存在`
   - `services/state.py` — `StateManager` 单例
   - `static/` — 原生 JS 前端（`index.html`, `app.js`, `ui.js`, `api.js`, `app.css`）
 - **上传/整理模块** (`src/video_organizer/upload/`):
   - `base.py` — 上传基类（进度追踪、断点续传、Telegram 通知）
+  - 字幕上传（`p123_uploader.py` / `yun139_uploader.py` 的 `upload_subtitles`）统一走
+    `core/subtitle_handler.py` 的 `is_hls_segment_subtitle()` / `plan_subtitle_uploads()`：
+    ⚙ m3u8/HLS 下载会留下几十上百个 `playlist1.vtt`、`segment3.vtt` 分片（内容带
+    `X-TIMESTAMP-MAP`），旧逻辑把它们当字幕、且无语言标识时全部重命名成同一个
+    `<视频名>.srt` 逐个上传（互相覆盖、进度像卡死）。现在按文件名模式 + VTT 内容头
+    识别分片直接跳过，并按目标名去重（优先与视频同名者、其次体积大的）；
+    `file_handler/handler.py:_process_subtitle_file` 同样不再把分片改名成本地视频字幕
   - `emos_uploader.py` — emos 上传 + 重复资源识别
   - `cloud189_uploader.py` / `cloud189_client.py` — 天翼云盘
   - `p123_uploader.py` / `p123_client.py` / `pan123_client.py` — 123 云盘（`pan123_client.py` 是
@@ -189,6 +199,26 @@
       配成 The Jogger / 名侦探柯南）
     - 截断搜索词不允许截成纯季节词（`第一季`/`S01`/`Season 1`），与
       「不做数字季号截断」配套
+  - ⚙ **电影目录硬规则让位于显式剧集证据**：`_tv_candidate_inadmissible`
+    此前对路径含「电影/Movies」目录段的文件**无条件剔除 tv 候选**（电影目录
+    即电影语义），但用户可能把剧集放进「电影/H/」等首字母分类目录
+    （`影视库/电影/H/黑礁 Black Lagoon (2006)/Season 1/黑礁.Black.Lagoon.
+    S01E04.2006…mkv`）——S01E04 是比目录语义更强的 tv 证据，旧逻辑把
+    主搜索 tv 候选剔空导致识别失败。现在先过 `_tv_candidate_admissible`
+    （SxxExx/第N集/Season 标记、Season 1/第X季 布局目录），有剧集证据才
+    放行；无证据仍按「电影目录 = 电影语义」排除（宁失败不误配）
+    （`TestMovieDirAllowsExplicitTvEvidence` 正反两向覆盖）
+  - ⚙ **「中文剧名.数字」点分形态提取集号**（`遮天.186.4K.mkv`、
+    `火影忍者.115[www.xxx].mkv.iso`）：国产剧/国漫常用「剧名.集号」命名，
+    旧逻辑把点分数字混进 show_name（`遮天 186`）且 cleaned_name 又把数字剥掉
+    → media_type 落回 movie，搜「遮天 186」失败后兜底搜「遮天」电影池错配成
+    「遮蔽的天空」(1990)。`_extract_with_regex` 在正则链前基于原始文件名
+    提取集号（`^中文\.(\d{2,10})(?![0-9pPkK])`），安全约束：1 位数字不提取
+    （电影续集号 `复仇者联盟.2.2015`）、4 位年份形状（1850-2035）不提取
+    （`让子弹飞.2010`）、后随 p/P/k/K 分辨率不提取（`特工迷阵.1080p`）；
+    年份范围外的 4 位数仍是集号（`海贼王.1045`）
+    （`TestChineseTitleDotNumberEpisode` 覆盖；顺带修好火影 220 条
+    `.mkv.iso` 镜像被误配成剧场版的问题）
   - LLM 只贡献剧名级信息（show_name / tmdb_corrected_title / year / media_type），
     episode/season 一律由文件名解析决定，不取 LLM 的猜测
 - **LLM Provider 配置** (`[llm_provider_N]`):
@@ -215,11 +245,23 @@
 - 正式镜像: `Dockerfile` — 无 ENTRYPOINT，`CMD ["python","run_organizer.py","--web",
   "--web-host","0.0.0.0","--web-port","8080"]`（监控 + Web），带 `/api/health` healthcheck，
   非 root `appuser` 运行，`config_template.ini` 拷为 `/app/config.ini`
-- 轻量镜像: `Dockerfile.run` — 默认 `python run_organizer.py`，无 healthcheck
+- 轻量镜像: `Dockerfile.run` — 默认 `python run_organizer.py`，无 healthcheck；
+  ⚙ **基础镜像是 `python:3.12-slim` 多阶段（不是 alpine）**：alpine 是 musl，依赖无预编译
+  wheel 就得现场编译，必须先 `apk add build-base gcc`，国内源上 600s+；slim 直接吃
+  manylinux wheel。`COPY` 只拿 `src/` + `run_organizer.py` + `config_template.ini`，
+  pip 层用 `RUN --mount=type=cache,target=/root/.cache/pip`（需 BuildKit），
+  支持 `build.args` 的 `APT_MIRROR` / `PIP_INDEX` 与预定义代理参数 `HTTP_PROXY`/`HTTPS_PROXY`
 - 遗留镜像: `Dockerfile.legacy`
 - `docker-compose.yml` 三个 service: `video-organizer`、`video-organizer-web-only`
-  （需 `--profile web-only`，命令覆盖为 `--web-only`）、`video-organizer-dev`（热重载）
-- 配置挂载在 `./data/config.ini:/app/config.ini`
+  （需 `--profile web-only`，命令覆盖为 `--web-only`）、`video-organizer-dev`（同样只挂
+  `./src`，改完代码 `restart`；⚠️ 没用 `--web-reload`：`uvicorn.run(app, reload=True)`
+  传的是 app 对象而不是 import string，reload 子进程会跑不起来，`--web-only` 分支同此限制）
+- ⚙ **改代码不用重建镜像**：绑挂 `./src:/app/src`（**不要加 `:ro`**，数据库在
+  `src/video_organizer/data/video_organizer.db` 要写），改完 `docker compose restart` 即可；
+  只有 `requirements.txt` / Dockerfile 变了才 `docker compose build`
+- 配置挂载在 `./data/config.ini:/app/config.ini`；线上机器另有 `docker-compose.yml.tmp`
+  （Dockerfile.run + `./src` 挂载 + 构建代理），`.dockerignore` 必须继续排除
+  `logs/ data/ strm/ build/ dist/ .git/`（历史上 logs/ 就有 292MB，直接拖慢上下文）
 
 ## 已知问题
 
