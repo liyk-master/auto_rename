@@ -3,7 +3,9 @@ import pytest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from video_organizer.core.tmdb_client import TMDBClient
+import urllib.error
+
+from video_organizer.core.tmdb_client import TMDB_WEB_USER_AGENTS, TMDBClient
 
 
 def _card(seq, media_type, entity_id, title, orig, date, adult="false"):
@@ -125,3 +127,85 @@ class TestTMDBClient:
         # assert results[0]["name"] == "超人"
         # assert results[0]["media_type"] == "tv"
         # assert results[0]["id"] == 1000000
+
+
+class TestWebFallbackUserAgent:
+    """网页搜索的 UA：浏览器 UA 会被 Cloudflare 挑战（403），必须自报身份。
+
+    线上现象：`TMDB 网站搜索失败: HTTP Error 403: Forbidden`，IP 正常、
+    无需登录 —— 根因是 UA 声明 Chrome 而 TLS 指纹不是 Chrome（urllib/requests
+    一律如此），Cloudflare 的浏览器完整性校验直接返回 JS 挑战页。
+    """
+
+    def _capture(self, responses):
+        """返回 (patch_ctx, captured)：captured 记录每次请求的 UA。"""
+        captured = []
+
+        def fake_urlopen(req, timeout=None):
+            captured.append(req.get_header("User-agent"))
+            item = responses.pop(0) if len(responses) > 1 else responses[0]
+            if isinstance(item, Exception):
+                raise item
+            resp = Mock()
+            resp.read.return_value = item
+            return resp
+
+        return patch("urllib.request.urlopen", side_effect=fake_urlopen), captured
+
+    @pytest.fixture
+    def tmdb_client(self):
+        """网页搜索不发 API 请求，key 随便填一个即可"""
+        return TMDBClient("test_key")
+
+    def test_user_agent_is_not_a_browser(self, tmdb_client):
+        """UA 不得伪装 Chrome/Firefox/Safari，也不得带 Mozilla/ 前缀"""
+        ctx, captured = self._capture([b"<html></html>"])
+        with ctx:
+            tmdb_client.search_web_fallback("Grotesqqque", language="en-US")
+        assert captured
+        ua = captured[0]
+        assert ua == TMDB_WEB_USER_AGENTS[0]
+        for browser_marker in ("Chrome/", "Firefox/", "Safari/", "Mozilla/"):
+            assert browser_marker not in ua, f"UA 伪装浏览器会被 Cloudflare 403: {ua}"
+
+    def test_retries_next_user_agent_on_403(self, tmdb_client):
+        """首个 UA 被 403 挑战时换下一个 UA，成功后正常解析卡片"""
+        page = (
+            '<div id="c1" class="comp:media-card w-full">'
+            '<a data-media-type="movie" href="/movie/1313587-grotesqqque">'
+            '<img alt="GROTESQQQUE" src="x.jpg" /></a>'
+            '<a href="/movie/1313587-grotesqqque"><h2><span>GROTESQQQUE</span></h2></a>'
+            '<span class="release_date w-full font-light">2026 年 10 月 08 日</span>'
+            "</div>"
+        ).encode("utf-8")
+        err = urllib.error.HTTPError(
+            "https://www.themoviedb.org/search?query=x", 403, "Forbidden", {}, None
+        )
+        ctx, captured = self._capture([err, page])
+        with ctx:
+            results = tmdb_client.search_web_fallback("Grotesqqque", language="en-US")
+        assert len(captured) == 2, "403 后必须换下一个 UA 重试"
+        assert captured[0] != captured[1]
+        assert [r["id"] for r in results] == [1313587]
+        assert results[0]["title"] == "GROTESQQQUE"
+
+    def test_non_403_error_does_not_retry(self, tmdb_client):
+        """5xx/连接错误不是 Cloudflare 挑战，换 UA 无用，直接返回空"""
+        err = urllib.error.HTTPError(
+            "https://www.themoviedb.org/search?query=x", 502, "Bad Gateway", {}, None
+        )
+        ctx, captured = self._capture([err, b"<html></html>"])
+        with ctx:
+            results = tmdb_client.search_web_fallback("x", language="en-US")
+        assert results == []
+        assert len(captured) == 1
+
+    def test_all_user_agents_blocked_returns_empty(self, tmdb_client):
+        err = urllib.error.HTTPError(
+            "https://www.themoviedb.org/search?query=x", 403, "Forbidden", {}, None
+        )
+        ctx, captured = self._capture([err])
+        with ctx:
+            results = tmdb_client.search_web_fallback("x", language="en-US")
+        assert results == []
+        assert len(captured) == len(TMDB_WEB_USER_AGENTS)

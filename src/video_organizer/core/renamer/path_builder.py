@@ -9,6 +9,8 @@ from typing import Dict, Optional, Union
 
 from jinja2 import Template
 
+from .part_marker import inject_part_suffix as _inject_part_suffix
+
 logger = logging.getLogger(__name__)
 
 
@@ -107,6 +109,20 @@ def generate_new_path(
 
     template = naming_rules.get(rule_type, naming_rules["simple"])
 
+    # ⚙ 分段短篇（Part N）：把分段号作为后缀写进**文件名部分**（与 renamer.py 的
+    # generate_new_path 同逻辑；默认模板没有 {part} 占位符也要生效）
+    if rule_type in ("movie", "simple"):
+        template = _inject_part_suffix(
+            template,
+            str(metadata.get("part") or "").strip(),
+            str(
+                metadata.get("title")
+                or metadata.get("original_title")
+                or metadata.get("show_name")
+                or ""
+            ),
+        )
+
     is_special = _is_special_file(original_path)
     if is_special:
         season = 0
@@ -134,6 +150,7 @@ def generate_new_path(
     web_source = f".{metadata.get('web_source')}" if metadata.get("web_source") else ""
     edition = f".{metadata.get('edition')}" if metadata.get("edition") else ""
     part = f".{metadata.get('part')}" if metadata.get("part") else ""
+    part_suffix = f" {metadata.get('part')}" if metadata.get("part") else ""
     video_format = f"{metadata.get('video_format')}" if metadata.get("video_format") else ""
     video_codec = f".{metadata.get('video_codec')}" if metadata.get("video_codec") else ""
     audio_codec = f".{metadata.get('audio_codec')}" if metadata.get("audio_codec") else ""
@@ -161,6 +178,7 @@ def generate_new_path(
         "web_source": web_source,
         "edition": edition,
         "part": part,
+        "part_suffix": part_suffix,
         "video_format": video_format,
         "video_codec": video_codec,
         "audio_codec": audio_codec,
@@ -213,6 +231,8 @@ def generate_new_path(
                 "audioCodec": metadata.get("audio_codec", ""),
                 "customization": metadata.get("customization", ""),
                 "releaseGroup": metadata.get("release_group", ""),
+                "part": metadata.get("part", ""),
+                "part_suffix": format_vars["part_suffix"],
                 "fileExt": file_ext,
                 "quality_tags": format_vars["quality_tags"],
                 "quality_tags_suffix": format_vars["quality_tags_suffix"],

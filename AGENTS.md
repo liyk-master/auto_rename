@@ -162,6 +162,40 @@
     同 (搜索词, 类型, 年份, 语言) 的并发调用只发一次真实请求；空结果缓存
     `_SEARCH_EMPTY_TTL`（600s），避免识别失败的搜索词被多文件反复重试打爆限速；
     `search_web_fallback` 也走进程级全局限速器（`_global_rate_limiter`）
+  - ⚙ **0 条结果必须补做跨语言搜索**（`_cross_language_search()`）：TMDB 索引按语言
+    分片，条目可能只以原名收录，指定 zh-CN/en-US 时就是搜不到。旧代码
+    `if primary_results:` 的 else 分支在 0 命中时只打了句「第一次搜索结果充足(0个)，
+    跳过跨语言搜索」就放弃（措辞与语义都反了），白丢一次补搜机会。现在 0 命中
+    也会跑 `language=None` 搜索（再掉 `search_video_show(language=None)` 兜底），
+    但**只采纳完全匹配+年份守卫的结果**：对脏搜索词跨语言常返回一堆子串噪音，
+    直接当候选会让 `results` 非空、后面的备选策略（cleaned_name/截断/分段剥离/
+    父目录/LLM）全部被跳过（`TestZeroResultCrossLanguage` 正反两向覆盖）
+  - ⚙ **网页兜底不得伪装浏览器 UA**（`tmdb_client.TMDB_WEB_USER_AGENTS`）：
+    www.themoviedb.org 在 Cloudflare 后面且开了浏览器完整性校验（BIC）——UA 写
+    `Chrome/120.0.0.0` 但 TLS 指纹不是 Chrome（urllib/requests 必然如此）会被丢到
+    JS 挑战页，返回 `403 Just a moment...`（与 IP、登录态无关，带 preferences
+    cookie 也没用；`Mozilla/5.0 (compatible; …)` 同样被拦）。实测非浏览器 UA
+    （`video-organizer/1.0 (+url)` / `curl/8.5.0`）返回 200 + 正常结果卡，故按
+    候选列表逐个试，403/429 换下一个 UA。**不要把这里改回浏览器 UA**
+    （`TestWebFallbackUserAgent` 锁定）
+  - ⚙ **分段短篇「Part N」**（`part_marker.py`）：剧场版拆段发行时 PT 命名是
+    `X.分段名.Part.2.2026…`（`Grotesqqque.YOROSHIKU.Girl.Part.2.2026.NF…`），
+    分段名不是 TMDB 条目、只有总条目（GROTESQQQUE 2026 / id=1313587）——
+    ① 搜索：所有 API 策略 0 结果后，「备选策略1.7」按
+    `segment_part_search_candidates()` 依次试「去掉 Part N」+「逐词丢尾部词」
+    （`Grotesqqque YOROSHIKU Girl` → `Grotesqqque YOROSHIKU` → `Grotesqqque`），
+    **只接受完全匹配+年份守卫**，且仅在搜索词带 `Part/Pt + 编号` 时触发
+    （普通 0 结果标题不做尾部截断，防误配）；② 命名：`metadata["part"]` 由
+    `extract_part_label()` 填充，`inject_part_suffix()` 把它插进命名模板的
+    **文件名部分**（目录不动）→ `GROTESQQUE (2026) {tmdbid=1313587}/`
+    `GROTESQQUE Part 2 1080p….mkv`；模板引用 `{part}`/`{part_suffix}` 时不自动插入，
+    片名本身已含该标记（Mockingjay Part 1）时不重复；⚠️ 日番 TV 的 `Part N` 是
+    分割期（cour）标记而非分段名（进击的巨人 Final Season Part 1/2/3、呪術廻戦
+    渋谷事変 等），TMDB 常把同一 IP 按 Part 拆成多个独立 TV 条目，剥离会链错
+    兄弟条目——策略搜索只在 `media_type_hint != "tv"` 且无 season/episode 证据时
+    触发（`TestTvPartMarkerProtection` 双向覆盖），命名注入只对 movie/simple
+    模板生效
+    （`tests/unit/test_core/test_part_marker.py` 覆盖）
   - ⚙ 同一目录的多集（如 `剧名（2026）/01.mp4`、`02.mp4`）只调一次 LLM：
     `renamer._parse_filename_with_cache()` 按「父目录 + 原始剧名」缓存并做 single-flight
     并发合并（等待者不占并发槽）；纠正后的剧名会作为「搜索别名」写入

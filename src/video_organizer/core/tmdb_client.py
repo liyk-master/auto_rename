@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 import re
+import urllib.error
 import urllib.request
 import urllib.parse
 from typing import List, Dict, Optional, Callable
@@ -27,6 +28,20 @@ TMDB_WEB_COOKIE = (
     "preferences="
     '{"adult":true,"i18n_fallback_language":"en-US",'
     '"locale":"zh-CN","country_code":"US","timezone":"Asia/Shanghai"}'
+)
+# ⚙ 网站搜索（www.themoviedb.org）的 UA 候选：**故意不装浏览器**。
+# TMDB 网站挂在 Cloudflare 后面且开了「浏览器完整性校验」（BIC）：UA 声明自己是
+# Chrome（`Chrome/120.0.0.0`）但 TLS/JA3 指纹不是 Chrome 的请求（urllib、requests、
+# httpx 一律如此）会被直接判到 JS 挑战页，返回 403 "Just a moment..."。
+# 实测（2026-10）：
+#   UA = Chrome/120.0.0.0 ...                      → 403（挑战页，即使 IP 正常、
+#                                                     即使带了 preferences cookie）
+#   UA = Mozilla/5.0 (compatible; xxx)             → 403（Mozilla/ 前缀同样被当浏览器）
+#   UA = video-organizer/1.0 (+url) / curl/8.5.0   → 200 + 正常结果卡
+# 因此这里自报身份（app UA 优先，curl 兜底），不要在搜索时改回浏览器 UA。
+TMDB_WEB_USER_AGENTS = (
+    "video-organizer/1.0 (+https://github.com/liyk-master/auto_rename)",
+    "curl/8.5.0",
 )
 # 网站搜索最多保留的结果数。
 # 页面通常渲染 40 张卡片（movie+tv 各 20），相关性重排后精确标题匹配会浮到最前，
@@ -765,25 +780,46 @@ class TMDBClient:
             url = f"https://www.themoviedb.org/search?query={urllib.parse.quote(query)}"
         # language 可能为 None（调用方未指定语言），兜底为 zh-CN 避免 .split 崩溃
         lang = language or "zh-CN"
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
+        headers_common = {
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
             ),
             "Accept-Language": f"{lang},{lang.split('-')[0]};q=0.9",
             "Cookie": TMDB_WEB_COOKIE,
         }
-        req = urllib.request.Request(url, headers=headers)
-        # 网站搜索不走 API 网关，但同样消耗 TMDB 服务器额度；
-        # 必须走进程级全局限速器，否则多实例并发时网站搜索会互相打爆 429
-        _global_rate_limiter.acquire()
-        try:
-            html = (
-                urllib.request.urlopen(req, timeout=15).read().decode("utf-8", "ignore")
-            )
-        except Exception as e:
-            logger.warning(f"TMDB 网站搜索失败: {e}")
+        # UA 逐个试（见 TMDB_WEB_USER_AGENTS 注释：浏览器 UA 会被 Cloudflare 挑战）
+        html = ""
+        last_error: Optional[Exception] = None
+        for user_agent in TMDB_WEB_USER_AGENTS:
+            headers = dict(headers_common, **{"User-Agent": user_agent})
+            req = urllib.request.Request(url, headers=headers)
+            # 网站搜索不走 API 网关，但同样消耗 TMDB 服务器额度；
+            # 必须走进程级全局限速器，否则多实例并发时网站搜索会互相打爆 429
+            _global_rate_limiter.acquire()
+            try:
+                html = (
+                    urllib.request.urlopen(req, timeout=15)
+                    .read()
+                    .decode("utf-8", "ignore")
+                )
+                break
+            except urllib.error.HTTPError as e:
+                last_error = e
+                if e.code in (403, 429):
+                    # 被 Cloudflare 挑战 / 限速：换下一个 UA 再试
+                    logger.info(
+                        f"TMDB 网站搜索被拦（HTTP {e.code}），换用下一个 UA 重试"
+                    )
+                    continue
+                logger.warning(f"TMDB 网站搜索失败: {e}")
+                return []
+            except Exception as e:
+                last_error = e
+                logger.warning(f"TMDB 网站搜索失败: {e}")
+                return []
+
+        if not html:
+            logger.warning(f"TMDB 网站搜索失败: {last_error}")
             return []
 
         if not html:

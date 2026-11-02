@@ -48,6 +48,12 @@ from .category_detector import (
     determine_anime_subcategory,
 )
 from .path_builder import sanitize_filename, handle_file_conflict
+from .part_marker import (
+    PART_MARKER_RE as _PART_MARKER_RE,
+    extract_part_label as _extract_part_label,
+    inject_part_suffix as _inject_part_suffix,
+    segment_part_search_candidates as _segment_part_search_candidates,
+)
 
 # 繁简转换支持
 try:
@@ -1393,6 +1399,19 @@ class VideoRenamer:
                                 break
                 except Exception as e:
                     logger.debug(f"父目录年份提取失败: {e}")
+
+            # 5.5 「分段短篇」标记（Part N）：只做两件事——
+            # 1) 搜索时允许剥掉分段名/Part N 重试（_segment_part_search_candidates）
+            # 2) 写入 metadata["part"]，供命名阶段把它拼回文件名后缀
+            #    否则同一总条目的多段会生成同名文件（互相覆盖/冲突）
+            if "part" not in locked_fields and not metadata.get("part"):
+                _part_label = _extract_part_label(str(file_path))
+                if _part_label:
+                    metadata["part"] = _part_label
+                    logger.info(
+                        f"检测到分段标记 '{_part_label}'：搜索时可剥离，"
+                        f"输出文件名保留该后缀"
+                    )
 
             # 6. TMDB 丰富
             if metadata.get("show_name"):
@@ -3800,6 +3819,61 @@ class VideoRenamer:
             logger.debug(f"TMDB 搜索空结果已缓存 {_SEARCH_EMPTY_TTL}s: {cache_key}")
         return list(results) if results else results
 
+    def _cross_language_search(
+        self,
+        search_term: str,
+        media_type_hint: Optional[str],
+        search_year: Optional[str],
+        prepared_search_term: Optional[str] = None,
+    ) -> List[Dict]:
+        """跨语言搜索（``language=None``）+ 通用 ``search_video_show`` 兜底
+
+        TMDB 的索引按语言分片：同一条目在 zh-CN / en-US 下 命中与否不同，
+        只以原名（日文/韩文/英文原名）收录的条目在指定语言时常常匹配不到
+        （如 GROTESQQQUE 2026 只靠原名才能搜到）。所以第一次搜索 0 条或
+        结果不足/不精确时，用不限定语言的搜索再打一枪。
+
+        Args:
+            search_term: 原始搜索词（``prepared_search_term`` 为空时使用）
+            media_type_hint: ``movie`` / ``tv`` / None（None 时 movie+tv 都搜）
+            search_year: 年份过滤（tv 通常为 None）
+            prepared_search_term: 已清洗的搜索词（优先）
+
+        Returns:
+            TMDB 结果列表（可能为空）；未初始化 TMDB 客户端时返回空列表
+        """
+        term = prepared_search_term or search_term
+        if not term:
+            return []
+
+        results: List[Dict] = []
+        if media_type_hint:
+            results = list(
+                self._search_with_language(term, media_type_hint, search_year, None) or []
+            )
+        else:
+            # 媒体类型不确定：电影和电视剧都搜
+            tv_results = self._search_with_language(term, "tv", search_year, None) or []
+            movie_results = (
+                self._search_with_language(term, "movie", search_year, None) or []
+            )
+            results = list(tv_results) + list(movie_results)
+
+        if results:
+            return results
+
+        # 指定/通用类型都 miss 时，再用不限类型的 search_video_show 试一次
+        if not self.tmdb_client:
+            return []
+        general_results = self.tmdb_client.search_all_pages(
+            "search_video_show",
+            term,
+            max_pages=self.max_search_pages,
+            year=search_year,
+            language=None,  # 不限制语言
+        )
+        return list(general_results or [])
+
     def _resolve_ambiguous_media_type_via_tmdb(
         self, metadata: Dict, year: Optional[Union[int, str]]
     ) -> Optional[str]:
@@ -5894,44 +5968,13 @@ class VideoRenamer:
                         logger.info(
                             f"第一次搜索结果较少({len(all_results)}个)，进行跨语言搜索"
                         )
-
                         # 跨语言搜索：不指定语言参数，让 TMDB 返回所有语言的结果
-                        secondary_results = []
-                        if media_type_hint:
-                            secondary_results = self._search_with_language(
-                                prepared_search_term,
-                                media_type_hint,
-                                search_year,
-                                None,  # 不限制语言，获取所有语言的结果
-                            )
-                        elif media_type_hint is None:
-                            # 媒体类型不确定，同时搜索电影和电视剧
-                            tv_results = self._search_with_language(
-                                prepared_search_term,
-                                "tv",
-                                search_year,
-                                None,  # 不限制语言
-                            )
-                            movie_results = self._search_with_language(
-                                prepared_search_term,
-                                "movie",
-                                search_year,
-                                None,  # 不限制语言
-                            )
-                            secondary_results = tv_results + movie_results
-
-                        if not secondary_results:
-                            general_secondary_results = (
-                                self.tmdb_client.search_all_pages(
-                                    "search_video_show",
-                                    prepared_search_term,
-                                    max_pages=self.max_search_pages,
-                                    year=search_year,
-                                    language=None,  # 不限制语言
-                                )
-                            )
-                            if general_secondary_results:
-                                secondary_results = general_secondary_results
+                        secondary_results = self._cross_language_search(
+                            search_term,
+                            media_type_hint,
+                            search_year,
+                            prepared_search_term,
+                        )
 
                     # ⚙ 跨语言搜索同样剔除无剧集证据的 tv 候选：否则 tv 会在此
                     # 阶段经 has_exact_match 精确匹配被重新选中（如通用目录的
@@ -6057,12 +6100,43 @@ class VideoRenamer:
                     else:
                         results = all_results
             else:
-                logger.info(f"第一次搜索结果充足({len(all_results)}个)，跳过跨语言搜索")
-                results = all_results
-
-                # 保存到缓存
-                if results:
-                    self._search_cache[cache_key] = results
+                # ⚙ 第一次搜索 0 条结果：跨语言搜索（language=None）是这里唯一
+                # 还能多打的一枪——TMDB 索引按语言分片，条目可能只以原名/日文
+                # 收录（如 GROTESQQQUE），指定 zh-CN/en-US 时就是匹配不到。
+                # 旧逻辑直接走本 else 分支、只打一句「第一次搜索结果充足(0个)，
+                # 跳过跨语言搜索」就放弃识别：0 条显然不是「充足」，措辞与语义
+                # 都是反的，等于把 0 命中场景的一次补搜机会白白丢掉。
+                results = []
+                logger.info("第一次搜索无结果(0 个)，补做跨语言搜索")
+                cross_results = self._cross_language_search(
+                    search_term,
+                    media_type_hint,
+                    search_year,
+                    prepared_search_term,
+                )
+                if cross_results:
+                    logger.info(f"跨语言搜索返回 {len(cross_results)} 个结果")
+                    # ⚙ 只采纳「完全匹配」（含年份守卫）：跨语言搜索对脏搜索词
+                    # 常返回一堆子串噪音，若直接当候选，下游会因 results 非空而
+                    # 不再跑备选策略（cleaned_name / 截断 / 分段剥离 / 父目录 /
+                    # LLM），白白丢掉那些更能命中精确条目的手段。
+                    _cross_ok, _cross_exact = has_exact_match(
+                        cross_results, prepared_search_term, search_year
+                    )
+                    if _cross_ok:
+                        results = [_cross_exact]
+                        logger.info(
+                            f"跨语言搜索找到完全匹配: "
+                            f"{_cross_exact.get('name', _cross_exact.get('title'))}"
+                        )
+                        # 保存到缓存
+                        self._search_cache[cache_key] = results
+                    else:
+                        logger.info(
+                            "跨语言搜索无完全匹配，不采纳噪音，交由备选策略继续"
+                        )
+                else:
+                    logger.info("跨语言搜索同样无结果，交由网页兜底/备选策略")
 
             # 确保results是列表类型
             if not isinstance(results, list):
@@ -6200,6 +6274,61 @@ class VideoRenamer:
                             else:
                                 results = alt_results[:5]  # 取前5个结果
                                 logger.info(f"括号变体搜索返回 {len(results)} 个结果")
+
+                # 备选策略1.7：分段短篇/剧场版分段的 「Part N」剥离后重搜
+                # 剧场版拆段发行的 PT 命名：
+                #   Grotesqqque.YOROSHIKU.Girl.Part.2.2026.NF.WEB-DL.x264.AAC.mkv
+                # “YOROSHIKU Girl”是分段名，TMDB 只有总条目
+                # （GROTESQQQUE 2026，id=1313587），整串搜索必然 0 条。
+                # 这里按「去掉 Part N → 逐词丢弃尾部词」生成候选，**只接受完全
+                # 匹配（含年份守卫）**；末尾保留的分段号已写入 metadata["part"]，
+                # 由命名阶段拼成输出文件名后缀（GROTESQQQUE Part 2 1080p...mkv）。
+                # 只在搜索词带 Part/Pt 标记时触发，普通 0 结果标题不受影响。
+                # ⚙ 只服务 movie/未知类型：日番 TV 的 "Part N" 是分割期（cour）
+                # 标记而非分段名——进击的巨人 Final Season Part 1/2/3、呪術廻戦
+                # 渋谷事変 等，TMDB 常把同一 IP 按 Part 拆成多个独立 TV 条目，
+                # 剥掉 Part N 去搜「基底条目」会链到兄弟条目（Season 对照全错）。
+                # 且解析器本身已把 cour 标记从 show_name 剥净（带 Part.2 的
+                # TV 文件名 show_name 均干净），本策略对 TV 无益；带 season/
+                # episode 证据（无论 hint 为何）同样不参与，防未知类型文件名
+                # 里保留的 Part N 被误剥。
+                if (
+                    not results
+                    and _PART_MARKER_RE.search(search_term)
+                    and media_type_hint != "tv"
+                    and not metadata.get("season")
+                    and not metadata.get("episode")
+                ):
+                    for _seg_cand in _segment_part_search_candidates(search_term):
+                        logger.info(
+                            f"分段/Part 剥离变体搜索: '{search_term}' -> '{_seg_cand}'"
+                        )
+                        _seg_results = self._search_with_language(
+                            _seg_cand, media_type_hint, search_year, primary_language
+                        ) or self._search_with_language(
+                            _seg_cand, media_type_hint, search_year, secondary_language
+                        )
+                        if not _seg_results:
+                            continue
+                        _seg_ok, _seg_exact = has_exact_match(
+                            _seg_results, _seg_cand, search_year
+                        )
+                        if not _seg_ok:
+                            logger.info(
+                                f"分段/Part 剥离变体 '{_seg_cand}' 无完全匹配，"
+                                f"继续缩短"
+                            )
+                            continue
+                        logger.info(
+                            f"分段/Part 剥离变体找到完全匹配: "
+                            f"{_seg_exact.get('name', _seg_exact.get('title'))}"
+                        )
+                        results = [_seg_exact]
+                        # 同步搜索词：否则后续年份守卫/精确匹配仍拿带分段名
+                        # 的原词，无法识别出完全匹配（同括号变体的处理）
+                        search_term = _seg_cand
+                        prepared_search_term = _seg_cand
+                        break
 
                 # 备选策略2：智能截断剧名，尝试去除副标题后重新搜索
                 # 适用于 "请吃红小豆吧！新年快乐" 格式，实际剧名是 "请吃红小豆吧"
@@ -7510,6 +7639,24 @@ class VideoRenamer:
         # 获取对应的命名模板
         template = self.naming_rules.get(rule_type, self.naming_rules["simple"])
 
+        # ⚙ 分段短篇（Part N）：把分段号作为后缀写进**文件名部分**
+        # 默认模板（Movies/{show_name} ({year}).../{show_name} {quality_tags}）
+        # 没有 {part} 占位符，不改模板也要能输出
+        #   GROTESQQQUE (2026) {tmdbid=1313587}/GROTESQQQUE Part 2 1080p...mkv
+        # 同一条目的多段共用目录、文件名靠 Part N 区分（否则同名冲突）。
+        # 剧集模板不动（分段标记在剧集命名里没有位置语义）。
+        if rule_type in ("movie", "simple"):
+            template = _inject_part_suffix(
+                template,
+                str(metadata.get("part") or "").strip(),
+                str(
+                    metadata.get("title")
+                    or metadata.get("original_title")
+                    or metadata.get("show_name")
+                    or ""
+                ),
+            )
+
         # 准备用于格式化的变量字典，优先使用原始标题
         def safe_int(val, default=1):
             if not val:
@@ -7593,6 +7740,10 @@ class VideoRenamer:
         )
         edition = f".{metadata.get('edition')}" if metadata.get("edition") else ""
         part = f".{metadata.get('part')}" if metadata.get("part") else ""
+        # 与 {part}（带前导点，用于点号分隔模板）等价的空格版写法：
+        #   movie_format = .../{show_name}{part_suffix} {quality_tags}
+        # 模板引用 {part} 或 {part_suffix} 时，_inject_part_suffix 不再自动插入。
+        part_suffix = f" {metadata.get('part')}" if metadata.get("part") else ""
         video_format = (
             f"{metadata.get('video_format')}" if metadata.get("video_format") else ""
         )
@@ -7637,6 +7788,7 @@ class VideoRenamer:
             "web_source": web_source,
             "edition": edition,
             "part": part,
+            "part_suffix": part_suffix,
             "video_format": video_format,
             "video_codec": video_codec,
             "audio_codec": audio_codec,
@@ -7707,6 +7859,8 @@ class VideoRenamer:
                     "audioCodec": metadata.get("audio_codec", ""),
                     "customization": metadata.get("customization", ""),
                     "releaseGroup": metadata.get("release_group", ""),
+                    "part": metadata.get("part", ""),
+                    "part_suffix": format_vars["part_suffix"],
                     "fileExt": file_ext,  # 注入后缀变量
                     "quality_tags": format_vars["quality_tags"],
                     "quality_tags_suffix": format_vars["quality_tags_suffix"],

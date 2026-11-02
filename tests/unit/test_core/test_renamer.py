@@ -2173,3 +2173,373 @@ class TestChineseTitleDotNumberEpisode:
         assert md.get("tmdb_id") == 46260, md
         assert md.get("media_type") == "tv", md
         assert md.get("episode") == "115", md
+
+
+class TestSegmentPartFallback:
+    """分段短篇（剧场版拆段）的搜索兜底
+
+    线上实例：Grotesqqque.YOROSHIKU.Girl.Part.2.2026.NF.WEB-DL.x264.AAC.mkv
+    - "YOROSHIKU Girl" 是分段名，TMDB 只有总条目 GROTESQQQUE (2026, id=1313587)
+    - 整串搜索 0 条 → 依次剥掉 Part 2 + 尾部词，直到 "Grotesqqque" 才完全匹配
+    - Part 2 必须留在输出文件名里（见 tests/unit/test_core/test_part_marker.py）
+    """
+
+    @staticmethod
+    def _fake_search(method, term, **kwargs):
+        """只对总片名返回结果，模拟 TMDB 真实行为"""
+        if str(term).strip().lower() in ("grotesqqque", "grotesque"):
+            return [
+                {
+                    "id": 1313587,
+                    "media_type": "movie",
+                    "title": "GROTESQQQUE",
+                    "name": "GROTESQQQUE",
+                    "original_title": "GROTESQQQUE",
+                    "release_date": "2026-10-08",
+                    "popularity": 20.0,
+                }
+            ]
+        return []
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_strip_segment_and_part_hits_movie(self, mock_tmdb_client):
+        client = MagicMock()
+        mock_tmdb_client.return_value = client
+        client.search_all_pages.side_effect = self._fake_search
+        client.search_web_fallback.return_value = []
+        client.get_movie_details.return_value = {
+            "id": 1313587,
+            "title": "GROTESQQQUE",
+            "original_title": "GROTESQQQUE",
+            "release_date": "2026-10-08",
+            "genres": [],
+        }
+        client.get_external_ids.return_value = {}
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {
+            "show_name": "Grotesqqque YOROSHIKU Girl Part 2",
+            "year": 2026,
+            "media_type": "movie",
+            "original_filename": (
+                "Grotesqqque.YOROSHIKU.Girl.Part.2.2026.NF.WEB-DL.x264.AAC.mkv"
+            ),
+        }
+        result = renamer._enrich_with_tmdb(metadata)
+
+        assert result.get("tmdb_id") == 1313587, result
+        # 确认真的逐级剥到了总片名（不是靠别的路径猜中）
+        searched = [
+            str(call.args[1]).strip().lower()
+            for call in client.search_all_pages.call_args_list
+            if len(call.args) > 1
+        ]
+        assert "grotesqqque" in searched
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_no_part_marker_never_truncates(self, mock_tmdb_client):
+        """没有 Part/Pt 标记的 0 结果标题不做尾部截断（防误配）"""
+        client = MagicMock()
+        mock_tmdb_client.return_value = client
+        client.search_all_pages.return_value = []
+        client.search_web_fallback.return_value = []
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        renamer._enrich_with_tmdb(
+            {
+                "show_name": "Blade Runner 2049",
+                "year": 2017,
+                "media_type": "movie",
+                "original_filename": "Blade.Runner.2049.2017.1080p.mkv",
+            }
+        )
+        searched = [
+            str(call.args[1]).strip() for call in client.search_all_pages.call_args_list
+        ]
+        # 全词照搜没问题，但**截断后的** "Blade Runner" 不能出现
+        assert "Blade Runner 2049" in searched
+        assert "Blade Runner" not in searched, searched
+
+
+class TestZeroResultCrossLanguage:
+    """0 条结果也必须补做跨语言搜索
+
+    回归点：`_search_tmdb_by_type` 里 `if primary_results:` 之外的分支（else）
+    在第一次搜索 0 条时只打了一句「第一次搜索结果充足(0个)，跳过跨语言搜索」
+    就放弃 —— 措辞反了，还把 0 命中场景唯一能补搜的一枪（language=None，
+    TMDB 索引按语言分片）白白丢掉。
+    """
+
+    HIT = {
+        "id": 67018,
+        "media_type": "movie",
+        "title": "映像",
+        "name": "映像",
+        "original_title": "The Image",
+        "release_date": "1975-12-20",
+        "popularity": 3.0,
+    }
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_zero_results_still_runs_cross_language(self, mock_tmdb_client, caplog):
+        import logging as _logging
+
+        client = MagicMock()
+        mock_tmdb_client.return_value = client
+        searched_languages = []
+
+        def fake_search(method, term, **kwargs):
+            searched_languages.append(kwargs.get("language"))
+            # 只有不限语言（language=None）的搜索能命中
+            if kwargs.get("language") is None:
+                return [dict(self.HIT)]
+            return []
+
+        client.search_all_pages.side_effect = fake_search
+        client.search_web_fallback.return_value = []
+        client.get_movie_details.return_value = {
+            "id": 67018,
+            "title": "映像",
+            "original_title": "The Image",
+            "release_date": "1975-12-20",
+            "genres": [],
+        }
+        client.get_external_ids.return_value = {}
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        caplog.set_level(_logging.INFO)
+        result = renamer._enrich_with_tmdb(
+            {
+                "show_name": "映像",
+                "year": 1975,
+                "media_type": "movie",
+                "original_filename": r"E:\media\电影\映像.1975.1080p.BluRay.mkv",
+            }
+        )
+
+        assert (
+            None in searched_languages
+        ), "0 条结果后必须补做 language=None 的跨语言搜索"
+        assert result.get("tmdb_id") == 67018, result
+        # 日志措辞不能再出现「充足(0个)」这种反向描述
+        assert "充足" not in caplog.text
+        assert "补做跨语言搜索" in caplog.text
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_zero_results_and_empty_cross_language_falls_through(
+        self, mock_tmdb_client, caplog
+    ):
+        """跨语言搜索也 0 条时正常回落备选策略，不抛异常"""
+        import logging as _logging
+
+        client = MagicMock()
+        mock_tmdb_client.return_value = client
+        client.search_all_pages.return_value = []
+        client.search_web_fallback.return_value = []
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        caplog.set_level(_logging.INFO)
+        result = renamer._enrich_with_tmdb(
+            {
+                "show_name": "完全不存在的片子",
+                "year": 2026,
+                "media_type": "movie",
+                "original_filename": "完全不存在的片子.2026.1080p.mkv",
+            }
+        )
+        assert not result.get("tmdb_id")
+        assert "跨语言搜索同样无结果" in caplog.text
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_fuzzy_cross_language_hits_do_not_block_fallbacks(
+        self, mock_tmdb_client, caplog
+    ):
+        """跨语言搜索只返回子串噪音时不得当候选，否则备选策略（截断/分段剥离/
+        父目录/LLM）全部被跳过，精确条目反而识别不到"""
+        import logging as _logging
+
+        client = MagicMock()
+        mock_tmdb_client.return_value = client
+        searched = []
+
+        def fake_search(method, term, **kwargs):
+            searched.append(str(term))
+            if kwargs.get("language") is None:
+                # 只有子串噪音，没有任何完全匹配
+                return [
+                    {
+                        "id": 999001,
+                        "media_type": "movie",
+                        "title": "Grotesqqque 前传",
+                        "name": "Grotesqqque 前传",
+                        "release_date": "2024-01-01",
+                        "popularity": 50.0,
+                    }
+                ]
+            # 备选策略（截断后的干净片名）才命中
+            if str(term).strip().lower() == "grotesqqque":
+                return [dict(TestSegmentPartFallback._fake_search("m", term)[0])]
+            return []
+
+        client.search_all_pages.side_effect = fake_search
+        client.search_web_fallback.return_value = []
+        client.get_movie_details.return_value = {
+            "id": 1313587,
+            "title": "GROTESQQQUE",
+            "original_title": "GROTESQQQUE",
+            "release_date": "2026-10-08",
+            "genres": [],
+        }
+        client.get_external_ids.return_value = {}
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        caplog.set_level(_logging.INFO)
+        result = renamer._enrich_with_tmdb(
+            {
+                "show_name": "Grotesqqque YOROSHIKU Girl Part 2",
+                "year": 2026,
+                "media_type": "movie",
+                "original_filename": (
+                    "Grotesqqque.YOROSHIKU.Girl.Part.2.2026.NF.WEB-DL.x264.AAC.mkv"
+                ),
+            }
+        )
+
+        assert "跨语言搜索无完全匹配" in caplog.text
+        assert result.get("tmdb_id") == 1313587, result
+
+
+class TestTvPartMarkerProtection:
+    """TV 文件（日番 cour/Part N）不得参与「Part 剥离重搜」
+
+    日番常把分割期写成 "Part N"（进击的巨人 The Final Season Part 1/2/3、
+    呪術廻戦 渋谷事変 等），TMDB 常把同一 IP 拆成多个独立 TV 条目——
+    剥掉 Part N 去搜「基底条目」会链到错误的兄弟条目（Season 对照全错）。
+    断言方式：策略1.7 有独立日志「分段/Part 剥离变体搜索」，出现即代表触发，
+    精确且不依赖其他策略（cleaned_name/父目录兜底也会搜裸剧名）的搜索行为。
+    """
+
+    # ---------- 工具 ----------
+    @staticmethod
+    def _make_client(searched_out):
+        client = MagicMock()
+
+        def fake_search(method, term, **kwargs):
+            searched_out.append(str(term).strip().lower())
+            return []
+
+        client.search_all_pages.side_effect = fake_search
+        client.search_web_fallback.return_value = []
+        return client
+
+    # ---------- 正向：movie 仍然正常剥离 ----------
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_movie_still_strips(self, mock_tmdb_client, caplog):
+        import logging as _logging
+
+        searched = []
+
+        def fake_search(method, term, **kwargs):
+            searched.append(str(term).strip().lower())
+            if str(term).strip().lower() == "grotesqqque":
+                return [
+                    {
+                        "id": 1313587,
+                        "media_type": "movie",
+                        "title": "GROTESQQQUE",
+                        "name": "GROTESQQQUE",
+                        "release_date": "2026-10-08",
+                        "popularity": 20.0,
+                    }
+                ]
+            return []
+
+        client = MagicMock()
+        mock_tmdb_client.return_value = client
+        client.search_all_pages.side_effect = fake_search
+        client.search_web_fallback.return_value = []
+        client.get_movie_details.return_value = {
+            "id": 1313587,
+            "title": "GROTESQQQUE",
+            "original_title": "GROTESQQQUE",
+            "release_date": "2026-10-08",
+            "genres": [],
+        }
+        client.get_external_ids.return_value = {}
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        caplog.set_level(_logging.INFO)
+        result = renamer._enrich_with_tmdb(
+            {
+                "show_name": "Grotesqqque YOROSHIKU Girl Part 2",
+                "year": 2026,
+                "media_type": "movie",
+                "original_filename": (
+                    "Grotesqqque.YOROSHIKU.Girl.Part.2.2026.NF.WEB-DL.x264.AAC.mkv"
+                ),
+            }
+        )
+        assert result.get("tmdb_id") == 1313587, result
+        assert "分段/Part 剥离变体找到完全匹配" in caplog.text
+
+    # ---------- 反向：tv 不剥离 ----------
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_tv_type_not_stripped(self, mock_tmdb_client, caplog):
+        import logging as _logging
+
+        client = self._make_client(searched_out := [])
+        mock_tmdb_client.return_value = client
+        renamer = VideoRenamer("your_tmdb_api_key")
+        caplog.set_level(_logging.INFO)
+        result = renamer._enrich_with_tmdb(
+            {
+                "show_name": "进击的巨人 The Final Season Part 2",
+                "year": 2022,
+                "media_type": "tv",
+                "season": 2,
+                "episode": 10,
+                "original_filename": (
+                    "进击的巨人.The.Final.Season.Part.2.S02E10.2022.1080p.mkv"
+                ),
+            }
+        )
+        assert not result.get("tmdb_id")
+        assert "分段/Part 剥离变体搜索" not in caplog.text
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_tv_hint_without_episode_not_stripped(self, mock_tmdb_client, caplog):
+        """即使没有 season/episode，media_type=tv 的也不得剥离"""
+        import logging as _logging
+
+        client = self._make_client(searched_out := [])
+        mock_tmdb_client.return_value = client
+        renamer = VideoRenamer("your_tmdb_api_key")
+        caplog.set_level(_logging.INFO)
+        renamer._enrich_with_tmdb(
+            {
+                "show_name": "葬送的芙莉莲 Part 2",
+                "media_type": "tv",
+                "original_filename": "葬送的芙莉莲.Part.2.2024.1080p.mkv",
+            }
+        )
+        assert "分段/Part 剥离变体搜索" not in caplog.text
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_unknown_type_with_episode_not_stripped(self, mock_tmdb_client, caplog):
+        """类型未知但带集号证据的文件也不剥离（防文件名保留 Part N 的伪装）"""
+        import logging as _logging
+
+        client = self._make_client(searched_out := [])
+        mock_tmdb_client.return_value = client
+        renamer = VideoRenamer("your_tmdb_api_key")
+        caplog.set_level(_logging.INFO)
+        renamer._enrich_with_tmdb(
+            {
+                "show_name": "咒术回战 涩谷事变 Part 2",
+                "media_type": "unknown",
+                "season": 2,
+                "episode": 10,
+                "original_filename": "咒术回战.涩谷事变.Part.2.S02E10.2023.1080p.mkv",
+            }
+        )
+        assert "分段/Part 剥离变体搜索" not in caplog.text
