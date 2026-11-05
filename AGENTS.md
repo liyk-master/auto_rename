@@ -196,6 +196,14 @@
     触发（`TestTvPartMarkerProtection` 双向覆盖），命名注入只对 movie/simple
     模板生效
     （`tests/unit/test_core/test_part_marker.py` 覆盖）
+  - ⚙ **tmdbid 标记文件的跨类型回退必须验证标题相关性**（`_alt_title_related`）：
+    文件名自带 `[tmdbid-318051]` 时直接按 ID 取详情（跳过搜索），当前类型 404
+    时跨类型回退（tv→movie / movie→tv）。旧逻辑只验证「回退类型能否取到详情」
+    不验证标题——错误/陈旧 id 会把毫不相干的条目硬塞进来（[tmdbid-318051]
+    实为 2009 电影 Homero Manzi，与「寒蝉鸣泣之时·礼」无关，tv 404 后回退
+    movie 把剧集识别成电影并改判 media_type）。现在回退前校验标题相关性
+    （归一化后相同/包含/字符重叠 ≥ 0.5），无关 → 判坏 ID 清除，交由搜索路径
+    （`TestTmdbIdCrossTypeFallback` 覆盖，双向回退 + 坏 ID 清除均测）
   - ⚙ 同一目录的多集（如 `剧名（2026）/01.mp4`、`02.mp4`）只调一次 LLM：
     `renamer._parse_filename_with_cache()` 按「父目录 + 原始剧名」缓存并做 single-flight
     并发合并（等待者不占并发槽）；纠正后的剧名会作为「搜索别名」写入

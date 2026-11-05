@@ -124,6 +124,41 @@ def _strip_trailing_transliteration(name: str) -> str:
     return name
 
 
+def _alt_title_related(reference: str, *candidates: str) -> bool:
+    """跨类型回退时，回退条目标题与文件名剧名的相关性校验
+
+    tmdbid 标记文件只带 id 不带类型（且可能带陈旧/错误 id）：tv 详情 404 时
+    回退 movie（反之亦然）。旧逻辑只验证「回退类型能取到详情」，不验证标题——
+    错误 id 会把毫不相干的条目硬塞进来（[tmdbid-318051] 实为 2009 电影
+    Homero Manzi，tv/318051 404 后回退 movie/318051，把「寒蝉鸣泣之时·礼」
+    识别成 Homero Manzi 并改判 media_type）。仅在标题明显无关时返回 False：
+    信息不足（任一为空）不拦截，保持旧行为；归一化后相同/包含/字符重叠比例
+    ≥ 0.5 视为相关。多候选（title + original_title）任一相关即可。
+    """
+    if not reference:
+        return True
+    norm = lambda t: re.sub(
+        r"\s+", " ", re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]", "", str(t).lower())
+    ).strip()
+    ref = norm(reference)
+    if not ref:
+        return True
+    has_candidate = False
+    for cand in candidates:
+        c = norm(cand)
+        if not c:
+            continue
+        has_candidate = True
+        if c == ref or ref in c or c in ref:
+            return True
+        overlap = len(set(ref) & set(c))
+        longer = max(len(ref), len(c))
+        if longer > 0 and overlap / longer >= 0.5:
+            return True
+    # 所有候选都为空/无法比较 → 信息不足不拦截
+    return not has_candidate
+
+
 # 技术残留词（帧率/编码/音轨/清晰度/来源/色深等）：已由 _extract_keywords
 # 提取进 quality_tags，不属于标题——应同时从 show_name 与搜索词中移除，
 # 否则混合中英文件名（如 "上海正午2：上海骑士.Shanghai.Knights.2003."
@@ -3849,7 +3884,8 @@ class VideoRenamer:
         results: List[Dict] = []
         if media_type_hint:
             results = list(
-                self._search_with_language(term, media_type_hint, search_year, None) or []
+                self._search_with_language(term, media_type_hint, search_year, None)
+                or []
             )
         else:
             # 媒体类型不确定：电影和电视剧都搜
@@ -5041,13 +5077,37 @@ class VideoRenamer:
                             _alt_details = self.tmdb_client.get_movie_details(
                                 tmdb_id_int, language="zh-CN"
                             )
-                            if _alt_details and _alt_details.get("title"):
+                            if (
+                                _alt_details
+                                and _alt_details.get("title")
+                                # ⚙ 跨类型回退必须验证标题相关性：tv 404 时
+                                # movie 回退可能是无关条目（[tmdbid-318051]
+                                # 实为电影 Homero Manzi，与剧名不符）。
+                                # 标题无关 → 不采纳，落入下方「清除坏 ID」。
+                                and _alt_title_related(
+                                    metadata.get("show_name") or "",
+                                    _alt_details.get("title") or "",
+                                    _alt_details.get("original_title") or "",
+                                )
+                            ):
                                 details = _alt_details
                                 media_type_hint = "movie"
                                 metadata["media_type"] = "movie"
                                 logger.warning(
                                     f"TMDB ID {tmdb_id_int} tv 详情不存在，"
-                                    f"回退 movie: {_alt_details.get('title')}"
+                                    f"回退 movie (标题相关): "
+                                    f"{_alt_details.get('title')}"
+                                )
+                            else:
+                                # 回退标题与剧名无关：坏/陈旧 tmdbid
+                                # （[tmdbid-318051] 实为电影 Homero Manzi），
+                                # 不得把无关条目硬当识别结果
+                                logger.warning(
+                                    f"TMDB ID {tmdb_id_int} tv 详情不存在，"
+                                    f"movie 回退标题"
+                                    f" {(_alt_details or {}).get('title')!r} "
+                                    f"与剧名 {metadata.get('show_name')!r} 无关，"
+                                    f"判坏 ID，交由搜索路径"
                                 )
                     else:
                         details = self.tmdb_client.get_movie_details(
@@ -5057,13 +5117,30 @@ class VideoRenamer:
                             _alt_details = self.tmdb_client.get_tv_details(
                                 tmdb_id_int, language="zh-CN"
                             )
-                            if _alt_details and _alt_details.get("name"):
+                            if (
+                                _alt_details
+                                and _alt_details.get("name")
+                                and _alt_title_related(
+                                    metadata.get("show_name") or "",
+                                    _alt_details.get("name") or "",
+                                    _alt_details.get("original_name") or "",
+                                )
+                            ):
                                 details = _alt_details
                                 media_type_hint = "tv"
                                 metadata["media_type"] = "tv"
                                 logger.warning(
                                     f"TMDB ID {tmdb_id_int} movie 详情不存在，"
-                                    f"回退 tv: {_alt_details.get('name')}"
+                                    f"回退 tv (标题相关): "
+                                    f"{_alt_details.get('name')}"
+                                )
+                            else:
+                                logger.warning(
+                                    f"TMDB ID {tmdb_id_int} movie 详情不存在，"
+                                    f"tv 回退标题"
+                                    f" {(_alt_details or {}).get('name')!r} "
+                                    f"与剧名 {metadata.get('show_name')!r} 无关，"
+                                    f"判坏 ID，交由搜索路径"
                                 )
                     # 跨类型探测后 movie/tv 详情都不存在：坏 tmdbid
                     # （如 [tmdbid-1601810] 是无效 ID）清除，避免搜索失败后

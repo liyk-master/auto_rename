@@ -2543,3 +2543,185 @@ class TestTvPartMarkerProtection:
             }
         )
         assert "分段/Part 剥离变体搜索" not in caplog.text
+
+
+class TestTmdbIdCrossTypeFallback:
+    """文件名携带 {tmdbid=xxx} 标记时的「跨类型回退」护栏
+
+    线上案例：[tmdbid-318051] 实际是 2009 电影 Homero Manzi（tv/318051 404、
+    movie/318051 存在），但文件名剧名是「寒蝉鸣泣之时·礼」——旧逻辑在 tv 404
+    后无条件回退 movie，把无关条目硬塞进来并改判 media_type。现在回退前校验
+    标题相关性：无关就不采纳，清除坏 ID 交由搜索路径。
+    """
+
+    # ---------- 工具 ----------
+    @staticmethod
+    def _movie_homero():
+        return {
+            "id": 318051,
+            "title": "Homero Manzi, un poeta en la tormenta",
+            "original_title": "Homero Manzi, un poeta en la tormenta",
+            "release_date": "2009-09-24",
+            "genres": [],
+        }
+
+    @staticmethod
+    def _tv_rigakusei():
+        return {
+            "id": 25760,
+            "name": "寒蝉鸣泣之时",
+            "original_name": "ひぐらしのなく頃に",
+            "first_air_date": "2006-04-05",
+            "genres": [],
+            "origin_country": ["JP"],
+            "original_language": "ja",
+            "vote_average": 8.0,
+            "number_of_seasons": 3,
+            "number_of_episodes": 85,
+            "status": "Ended",
+            "overview": "",
+            "networks": [],
+        }
+
+    def _enrich(self, show_name, tmdb_id="318051", media_type="tv", **extra):
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = {
+            "show_name": show_name,
+            "tmdb_id": tmdb_id,
+            "media_type": media_type,
+            "season": 1,
+            "episode": 3,
+            "original_filename": (
+                f"寒蝉鸣泣之时·礼.2009.S01E03.1080p.[tmdbid-{tmdb_id}].mkv"
+            ),
+        }
+        metadata.update(extra)
+        return renamer, metadata
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_unrelated_movie_fallback_is_rejected(self, mock_tmdb_client, caplog):
+        """tv 404 → movie 回退标题与剧名无关 → 不采纳，清除坏 ID 交回搜索"""
+        import logging as _logging
+
+        client = MagicMock()
+        mock_tmdb_client.return_value = client
+        # tv/318051 → 404；搜索命中后的 25760 → 正常详情（傍晚日剧）
+        client.get_tv_details.side_effect = lambda tid, **kw: (
+            None if tid == 318051 else {**self._tv_rigakusei(), "media_type": "tv"}
+        )
+        client.get_movie_details.return_value = self._movie_homero()  # movie 存在但无关
+        # 搜索路径（干净剧名）能命中真正的 tv 条目
+        client.search_all_pages.return_value = [
+            {**self._tv_rigakusei(), "media_type": "tv"}
+        ]
+        client.get_tv_episode_details.return_value = {
+            "name": "赛杀篇 其二",
+            "still_path": "",
+            "overview": "",
+            "vote_average": 0,
+        }
+        client.get_tv_credits.return_value = {"cast": [], "crew": []}
+        client.get_external_ids.return_value = {}
+
+        renamer, metadata = self._enrich("寒蝉鸣泣之时·礼")
+        caplog.set_level(_logging.INFO)
+        result = renamer._enrich_with_tmdb(metadata)
+
+        # 关键断言：坏 ID 被清除，改由搜索正确命中 25760，且类型保持 tv
+        assert result.get("tmdb_id") == 25760, result
+        assert result.get("media_type") == "tv"
+        assert "判坏 ID" in caplog.text
+        # 搜索确实发生了（不是硬塞电影详情）
+        assert client.search_all_pages.called
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_related_movie_fallback_still_accepted(self, mock_tmdb_client, caplog):
+        """tv 404 → movie 回退标题相关（容祖儿演唱会类）→ 照旧采纳"""
+        import logging as _logging
+
+        client = MagicMock()
+        mock_tmdb_client.return_value = client
+        client.get_tv_details.return_value = None
+        client.get_movie_details.return_value = {
+            "id": 585241,
+            "title": "容祖儿 - Perfect 10 黄金十年演唱会",
+            "original_title": "容祖儿 - Perfect 10 黄金十年演唱会",
+            "release_date": "2021-01-01",
+            "genres": [],
+        }
+        client.get_external_ids.return_value = {}
+
+        renamer, metadata = self._enrich(
+            "容祖儿 Perfect 10 黄金十年演唱会", tmdb_id="585241"
+        )
+        caplog.set_level(_logging.INFO)
+        result = renamer._enrich_with_tmdb(metadata)
+
+        assert result.get("tmdb_id") == 585241, result
+        assert result.get("media_type") == "movie"
+        assert "回退 movie (标题相关)" in caplog.text
+        assert not client.search_all_pages.called
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_movie_hint_tv_fallback_related(self, mock_tmdb_client, caplog):
+        """反向：movie 404 → tv 回退标题相关（如 [tmdbid] 实为 tv）→ 照旧采纳"""
+        import logging as _logging
+
+        client = MagicMock()
+        mock_tmdb_client.return_value = client
+        client.get_movie_details.return_value = None
+        client.get_tv_details.return_value = {**self._tv_rigakusei()}
+
+        renamer, metadata = self._enrich(
+            "寒蝉鸣泣之时",
+            tmdb_id="25760",
+            media_type="movie",
+            season=None,
+            episode=None,
+        )
+        caplog.set_level(_logging.INFO)
+        result = renamer._enrich_with_tmdb(metadata)
+
+        assert result.get("tmdb_id") == 25760, result
+        assert result.get("media_type") == "tv"
+        assert "回退 tv (标题相关)" in caplog.text
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_both_types_missing_clears_bad_id(self, mock_tmdb_client, caplog):
+        """movie/tv 详情都不存在 → 仍然清除坏 ID（既有行为不回归）"""
+        import logging as _logging
+
+        client = MagicMock()
+        mock_tmdb_client.return_value = client
+        client.get_tv_details.return_value = None
+        client.get_movie_details.return_value = None
+        # 搜索路径也无结果 → 保持无 tmdb_id
+        client.search_all_pages.return_value = []
+
+        renamer, metadata = self._enrich("寒蝉鸣泣之时·礼")
+        caplog.set_level(_logging.INFO)
+        result = renamer._enrich_with_tmdb(metadata)
+
+        assert result.get("tmdb_id") in (None, "")
+        assert "清除坏 ID" in caplog.text
+
+    def test_alt_title_related(self):
+        """标题相关性判断正反例"""
+        from video_organizer.core.renamer.renamer import _alt_title_related
+
+        # 相同 / 包含 / 归一化后相同
+        assert _alt_title_related("寒蝉鸣泣之时·礼", "寒蝉鸣泣之时·礼")
+        assert _alt_title_related("寒蝉鸣泣之时", "寒蝉鸣泣之时·礼")  # 子串包含
+        assert _alt_title_related("Spider-Man", "Spider Man")  # 连字符归一化
+        # 相关（重叠足够）
+        assert _alt_title_related(
+            "容祖儿 Perfect 10 黄金十年演唱会", "容祖儿 - Perfect 10 黄金十年演唱会"
+        )
+        # 完全无关（Homero Manzi vs 寒蝉）→ False
+        assert not _alt_title_related(
+            "寒蝉鸣泣之时·礼", "Homero Manzi, un poeta en la tormenta"
+        )
+        assert not _alt_title_related("寒蝉鸣泣之时", "Homero Manzi")
+        # 信息不足不拦截
+        assert _alt_title_related("", "anything")
+        assert _alt_title_related("寒蝉鸣泣之时", "")
