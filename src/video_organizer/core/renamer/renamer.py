@@ -1228,9 +1228,14 @@ class VideoRenamer:
                             if key == "show_name":
                                 val = show_candidate
 
-                            # 如果是片段或季集模式，强制覆盖 show_name
+                            # 如果是片段/季集模式/纯数字伪剧名，强制覆盖 show_name
+                            # ⚙ 纯数字 show_name（`is_invalid_name`）必须一并覆盖：
+                            # 文件名本身只有年份时（`八仙！/2026.2160p.60fps…iso`
+                            # 的正则抽出的剧名是 `2026`），不覆盖会把年份当片名去搜，
+                            # TMDB 返回一堆 "2026" 同名条目并误配成随机剧集
+                            # （实测命中一个叫 2026 的 tv id=327781）
                             if (
-                                is_fragment or is_season_episode_only
+                                is_fragment or is_season_episode_only or is_invalid_name
                             ) and key == "show_name":
                                 metadata[key] = val
                             # 否则只在字段为空时补全
@@ -4153,6 +4158,52 @@ class VideoRenamer:
         # 的请求缓存兜底，重复探测成本极低）
         return self._tv_episode_capacity_cache.get_or_create(cache_key, _calc)
 
+    def _entry_can_hold_episode(self, tmdb_id: int, metadata: Dict) -> Optional[bool]:
+        """单个 tv 条目能否容纳文件的集号（单条目版集数容量校验）。
+
+        与 `_filter_candidates_by_episode_capacity` 的「集号硬约束」语义一致，
+        但用于**单条目**场景（名称缓存命中 / 已有 tmdb_id 的快速路径）——
+        这时没有候选可对比，只能直接判容量。（那个方法是给 ≥2 个 tv 候选
+        之间的消歧用的，单条目会被它直接放行。）
+
+        典型场景：《大主宰》同名双条目——2019 年 id=102008 只有 12 集，
+        2023 年番 id=226045 共 104 集；缓存被前者污染后，E98 的文件会被链到
+        只收录 12 集的条目并把年份覆盖成 2019。
+
+        Returns:
+            True: 容量装得下；False: 容量已知且装不下；
+            None: 无集号/容量未知（调用方不得据此丢弃条目）
+        """
+        episode = metadata.get("episode")
+        if episode is None:
+            return None
+        matched = re.match(r"\d+", str(episode).strip())
+        if not matched:
+            return None
+        ep_num = int(matched.group())
+        if ep_num <= 0:
+            return None
+
+        capacity = self._get_tv_episode_capacity(tmdb_id)
+        if not capacity:
+            return None
+        total, season_counts = capacity
+
+        season_int: Optional[int] = None
+        season = metadata.get("season")
+        if season is not None and str(season).strip().isdigit():
+            season_int = int(str(season).strip())
+        # 默认补的 season=1 不可信：只按总集数校验（同候选过滤策略）
+        if season_int is not None and not self._has_explicit_season(metadata):
+            season_int = None
+
+        limit = total
+        if season_int is not None and season_counts.get(season_int, 0) > 0:
+            limit = season_counts[season_int]
+        if limit and limit > 0 and ep_num > limit:
+            return False
+        return True
+
     def _filter_candidates_by_episode_capacity(
         self, candidates: List[Dict], metadata: Dict, label: str = ""
     ) -> List[Dict]:
@@ -4774,11 +4825,19 @@ class VideoRenamer:
             if key in metadata:
                 cache_data[key] = metadata[key]
 
-        # 保存 name -> tmdb_id 映射（含 media_type 防同名电影/剧集污染）
-        name_key = f"{show_name.lower().strip()}_{media_type}"
+        # 保存 name -> tmdb_id 映射（含 media_type 防同名电影/剧集污染，
+        # 含年份防同名不同版本污染，见 _name_id_cache_key）
+        cache_year = metadata.get("year")
+        name_key = self._name_id_cache_key(show_name, media_type, cache_year)
         if name_key and name_key not in self._tmdb_name_to_id:
             self._tmdb_name_to_id[name_key] = tmdb_id
-            logger.debug(f"TMDB 缓存: 保存名称映射 {show_name} -> TMDB ID {tmdb_id}")
+            logger.debug(
+                f"TMDB 缓存: 保存名称映射 {show_name} ({cache_year}) -> TMDB ID {tmdb_id}"
+            )
+        # 无年份兜底键：只在「文件与目录都抽不到年份」时才会被读到
+        no_year_key = self._name_id_cache_key(show_name, media_type, None)
+        if no_year_key and no_year_key not in self._tmdb_name_to_id:
+            self._tmdb_name_to_id[no_year_key] = tmdb_id
 
         # 保存完整元数据缓存（含 media_type 防跨类型污染）
         cache_key = f"tmdb_{tmdb_id}_{media_type}"
@@ -4795,16 +4854,44 @@ class VideoRenamer:
         # 登记搜索别名：让下一集用「未纠正的原始名」也能直接命中缓存
         alias = str(search_alias or "").strip()
         if alias and alias.lower().strip() != str(show_name).lower().strip():
-            alias_name_key = f"{alias.lower().strip()}_{media_type}"
-            if alias_name_key not in self._tmdb_name_to_id:
+            alias_name_key = self._name_id_cache_key(alias, media_type, cache_year)
+            if alias_name_key and alias_name_key not in self._tmdb_name_to_id:
                 self._tmdb_name_to_id[alias_name_key] = tmdb_id
                 logger.debug(
-                    f"TMDB 缓存: 保存搜索别名映射 {alias} -> TMDB ID {tmdb_id}"
+                    f"TMDB 缓存: 保存搜索别名映射 {alias} ({cache_year}) -> TMDB ID {tmdb_id}"
                 )
+            alias_no_year_key = self._name_id_cache_key(alias, media_type, None)
+            if alias_no_year_key and alias_no_year_key not in self._tmdb_name_to_id:
+                self._tmdb_name_to_id[alias_no_year_key] = tmdb_id
             alias_cache_key = f"{alias}_{year}_{media_type}".lower().strip()
             if alias_cache_key not in self._tmdb_cache:
                 self._tmdb_cache[alias_cache_key] = dict(cache_data)
                 logger.debug(f"TMDB 缓存: 保存别名键缓存 {alias_cache_key}")
+
+    @staticmethod
+    def _name_id_cache_key(
+        show_name: str,
+        media_type: Optional[str],
+        year: Optional[Union[str, int]] = None,
+    ) -> str:
+        """构造 show_name -> tmdb_id 名称缓存的键（带年份）。
+
+        ⚙ **必须带年份**：同名不同版本在 TMDB 极常见（射雕英雄传 1983/1994/
+        2003/2008/2017/2024 各有独立条目），旧键只有「名称_类型」，识别过一次
+        2017 版之后，2003 版的每一集都会直接命中缓存、被链到 2017 条目
+        （每年重制/翻拍的剧必中）。集数容量校验也救不了——各版本集数都装得下。
+        年份未知（文件与目录都没有年份证据）时不带年份后缀，只在「文件本身
+        没有年份证据」时才查询，避免有年份的版本被无年份项污染。
+        """
+        name = (show_name or "").lower().strip()
+        if not name:
+            return ""
+        year_str = ""
+        if year is not None:
+            year_match = re.search(r"(?:19|20)\d{2}", str(year))
+            if year_match:
+                year_str = year_match.group(0)
+        return f"{name}_{media_type or ''}_{year_str}"
 
     def _search_tmdb_by_type(
         self,
@@ -5032,12 +5119,31 @@ class VideoRenamer:
                 and metadata.get("episode") is not None
                 and not metadata.get("season")
             )
-            name_key = f"{show_name.lower().strip()}_{media_type}"
+            # ⚙ 名称缓存键必须带年份：射雕英雄传 1983/1994/2003/2008/2017/2024
+            # 在 TMDB 是各自独立的条目，旧键只有「名称_类型」，识别过一次
+            # 2017 版后 2003 版每一集都会命中华而不实的缓存、被链到 2017 条目
+            # （每年重制/翻拍的剧必中；集数容量校验也拦不住，各版集数都够）。
+            # 有年份只查带年份的键；文件与目录都没年份证据时才退回无年份键。
+            name_key = self._name_id_cache_key(show_name, media_type, entry_year)
             cached_tmdb_id = (
                 self._tmdb_name_to_id.get(name_key)
                 if show_name and name_key and not _compact_sequel_form
                 else None
             )
+            if cached_tmdb_id is None and not entry_year:
+                name_key = self._name_id_cache_key(show_name, media_type, None)
+                cached_tmdb_id = (
+                    self._tmdb_name_to_id.get(name_key)
+                    if show_name and name_key and not _compact_sequel_form
+                    else None
+                )
+            # 标记 id 来自「名称缓存」而非文件名硬标记（[tmdbid=…]）：
+            # 缓存是进程级共享的，可能被同名不同条目的上一个文件写错
+            # （大主宰 2019 条目 id=102008 只 12 集，却把大主宰年番
+            # 2023（id=226045, 104 集）的 E98 全部链到它），
+            # 所以缓存来源的 id 必须额外做集数容量校验（见下方
+            # _entry_can_hold_episode）；硬标记是用户显式锁定，不插手
+            _id_from_name_cache = False
             if cached_tmdb_id is not None:
                 logger.info(
                     f"TMDB 名称缓存命中: {show_name} -> TMDB ID {cached_tmdb_id}"
@@ -5045,6 +5151,7 @@ class VideoRenamer:
                 # 使用缓存的 tmdb_id 直接获取详情
                 metadata["tmdb_id"] = cached_tmdb_id
                 existing_tmdb_id = cached_tmdb_id
+                _id_from_name_cache = True
 
             logger.info(f"开始TMDB搜索: metadata={metadata}")
             # 保存原始的quality_tags和release_group，避免被覆盖
@@ -5151,6 +5258,29 @@ class VideoRenamer:
                             f"TMDB ID {tmdb_id_int} movie/tv 详情均不存在，"
                             f"清除坏 ID"
                         )
+                    # ⚙ 名称缓存来源的 id 必须验证「集数容量」硬约束：
+                    # 同名不同条目在 TMDB 极常见（大主宰 2019 id=102008 仅
+                    # 12 集 / 大主宰年番 2023 id=226045 共 104 集），进程级名称
+                    # 缓存一旦被前者污染，后续每一集都会被链到容量不足的条目，
+                    # 还把目录年份覆盖成首播年份。集号是硬约束（同
+                    # _filter_candidates_by_episode_capacity）：容量已知且装不下
+                    # 文件集号 → 缓存项判污，清除后回落搜索重新裁决。
+                    # 容量未知（TMDB 未更新/在播剧只收录少量集）不拦，与既有策略一致。
+                    if (
+                        _id_from_name_cache
+                        and details
+                        and media_type_hint == "tv"
+                        and self._entry_can_hold_episode(tmdb_id_int, metadata) is False
+                    ):
+                        logger.warning(
+                            f"名称缓存项 '{show_name}' -> TMDB ID {tmdb_id_int}"
+                            f" 集数容量装不下文件 E{metadata.get('episode')}"
+                            f"（{details.get('name')!r}），判缓存污染，"
+                            f"丢弃该缓存项并回落搜索"
+                        )
+                        self._tmdb_name_to_id.pop(name_key, None)
+                        metadata.pop("tmdb_id", None)
+                        details = None
                     if media_type_hint == "tv":
                         if details and details.get("name"):
                             logger.info(

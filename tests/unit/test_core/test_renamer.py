@@ -1223,7 +1223,8 @@ class TestVideoRenamer:
         mock_client_instance.get_external_ids.return_value = {}
 
         # 模拟上一部《蜘蛛侠》(2002) 留下的进程级污染
-        VideoRenamer._tmdb_name_to_id["蜘蛛侠_movie"] = 557
+        # 键带年份；蜘蛛侠3.mkv 抽不到年份 → 用无年份键模拟污染
+        VideoRenamer._tmdb_name_to_id["蜘蛛侠_movie_"] = 557
         renamer = VideoRenamer("your_tmdb_api_key")
         md = renamer.extract_metadata(r"\影视资源\Downloads\蜘蛛侠3.mkv")
 
@@ -1232,7 +1233,7 @@ class TestVideoRenamer:
         assert md.get("tmdb_id") != 557
 
         # 合法的 tv 剧集名称缓存仍生效（同一进程、同类型）
-        VideoRenamer._tmdb_name_to_id["完美世界_tv"] = 124003
+        VideoRenamer._tmdb_name_to_id["完美世界_tv_"] = 124003
         md2 = renamer.extract_metadata(r"\影视资源\Downloads\完美世界\222 4k.mp4")
         assert md2.get("media_type") == "tv", md2
         assert md2.get("tmdb_id") == 124003, md2
@@ -2725,3 +2726,361 @@ class TestTmdbIdCrossTypeFallback:
         # 信息不足不拦截
         assert _alt_title_related("", "anything")
         assert _alt_title_related("寒蝉鸣泣之时", "")
+
+
+class TestNameCacheEpisodeCapacity:
+    """进程级名称缓存（show_name → tmdb_id）必须过「集数容量」硬校验
+
+    线上案例：`大主宰（2023）/98 4K.mkv`
+    - TMDB 同名双条目：2019 年 id=102008（仅 12 集，Ended）/
+      2023 年番 id=226045（104 集，Returning）
+    - 名称缓存被 102008 污染后，缓存命中路径不校验任何东西，E98 被链到
+      只收录 12 集的条目，目录年份 2023 还被首播年份 2019 覆盖
+    - 集号是硬约束（同 `_filter_candidates_by_episode_capacity`）：装不下
+      就判缓存污染，丢弃缓存项并回落搜索重新裁决
+    """
+
+    # ---------- 工具 ----------
+    @staticmethod
+    def _tv(tid, name, first_air, episodes, status="Returning Series"):
+        return {
+            "id": tid,
+            "name": name,
+            "original_name": name,
+            "first_air_date": first_air,
+            "number_of_seasons": 1,
+            "number_of_episodes": episodes,
+            "status": status,
+            "genres": [],
+            "seasons": [
+                {
+                    "season_number": 1,
+                    "episode_count": episodes,
+                    "air_date": first_air,
+                }
+            ],
+            "origin_country": ["CN"],
+            "original_language": "zh",
+            "vote_average": 7.0,
+            "overview": "",
+            "networks": [],
+            "popularity": 10.0,
+        }
+
+    def _client(self, mock_tmdb_client, details_by_id, search_results):
+        client = MagicMock()
+        mock_tmdb_client.return_value = client
+        client.get_tv_details.side_effect = lambda tid, **kw: (
+            dict(details_by_id[tid]) if tid in details_by_id else None
+        )
+        client.search_all_pages.return_value = search_results
+        client.get_tv_episode_details.return_value = {
+            "name": "",
+            "still_path": "",
+            "overview": "",
+            "vote_average": 0,
+        }
+        client.get_tv_credits.return_value = {"cast": [], "crew": []}
+        client.get_external_ids.return_value = {}
+        client.search_web_fallback.return_value = []
+        return client
+
+    def _meta(self, episode="98"):
+        return {
+            "show_name": "大主宰",
+            "media_type": "tv",
+            "season": "1",
+            "episode": episode,
+            "year": "2023",
+            "quality_tags": "4K",
+            "original_filename": f"大主宰（2023）/{episode} 4K.mkv",
+        }
+
+    # ---------- 污染缓存被丢弃并自愈 ----------
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_poisoned_name_cache_is_dropped(self, mock_tmdb_client, caplog):
+        import logging as _logging
+
+        old = self._tv(102008, "大主宰", "2019-08-08", 12, "Ended")
+        new = self._tv(226045, "大主宰年番", "2023-06-30", 104)
+        # 与真实 TMDB 一致：/search/tv 对两个条目都返回中文名「大主宰」
+        # （只有详情端点才叫「大主宰年番」）→ 两者都会进精确匹配，
+        # 由既有的「精确匹配后容量过滤」剔除 12 集条目
+        search_hits = [
+            {**old, "media_type": "tv"},
+            {**new, "name": "大主宰", "original_name": "大主宰", "media_type": "tv"},
+        ]
+        client = self._client(mock_tmdb_client, {102008: old, 226045: new}, search_hits)
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        # 模拟被污染的名称缓存（上一个 2019 条目文件写入的）
+        renamer._tmdb_name_to_id["大主宰_tv_2023"] = 102008
+        caplog.set_level(_logging.INFO)
+
+        result = renamer._enrich_with_tmdb(self._meta())
+
+        assert "判缓存污染" in caplog.text
+        # 对照正确条目：2023 年番（104 集装得下 E98），年份不被 2019 覆盖
+        assert result.get("tmdb_id") == 226045, result
+        assert result.get("media_type") == "tv"
+        assert str(result.get("year")) == "2023"
+        # 缓存自愈：污染项被替换成正确 id
+        assert renamer._tmdb_name_to_id.get("大主宰_tv_2023") == 226045
+
+    # ---------- 容量装得下：缓存照用，不搜 ----------
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_cache_kept_when_capacity_fits(self, mock_tmdb_client, caplog):
+        import logging as _logging
+
+        new = self._tv(226045, "大主宰年番", "2023-06-30", 104)
+        client = self._client(mock_tmdb_client, {226045: new}, [])
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        renamer._tmdb_name_to_id["大主宰_tv_2023"] = 226045
+        caplog.set_level(_logging.INFO)
+        result = renamer._enrich_with_tmdb(self._meta())
+
+        assert result.get("tmdb_id") == 226045
+        assert "判缓存污染" not in caplog.text
+        assert not client.search_all_pages.called  # 没走搜索
+
+    # ---------- 容量未知：不拦（在播剧 TMDB 常只收录少量集） ----------
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_unknown_capacity_does_not_drop_cache(self, mock_tmdb_client, caplog):
+        import logging as _logging
+
+        # TMDB 常见：在播剧只收录 1 集（真男人 S02），文件却是 E05
+        sparse = self._tv(990001, "在播剧", "2024-01-01", 0)
+        sparse["seasons"] = []
+        client = self._client(mock_tmdb_client, {990001: sparse}, [])
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        renamer._tmdb_name_to_id["大主宰_tv_2023"] = 990001
+        meta = self._meta(episode="5")
+        meta["show_name"] = "大主宰"
+        caplog.set_level(_logging.INFO)
+        result = renamer._enrich_with_tmdb(meta)
+
+        assert result.get("tmdb_id") == 990001, result
+        assert "判缓存污染" not in caplog.text
+
+    # ---------- 文件名硬标记不受容量校验影响（用户显式锁定） ----------
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_explicit_tmdbid_marker_not_capacity_checked(
+        self, mock_tmdb_client, caplog
+    ):
+        import logging as _logging
+
+        old = self._tv(102008, "大主宰", "2019-08-08", 12, "Ended")
+        self._client(mock_tmdb_client, {102008: old}, [])
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        meta = self._meta()
+        meta["tmdb_id"] = "102008"  # 文件名 [tmdbid-102008] 显式锁定
+        meta["original_filename"] = "大主宰（2023）/[tmdbid-102008]98 4K.mkv"
+        caplog.set_level(_logging.INFO)
+        result = renamer._enrich_with_tmdb(meta)
+
+        # 显式标记照旧采纳，不被集数容量推翻
+        assert result.get("tmdb_id") == 102008, result
+        assert "判缓存污染" not in caplog.text
+
+
+class TestBareYearShowNameParentFallback:
+    """文件名只有年份时，父目录剧名必须覆盖伪剧名 `2026`
+
+    线上案例：`八仙！/2026.2160p.60fps.HQ.WEB-DL.H265.DV.HDR.DTS.5.1.iso`
+    - 文件名里没有片名，正则抽出的 show_name 是纯数字 `2026`
+    - `is_invalid_name` 正确触发了父目录查找，但「强制覆盖」条件只写了
+      `is_fragment / is_season_episode_only`，漏了 `is_invalid_name`
+      → 走 `elif not metadata.get(key)` 分支被跳过，show_name 仍是 `2026`
+    - 于是拿 `2026` 搜 TMDB，命中 96 条同名条目，精确匹配到 id=327781
+      一部叫「2026」的剧，输出 `2026 (2026) {tmdbid=327781}/Season 01/…`
+    - 正确行为：用父目录 `八仙！` 搜索 → movie 1633056（2026-07-10，动画）
+    """
+
+    @staticmethod
+    def _renamer_with_empty_tmdb(searched=None):
+        client = MagicMock()
+        if searched is not None:
+
+            def fake_search(method, term, **kwargs):
+                searched.append(str(term))
+                return []
+
+            client.search_all_pages.side_effect = fake_search
+        else:
+            client.search_all_pages.return_value = []
+        client.search_web_fallback.return_value = []
+        client.get_tv_details.return_value = None
+        client.get_movie_details.return_value = None
+        return client
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_bare_year_show_name_replaced_by_parent_dir(self, mock_tmdb_client):
+        searched = []
+        mock_tmdb_client.return_value = self._renamer_with_empty_tmdb(searched)
+
+        renamer = VideoRenamer("your_tmdb_api_key")
+        metadata = renamer.extract_metadata(
+            "E:/影视/国漫/八仙！/2026.2160p.60fps.HQ.WEB-DL.H265.DV.HDR.DTS.5.1.iso"
+        )
+
+        assert metadata.get("show_name") == "八仙！", metadata
+        # 搜索必须用父目录剧名，绝不能只拿 "2026" 去搜
+        joined = " | ".join(searched)
+        assert "八仙" in joined, searched
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_category_dir_does_not_override_numeric_title(self, mock_tmdb_client):
+        """分类目录不是剧名：`电影/1917.2019.mkv` 的片名必须保持 1917"""
+        mock_tmdb_client.return_value = self._renamer_with_empty_tmdb()
+        renamer = VideoRenamer("your_tmdb_api_key")
+
+        for src, expect in (
+            ("E:/影视/电影/1917.2019.2160p.BluRay.mkv", "1917"),
+            ("E:/影视/电影/2012.2009.1080p.mkv", "2012"),
+            ("E:/影视/Movies/1917.2019.mkv", "1917"),
+            ("E:/影视/剧集/2026.2160p.mkv", "2026"),
+        ):
+            md = renamer.extract_metadata(src)
+            assert md.get("show_name") == expect, (src, md)
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_same_name_parent_unchanged(self, mock_tmdb_client):
+        """父目录与片名一致时覆盖无副作用"""
+        mock_tmdb_client.return_value = self._renamer_with_empty_tmdb()
+        renamer = VideoRenamer("your_tmdb_api_key")
+        md = renamer.extract_metadata("E:/影视/1917/1917.2019.2160p.mkv")
+        assert md.get("show_name") == "1917", md
+
+
+class TestSameNameDifferentYearCacheSeparation:
+    """名称缓存键必须带年份：同名不同版本（射雕英雄传 2003 / 2017）互不污染
+
+    线上案例：`/test/射雕英雄传 (2003)/Season 01/射雕英雄传.2003.S01E11…mkv`
+    - 旧键是 `名称_类型`（`射雕英雄传_tv`），没有年份
+    - 识别过一次 2017 版后，2003 版每一集都直接命中缓存 → 被链到 2017 条目
+      （射雕英雄传在 TMDB 有 1983/1994/2003/2008/2017 等多个独立条目，
+      翻拍剧必中；集数容量校验也拦不住，各版本集数都装得下 E11）
+    - 现在键是 `名称_类型_年份`，年份不同必然 miss → 走搜索按年份裁决
+    """
+
+    TV_2003 = 99901
+    TV_2017 = 55555
+
+    @staticmethod
+    def _tv(tmdb_id, name, first_air, episodes):
+        return {
+            "id": tmdb_id,
+            "name": name,
+            "original_name": name,
+            "first_air_date": first_air,
+            "overview": "",
+            "poster_path": "",
+            "backdrop_path": "",
+            "vote_average": 7.0,
+            "genres": [],
+            "seasons": [
+                {"season_number": 1, "episode_count": episodes, "air_date": first_air}
+            ],
+            "number_of_seasons": 1,
+            "number_of_episodes": episodes,
+            "status": "Ended",
+            "origin_country": ["CN"],
+            "original_language": "zh",
+            "networks": [],
+            "popularity": 10.0,
+        }
+
+    def _install(self, mock_tmdb_client):
+        cls = self
+        old = self._tv(cls.TV_2003, "射雕英雄传", "2003-02-03", 42)
+        new = self._tv(cls.TV_2017, "射雕英雄传", "2017-01-09", 52)
+        details = {cls.TV_2003: old, cls.TV_2017: new}
+        search_hits = [
+            {**new, "media_type": "tv", "popularity": 20.0},
+            {**old, "media_type": "tv", "popularity": 10.0},
+        ]
+
+        client = MagicMock()
+        mock_tmdb_client.return_value = client
+        client.get_tv_details.side_effect = lambda tid, **kw: (
+            dict(details[tid]) if tid in details else None
+        )
+        client.search_all_pages.return_value = search_hits
+        client.get_tv_episode_details.return_value = {
+            "name": "",
+            "still_path": "",
+            "overview": "",
+            "vote_average": 0,
+        }
+        client.get_tv_credits.return_value = {"cast": [], "crew": []}
+        client.get_external_ids.return_value = {}
+        client.search_web_fallback.return_value = []
+        return client
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_2017_cache_does_not_hijack_2003_file(self, mock_tmdb_client):
+        client = self._install(mock_tmdb_client)
+        renamer = VideoRenamer("your_tmdb_api_key")
+        # 上一部文件识别了 2017 版，写进进程级共享缓存
+        renamer._tmdb_name_to_id[f"射雕英雄传_tv_2017"] = self.TV_2017
+
+        md = renamer.extract_metadata(
+            "/test/射雕英雄传 (2003)/Season 01/"
+            "射雕英雄传.2003.S01E11.1080p.WEB-DL.H264.AAC-CMCTV.mkv"
+        )
+
+        assert md.get("tmdb_id") == self.TV_2003, md
+        assert str(md.get("year")) == "2003", md
+        # 必须真的走了搜索（说明 2017 的缓存项没被命中）
+        assert client.search_all_pages.called
+        # 两个年份的映射可以并存
+        assert renamer._tmdb_name_to_id.get("射雕英雄传_tv_2003") == self.TV_2003
+        assert renamer._tmdb_name_to_id.get("射雕英雄传_tv_2017") == self.TV_2017
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_same_year_still_hits_cache_without_search(self, mock_tmdb_client):
+        client = self._install(mock_tmdb_client)
+        renamer = VideoRenamer("your_tmdb_api_key")
+        renamer._tmdb_name_to_id[f"射雕英雄传_tv_2003"] = self.TV_2003
+
+        md = renamer.extract_metadata(
+            "/test/射雕英雄传 (2003)/Season 01/射雕英雄传.2003.S01E11.1080p.mkv"
+        )
+
+        assert md.get("tmdb_id") == self.TV_2003, md
+        assert not client.search_all_pages.called  # 同版本照旧命中缓存
+
+    @patch("video_organizer.core.renamer.renamer.TMDBClient")
+    def test_no_year_evidence_falls_back_to_year_less_key(self, mock_tmdb_client):
+        """文件与目录都没有年份时，退回无年份键（此时无从分辨版本）"""
+        self._install(mock_tmdb_client)
+        renamer = VideoRenamer("your_tmdb_api_key")
+        renamer._tmdb_name_to_id["射雕英雄传_tv_"] = self.TV_2003
+
+        md = renamer.extract_metadata("/test/射雕英雄传/第11集.mkv")
+
+        assert md.get("tmdb_id") == self.TV_2003, md
+
+    def test_key_includes_year(self):
+        assert (
+            VideoRenamer._name_id_cache_key("射雕英雄传", "tv", "2003")
+            == "射雕英雄传_tv_2003"
+        )
+        # 年份可能是 int / 带日期的字符串，统一取 4 位年份
+        assert (
+            VideoRenamer._name_id_cache_key("射雕英雄传", "tv", 2017)
+            == "射雕英雄传_tv_2017"
+        )
+        assert (
+            VideoRenamer._name_id_cache_key("射雕英雄传", "tv", "2003-02-03")
+            == "射雕英雄传_tv_2003"
+        )
+        # 年份缺失 → 空后缀键
+        assert (
+            VideoRenamer._name_id_cache_key("射雕英雄传", "tv", None)
+            == "射雕英雄传_tv_"
+        )
+        assert VideoRenamer._name_id_cache_key("", "tv", 2003) == ""

@@ -170,6 +170,28 @@
     但**只采纳完全匹配+年份守卫的结果**：对脏搜索词跨语言常返回一堆子串噪音，
     直接当候选会让 `results` 非空、后面的备选策略（cleaned_name/截断/分段剥离/
     父目录/LLM）全部被跳过（`TestZeroResultCrossLanguage` 正反两向覆盖）
+  - ⚙ **名称缓存键必须带年份**（`_name_id_cache_key`）：key 是
+    `名称_类型_年份`（年份缺失时是 `名称_类型_`，只在文件与目录都抽不到年份时
+    才查询）。旧 key 只有 `名称_类型`，同名不同版本必互相污染——射雕英雄传在
+    TMDB 有 1976/1983/1988/1994/2003/2008/2017 多个独立条目，识别过一次
+    2017 版（id=69530）后，`射雕英雄传 (2003)/…S01E11.mkv` 的每一集都直接命中
+    缓存被链到 2017 条目（集数容量校验救不了：各版本集数都装得下 E11）。
+    现在 2003 文件走 `射雕英雄传_tv_2003` 必 miss → 搜索按年份裁决到 id=31929，
+    两个年份的映射并存（`TestSameNameDifferentYearCacheSeparation` 正反+无年份+
+    键格式四向覆盖）
+  - ⚙ **名称缓存（`_tmdb_name_to_id`）命中后必须过集数容量校验**：它是
+    `VideoRenamer` 类属性（进程级共享），key 里虽有年份，但同一年份下同名的
+    不同条目仍然存在——
+    同名不同条目会互相污染。线上实例：《大主宰》TMDB 双条目（2019 年
+    id=102008 仅 12 集 Ended / 2023 年番 id=226045 共 104 集 Returning），
+    缓存被 102008 污染后 `大主宰（2023）/98 4K.mkv` 的 E98 直接链到 12 集条目，
+    目录年份 2023 还被首播年份 2019 覆盖。现在缓存来源的 id 用
+    `_entry_can_hold_episode()` 判容量（集号硬约束，同
+    `_filter_candidates_by_episode_capacity` 语义），装不下 → 判缓存污染、
+    `pop` 该缓存项 + 清除 tmdb_id → 回落搜索重新裁决，识别成功后再把正确 id
+    写回缓存（自愈）。容量未知不拦（在播剧 TMDB 常只收录少量集）；文件名硬
+    标记 `[tmdbid=…]` 是用户显式锁定，不做此校验
+    （`TestNameCacheEpisodeCapacity` 覆盖）
   - ⚙ **网页兜底不得伪装浏览器 UA**（`tmdb_client.TMDB_WEB_USER_AGENTS`）：
     www.themoviedb.org 在 Cloudflare 后面且开了浏览器完整性校验（BIC）——UA 写
     `Chrome/120.0.0.0` 但 TLS 指纹不是 Chrome（urllib/requests 必然如此）会被丢到
@@ -226,6 +248,15 @@
     `影视/双子杀手/1.本片可做为设备测试片使用`——注意 `Path().suffix` 会把整个
     中文串当后缀，看似「有后缀」）直接返回 `{}`，否则会被 L2 当集号、
     误配成父目录电影的第 1/2 集（`TestNonVideoEntrySkipped` 覆盖）
+  - ⚙ **文件名只有年份时父目录剧名必须覆盖伪剧名**：`八仙！/2026.2160p.60fps.
+    HQ.WEB-DL.H265…iso` 的正则抽出的 show_name 是纯数字 `2026`，
+    `is_invalid_name` 会正确触发父目录查找，但填值时只对
+    `is_fragment / is_season_episode_only` 强制覆盖、漏了 `is_invalid_name`，
+    于是 show_name 留着 `2026` → 拿年份当片名搜 TMDB（96 条同名结果）→
+    误配成一部叫「2026」的剧（id=327781）。现在 `is_invalid_name` 一并强制
+    覆盖，用父目录 `八仙！` 搜到 movie 1633056；分类目录（`电影`/`Movies`/
+    `剧集`）已由 `_is_garbage_show_candidate` 判垃圾，不会顶掉 `1917`/`2012`
+    这类叫年份的真片名（`TestBareYearShowNameParentFallback` 正反覆盖）
   - ⚙ **父目录兜底禁止拿垃圾目录当剧名**（ACG 秒传高发）：
     - 季节目录带修饰词（`第一季 蓝光原盘REMUX 内封…字幕 年糕`、`S01 4K`、
       `Season 2 2025`）不是剧名，`_is_garbage_show_candidate` 对

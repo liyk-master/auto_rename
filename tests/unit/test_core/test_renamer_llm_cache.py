@@ -383,7 +383,7 @@ class TestEndToEndSameDirectory:
         assert len(fake.calls) == 1
         # native 路径上下文命中后，父目录“Z 早春晴朗（2026）”被清理为
         # “早春晴朗”（Z 为杂讯前缀），因此别名键不再带“z ”前缀
-        assert "早春晴朗_tv" in renamer._tmdb_name_to_id
+        assert "早春晴朗_tv_2026" in renamer._tmdb_name_to_id
 
 
 class TestCrossInstanceSharedCache:
@@ -611,7 +611,8 @@ class TestTmdbSearchAlias:
         # 纠正后的名字与别名都可用
         assert "早春晴朗_2026_tv" in renamer._tmdb_cache
         assert "z 早春晴朗_2026_tv" in renamer._tmdb_cache
-        assert renamer._tmdb_name_to_id["z 早春晴朗_tv"] == 999001
+        # 键带年份：同名不同版本（射雕英雄传 2003/2017）互不污染
+        assert renamer._tmdb_name_to_id["z 早春晴朗_tv_2026"] == 999001
 
     def test_no_alias_registered_when_names_match(self, renamer):
         metadata = {
@@ -621,7 +622,11 @@ class TestTmdbSearchAlias:
             "tmdb_id": 999001,
         }
         renamer._save_to_tmdb_cache(metadata, search_alias="早春晴朗")
-        assert list(renamer._tmdb_name_to_id.keys()) == ["早春晴朗_tv"]
+        # 有年份写带年份键 + 无年份兜底键，别名键不写
+        assert list(renamer._tmdb_name_to_id.keys()) == [
+            "早春晴朗_tv_2026",
+            "早春晴朗_tv_",
+        ]
 
     def test_alias_is_scoped_by_media_type(self, renamer):
         metadata = {
@@ -812,7 +817,7 @@ class TestSeasonConsistencyAcrossCachePaths:
         renamer.tmdb_client = StubTMDB()
         renamer._search_with_language = lambda *a, **k: []
         # 模拟首集已经在名称缓存里注册了 tmdb_id
-        renamer._tmdb_name_to_id["剧名_tv"] = 10001
+        renamer._tmdb_name_to_id["剧名_tv_2026"] = 10001
 
         metadata = {
             "show_name": "剧名",
