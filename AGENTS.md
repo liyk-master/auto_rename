@@ -53,6 +53,17 @@
   - `tmdb_client.py` — TMDB API 客户端
   - `manual_rule_engine.py` — 手动规则 DSL 引擎
   - `media_type_resolver.py` — media_type 置信度仲裁（电影/剧集误判修正）
+  - `hash_washer.py` — 洗码（`HashWasher`）：上传前在文件**尾部追加随机字节**使哈希变化，
+    绕过网盘秒传/去重（否则下载器下完的文件哈希与网盘已有条目一致，会被秒传成
+    别人那一份的引用）。MKV/MP4/TS 解析到结构结束即停止，尾部垃圾字节不影响播放，
+    不依赖 ffmpeg。两种模式：`copy`（默认）拷到 `data/hash_wash/` 临时副本再追加，
+    **原文件一个字节不动**（PT 保种/下载器校验安全，但需额外磁盘空间，空间不足自动
+    回落不洗）；`inplace` 直接在原文件尾部追加（省空间，但会破坏 qBittorrent 完整性
+    校验）。⚙ `wash()` 永不抛异常，失败一律回落「上传原文件」；`inplace` 用
+    `data/hash_wash/state.json` 记录「路径→洗码后大小」保证重试幂等（否则同一文件反复
+    重试会越洗越大），进程重启后仍生效；copy 副本由 `_execute_upload` 的 `finally`
+    统一 `cleanup()` 删除（成功/失败/异常都清）
+    （`tests/unit/test_core/test_hash_washer.py` 覆盖）
   - `recycle_cleaner/` — 网盘回收站定时清理（`base.py` Provider 抽象 + `providers.py` 各网盘实现
     + `cleaner.py` 每日时间点调度线程）；123云盘删除的文件仍占容量，需 `trash_delete_all` 才释放
     （`fs_trash` 仅移入回收站）；新增网盘只需实现 `BaseRecycleProvider.stats()/clear()` 并
@@ -119,7 +130,18 @@
   注意「配置文件为空」不等于「不可用」，真实密钥常在项目根 `config.ini`
 - 主要 section: `[monitoring]` `[naming]` `[tmdb]` `[llm_fallback]` `[llm_provider_1..3]`
   `[guessit]` `[parser]` `[emos]` `[emos_recognition]` `[processing]` `[logging]` `[telegram]`
-  `[emya_db]` `[yun139]` `[media_tracker]` `[p123]` `[recycle_clean]`；`[downloader.aria2]` / `[downloader.qbittorrent]` 模板中注释示例
+  `[emya_db]` `[yun139]` `[media_tracker]` `[p123]` `[recycle_clean]` `[hash_wash]`；`[downloader.aria2]` / `[downloader.qbittorrent]` 模板中注释示例
+- **洗码配置** (`[hash_wash]`，默认 `enabled = False`):
+  - `mode` — `copy`（默认，拷贝到临时副本再追加，原文件一个字节不动）/
+    `inplace`（直接在原文件尾部追加，省空间但破坏下载器校验）
+  - `min_bytes` / `max_bytes` — 尾部追加的随机字节范围（默认 1024-65536）
+  - `temp_dir` — copy 模式临时目录（默认 `data/hash_wash`，已 gitignore）
+  - `keep_washed` — 保留洗码副本不删除（调试用）
+  - 接线在 `core/file_handler/handler.py:_execute_upload`：洗码得到 `upload_path` 后
+    传给 emos / p123 / cloud189 / yun139 四个 `upload_video`。
+    ⚠️ **字幕扫描仍必须用原路径**：copy 副本在 `data/hash_wash/` 下、旁边没有字幕，
+    故 `p123/yun139.upload_video` 新增 `subtitle_scan_path` 参数（不传则回落 `file_path`）；
+    emya 入库的 `file_size` 同样改用 `upload_path` 的大小（云端存的是洗码后那份）
 - **回收站清理配置** (`[recycle_clean]`，默认 `enabled = False`):
   - `providers` — 逗号分隔（当前仅 `p123`）、`daily_at` — `HH:MM`，可配多个如 `04:00,16:00`
   - `catch_up_on_start` — 启动时补跑错过的时间点、`run_on_start` — 启动后立即跑一次（调试）

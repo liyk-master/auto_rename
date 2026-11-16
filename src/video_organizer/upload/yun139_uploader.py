@@ -686,18 +686,21 @@ class Yun139Uploader:
         media_info: Optional[Dict[str, Any]] = None,
         rename_to: Optional[str] = None,
         folder_structure: Optional[list] = None,
+        subtitle_scan_path: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         上传视频到 139 云盘
 
         Args:
-            file_path: 本地文件路径
+            file_path: 本地文件路径（洗码开启时为临时副本）
             item_type: 媒体类型（用于创建子文件夹: movie/tv）
             item_id: 媒体ID
             file_storage: 存储类型
             media_info: 媒体信息字典，包含 title, season_episode 等
             rename_to: 上传后的重命名文件名（如果为None则使用原文件名）
             folder_structure: 目标文件夹层级列表，例如 ["TV Shows", "Show Name", "Season 01"]
+            subtitle_scan_path: 扫描同目录字幕的路径（洗码副本与原视频不同目录，
+                字幕仍在原视频旁边，必须显式传入原路径）
 
         Returns:
             上传成功返回文件信息字典，失败返回 None
@@ -816,10 +819,10 @@ class Yun139Uploader:
                     else:
                         print(f"   ⚠️ 无法删除云端文件: 未获取到文件ID")
 
-                # 上传同目录下的字幕文件
+                # 上传同目录下的字幕文件（洗码副本旁边没有字幕，扫原视频目录）
                 print(f"\n📝 开始上传字幕文件...")
                 subtitles = self.upload_subtitles(
-                    str(file_path_obj), target_parent_id, target_filename, folder_structure
+                    subtitle_scan_path or str(file_path_obj), target_parent_id, target_filename, folder_structure
                 )
 
                 # 将字幕信息也返回

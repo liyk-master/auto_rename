@@ -616,6 +616,7 @@ function getSectionLabel(section) {
     const labels = {
         'monitoring': '监控配置', 'tmdb': 'TMDB 配置', 'naming': '命名规则',
         'processing': '处理配置', 'logging': '日志配置',
+        'hash_wash': '洗码（哈希规避）',
         'p123': '123云盘', 'cloud189': '天翼云盘', 'yun139': '139云盘',
         'recycle_clean': '回收站清理',
         'emos': 'Emby 云盘', 'telegram': 'Telegram', 'guessit': 'GuessIt 解析',

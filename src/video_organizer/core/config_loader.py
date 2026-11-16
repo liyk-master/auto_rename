@@ -117,6 +117,20 @@ DEFAULT_CONFIG = {
         "upload_targets": "emos",
         "max_upload_workers": 3,  # 并行上传工作线程数
     },
+    "hash_wash": {
+        # 是否启用洗码（改动文件内容使哈希变化，绕过网盘秒传/去重）
+        "enabled": False,
+        # copy = 拷贝到临时目录再追加随机字节，原文件不动（PT 保种安全，但需额外磁盘空间）
+        # inplace = 直接在原文件尾部追加（省空间，但会破坏下载器的完整性校验）
+        "mode": "copy",
+        # 追加的随机字节数范围（尾部垃圾字节不影响 MKV/MP4/TS 播放）
+        "min_bytes": 1024,
+        "max_bytes": 65536,
+        # copy 模式的临时目录（相对 cwd）
+        "temp_dir": "data/hash_wash",
+        # 调试用：保留洗码后的临时副本不删除
+        "keep_washed": False,
+    },
     "logging": {
         "log_level": "INFO",
         "log_file": "",
